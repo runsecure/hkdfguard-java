@@ -33,6 +33,7 @@ public final class HkdfGuardLog {
     public static final int EPHEMERAL_KEY_RETIRED = 8;
     public static final int EPHEMERAL_KEY_RETIREMENT_FAILED = 9;
     public static final int ENCRYPTION_BUDGET_WARNING = 10;
+    public static final int BACKGROUND_TASK_TERMINATED = 11;
 
     private HkdfGuardLog() {
     }
@@ -158,5 +159,21 @@ public final class HkdfGuardLog {
                 .addKeyValue(EVENT_ID_KEY, ENCRYPTION_BUDGET_WARNING)
                 .log("This key has performed {} encryptions of its {} AES-GCM limit; rotate it before the limit, when it stops encrypting.",
                         encryptionCount, encryptionLimit);
+    }
+
+    /**
+     * Error, marked {@link #CRITICAL}: a background task that guards key material (a key refresh,
+     * an ephemeral key rotation) ended unexpectedly and will not run again in this process.
+     * {@code consequence} says what that means for the keys it looked after.
+     */
+    public static void backgroundTaskTerminated(Logger logger, String taskName, String consequence, Throwable exception) {
+        if (logger == null)
+            return;
+
+        logger.atError()
+                .addMarker(CRITICAL)
+                .addKeyValue(EVENT_ID_KEY, BACKGROUND_TASK_TERMINATED)
+                .setCause(exception)
+                .log("The {} stopped unexpectedly and will not run again until the process restarts. {}", taskName, consequence);
     }
 }

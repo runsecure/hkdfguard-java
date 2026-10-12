@@ -119,12 +119,16 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
     }
 
     private void runRotationLoop(Duration interval, Supplier<CompletableFuture<DataEncryptionKey>> createKey, Logger logger) {
-        var next = System.nanoTime() + interval.toNanos();
-        while (!rotationStopping) {
-            try {
-                var wait = next - System.nanoTime();
-                if (wait > 0)
-                    Thread.sleep(Duration.ofNanos(wait));
+        try {
+            var next = System.nanoTime() + interval.toNanos();
+            while (!rotationStopping) {
+                try {
+                    var wait = next - System.nanoTime();
+                    if (wait > 0)
+                        Thread.sleep(Duration.ofNanos(wait));
+                } catch (InterruptedException e) {
+                    return;
+                }
                 if (rotationStopping)
                     return;
 
@@ -132,15 +136,35 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
                 if (next < System.nanoTime())
                     next = System.nanoTime();
 
-                rotateEphemeralKey(createKey, logger, () -> rotationStopping);
-            } catch (InterruptedException e) {
-                return;
-            } catch (RuntimeException e) {
-                // A failure on the way out of a shutdown (rotate rethrows those): nothing to report.
-                if (rotationStopping)
+                try {
+                    rotateEphemeralKey(createKey, logger, () -> rotationStopping);
+                } catch (InterruptedException e) {
                     return;
-                throw e;
+                } catch (Throwable t) {
+                    // A failure on the way out of a shutdown (rotate rethrows those): nothing to report.
+                    if (rotationStopping)
+                        return;
+
+                    // rotate records and logs its own failures; this one escaped it (telemetry
+                    // failing, say). Report it the same way and try again next interval.
+                    quietly(() -> HkdfGuardLog.ephemeralKeyRotationFailed(logger, (int) currentVersion, t));
+                }
             }
+        } catch (Throwable t) {
+            // Every failure of a single rotation is contained above, so reaching here is a bug or
+            // a failure of the loop itself - never end the thread silently.
+            if (!rotationStopping)
+                quietly(() -> HkdfGuardLog.backgroundTaskTerminated(logger, "ephemeral key rotation",
+                        "The current ephemeral key stays in use and superseded keys are no longer retired.", t));
+        }
+    }
+
+    // Runs logging that must not stop the rotation loop.
+    private static void quietly(Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable ignored) {
+            // Diagnostics are best effort.
         }
     }
 
@@ -181,8 +205,10 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
                 ephemeralVersions.add(current + 1);
                 op.span().setAttribute(KEY_VERSION, (long) current + 1);
                 HkdfGuardLog.ephemeralKeyRotated(logger, current + 1);
-            } catch (ExecutionException | RuntimeException e) {
+            } catch (ExecutionException | RuntimeException | Error e) {
                 // Not added, so not owned by the ring: release its revealed key here, on every path.
+                // Errors too: a key factory failing with, say, a LinkageError is one more failed
+                // rotation, not a reason to stop rotating.
                 closeQuietly(key);
 
                 var cause = e instanceof ExecutionException ? e.getCause() : e;

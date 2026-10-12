@@ -530,6 +530,130 @@ class AesGcmCryptoProviderImplTest {
         }
     }
 
+    // --- Failures outside the Exception hierarchy --------------------------------------------
+
+    @Test
+    void failClosed_AnErrorFromTheKeyWrapper_CountsTowardThePolicy_AndTheLoopKeepsRunning() {
+        var logger = new RecordingLogger();
+        var wrapper = new FakeKeyWrapper(FakeKeyWrapper.randomKey());
+        try (var provider = create(wrapper, 1, 2, logger)) {
+            var plaintext = utf8("survives");
+            var ciphertext = new byte[provider.getEncryptedAllocationLength(plaintext.length)];
+            provider.encrypt(plaintext.clone(), ciphertext);
+
+            // Thrown synchronously, as a broken native binding would: before this change it ended
+            // the refresh thread, and the provider kept serving its key forever.
+            var linkage = new LinkageError("native binding broke");
+            wrapper.errorOnUnwrap = linkage; // ticks ~1 s and ~2 s fail
+            sleep(2600);
+
+            var failures = withEventId(logger, HkdfGuardLog.KEY_REFRESH_FAILED);
+            assertEquals(2, failures.size());
+            assertTrue(failures.stream().allMatch(e -> e.exception() == linkage));
+            assertEquals(1, withEventId(logger, HkdfGuardLog.KEY_ACCESS_SUSPENDED).size());
+            assertTrue(provider.isKeyAccessSuspended());
+            assertThrows(CryptographicException.class, () -> provider.decrypt(ciphertext, new byte[plaintext.length]));
+
+            // The loop is still alive: the next tick re-reveals the key and resumes service.
+            wrapper.errorOnUnwrap = null;
+            sleep(1300);
+
+            assertEquals(1, withEventId(logger, HkdfGuardLog.KEY_ACCESS_RESUMED).size());
+            assertFalse(provider.isKeyAccessSuspended());
+            var decrypted = new byte[plaintext.length];
+            provider.decrypt(ciphertext, decrypted);
+            assertArrayEquals(plaintext, decrypted);
+        }
+    }
+
+    @Test
+    void failOpen_AnErrorFromTheKeyWrapper_IsLoggedEveryTick_AndNeverSuspends() {
+        var logger = new RecordingLogger();
+        var wrapper = new FakeKeyWrapper(FakeKeyWrapper.randomKey());
+        try (var provider = create(wrapper, 1, null, logger)) {
+            wrapper.errorOnUnwrap = new OutOfMemoryError("simulated");
+            sleep(2600);
+
+            var failures = withEventId(logger, HkdfGuardLog.KEY_REFRESH_FAILED);
+            assertTrue(failures.size() >= 2, "every tick should still run and log");
+            assertTrue(failures.stream().allMatch(e -> e.exception() instanceof OutOfMemoryError));
+            assertFalse(provider.isKeyAccessSuspended());
+            assertTrue(provider.encrypt(utf8("still open"), new byte[64]) > 0);
+        }
+    }
+
+    @Test
+    void failClosed_ALoggerThatThrows_CannotStopTheSuspension() {
+        var wrapper = new FakeKeyWrapper(FakeKeyWrapper.randomKey());
+        try (var provider = await(AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 1, 1, new ThrowingLogger()))) {
+            wrapper.throwOnUnwrap = new CryptographicException("KEK revoked"); // tick ~1 s fails
+            sleep(1300);
+
+            assertTrue(provider.isKeyAccessSuspended());
+            assertThrows(CryptographicException.class, () -> provider.encrypt(utf8("x"), new byte[64]));
+
+            // And the loop survived the logger: the next good tick resumes service.
+            wrapper.throwOnUnwrap = null;
+            sleep(1000);
+            assertFalse(provider.isKeyAccessSuspended());
+        }
+    }
+
+    @Test
+    void refreshLoopTerminated_UnderFailClosed_ZeroesTheKey_RefusesEveryOperation_AndLogsCritical() {
+        var logger = new RecordingLogger();
+        try (var provider = create(new FakeKeyWrapper(), 300, 3, logger)) {
+            var session = provider.currentSession();
+            var cause = new StackOverflowError("simulated");
+
+            provider.onRefreshLoopTerminated(cause);
+
+            assertTrue(session.isClosed());
+            assertTrue(ArrayUtilityProbe.isZero(session.key()));
+            assertTrue(provider.isKeyAccessSuspended());
+            var plaintext = utf8("refused");
+            var error = assertThrows(CryptographicException.class, () -> provider.encrypt(plaintext, new byte[64]));
+            assertTrue(error.getMessage().contains("stopped unexpectedly"));
+            assertTrue(ArrayUtilityProbe.isZero(plaintext), "the CryptoProvider contract still zeroes plaintext");
+
+            var terminated = withEventId(logger, HkdfGuardLog.BACKGROUND_TASK_TERMINATED);
+            assertEquals(1, terminated.size());
+            assertEquals(Level.ERROR, terminated.getFirst().level());
+            assertTrue(terminated.getFirst().markers().contains(HkdfGuardLog.CRITICAL));
+            assertSame(cause, terminated.getFirst().exception());
+            assertTrue(terminated.getFirst().message().contains("background key refresh"));
+            assertTrue(terminated.getFirst().message().contains("suspended"));
+        }
+    }
+
+    @Test
+    void refreshLoopTerminated_UnderFailOpen_KeepsServing_ButLogsCritical() {
+        var logger = new RecordingLogger();
+        try (var provider = create(new FakeKeyWrapper(), 300, null, logger)) {
+            provider.onRefreshLoopTerminated(new LinkageError("simulated"));
+
+            assertFalse(provider.isKeyAccessSuspended());
+            assertRoundTrips(provider);
+
+            var terminated = withEventId(logger, HkdfGuardLog.BACKGROUND_TASK_TERMINATED);
+            assertEquals(1, terminated.size());
+            assertTrue(terminated.getFirst().markers().contains(HkdfGuardLog.CRITICAL));
+            assertTrue(terminated.getFirst().message().contains("no longer be detected"));
+        }
+    }
+
+    @Test
+    void refreshLoopTerminated_WhileClosing_DoesNothing() {
+        var logger = new RecordingLogger();
+        var provider = create(new FakeKeyWrapper(), 300, 3, logger);
+        provider.close();
+
+        provider.onRefreshLoopTerminated(new LinkageError("on the way out"));
+
+        assertTrue(withEventId(logger, HkdfGuardLog.BACKGROUND_TASK_TERMINATED).isEmpty());
+        assertThrows(IllegalStateException.class, () -> provider.encrypt(utf8("x"), new byte[64]));
+    }
+
     @Test
     void successfulRefreshes_LogNothing() {
         var logger = new RecordingLogger();
@@ -684,6 +808,62 @@ class AesGcmCryptoProviderImplTest {
                 throw new CryptographicException("KMS connection closed during shutdown.");
             }
             return CompletableFuture.completedFuture(0);
+        }
+    }
+
+    private static final class ArrayUtilityProbe {
+        static boolean isZero(byte[] bytes) {
+            for (var b : bytes)
+                if (b != 0)
+                    return false;
+            return true;
+        }
+    }
+
+    // A logger whose every call throws, as a misconfigured appender might.
+    private static final class ThrowingLogger extends org.slf4j.helpers.LegacyAbstractLogger implements org.slf4j.spi.LoggingEventAware {
+        ThrowingLogger() {
+            this.name = "throwing";
+        }
+
+        @Override
+        public void log(org.slf4j.event.LoggingEvent event) {
+            throw new IllegalStateException("appender failed");
+        }
+
+        @Override
+        protected void handleNormalizedLoggingCall(Level level, org.slf4j.Marker marker, String messagePattern, Object[] arguments, Throwable throwable) {
+            throw new IllegalStateException("appender failed");
+        }
+
+        @Override
+        protected String getFullyQualifiedCallerName() {
+            return null;
+        }
+
+        @Override
+        public boolean isTraceEnabled() {
+            return true;
+        }
+
+        @Override
+        public boolean isDebugEnabled() {
+            return true;
+        }
+
+        @Override
+        public boolean isInfoEnabled() {
+            return true;
+        }
+
+        @Override
+        public boolean isWarnEnabled() {
+            return true;
+        }
+
+        @Override
+        public boolean isErrorEnabled() {
+            return true;
         }
     }
 }

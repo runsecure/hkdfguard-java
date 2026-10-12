@@ -6,10 +6,12 @@ import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy;
 import io.github.runsecure.hkdfguard.diagnostics.AttributeNames;
+import io.github.runsecure.hkdfguard.diagnostics.ComponentTelemetry;
 import io.github.runsecure.hkdfguard.diagnostics.EventNames;
 import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardLog;
 import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardTelemetry;
 import io.github.runsecure.hkdfguard.diagnostics.SpanNames;
+import io.github.runsecure.hkdfguard.diagnostics.SpanScope;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
@@ -72,6 +74,8 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     private final Object gate = new Object();
     private final Thread refreshThread;
     private volatile boolean closing;
+    // Set if the refresh loop ever ends other than by close: nothing re-checks the KEK after that.
+    private volatile boolean refreshLoopTerminated;
     private volatile AesGcmCryptoSession current;
     // The session a refresh replaced. encrypt/decrypt read current without a lock, so a call that
     // captured the old session just before a swap may still be using it; it's closed one interval
@@ -238,6 +242,9 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
 
         if (closed.get())
             throw new IllegalStateException("This AES-GCM crypto provider has been closed.");
+        if (refreshLoopTerminated)
+            throw new CryptographicException("Key access is suspended: the background key refresh stopped unexpectedly, so the KEK can no longer"
+                    + " be re-checked. Create a new provider (restart the process) to resume.");
         throw new CryptographicException("Key access is suspended: " + maxRefreshFailures
                 + " consecutive attempts to re-reveal the key through the key wrapper failed. Operations resume once a refresh succeeds.");
     }
@@ -324,58 +331,100 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     }
 
     private void runRefreshLoop() {
-        // Ticks at fixed intervals from creation; ticks missed while a slow refresh ran collapse
-        // into one, so a refresh never runs back to back with itself more than once.
-        var next = System.nanoTime() + interval.toNanos();
-        while (!closing) {
-            try {
-                var wait = next - System.nanoTime();
-                if (wait > 0)
-                    Thread.sleep(Duration.ofNanos(wait));
-            } catch (InterruptedException e) {
-                return;
+        try {
+            // Ticks at fixed intervals from creation; ticks missed while a slow refresh ran
+            // collapse into one, so a refresh never runs back to back with itself more than once.
+            var next = System.nanoTime() + interval.toNanos();
+            while (!closing) {
+                try {
+                    var wait = next - System.nanoTime();
+                    if (wait > 0)
+                        Thread.sleep(Duration.ofNanos(wait));
+                } catch (InterruptedException e) {
+                    return;
+                }
+
+                if (closing)
+                    return;
+
+                next += interval.toNanos();
+                if (next < System.nanoTime())
+                    next = System.nanoTime();
+
+                if (!refreshOnce())
+                    return;
             }
-
-            if (closing)
-                return;
-
-            next += interval.toNanos();
-            if (next < System.nanoTime())
-                next = System.nanoTime();
-
-            if (!refreshOnce())
-                return;
+        } catch (Throwable t) {
+            // refreshOnce contains every failure of a single refresh, so reaching here is a bug or
+            // a failure of the loop itself. Without this, the thread would end silently and a
+            // fail-closed provider would keep serving its last key forever, unsupervised.
+            onRefreshLoopTerminated(t);
         }
     }
 
-    // One background refresh, under its own span. False once the provider is closing.
+    /**
+     * The refresh loop has ended for good while the provider is still open. Under fail-closed the
+     * key is zeroed and every operation refused from here on, since revocation can no longer be
+     * detected; under fail-open the last good key stays in use, as configured. Logged as critical
+     * either way. Package-private so tests can drive it: nothing reachable makes the loop die.
+     */
+    void onRefreshLoopTerminated(Throwable cause) {
+        if (closing)
+            return;
+
+        refreshLoopTerminated = true;
+        String consequence;
+        if (maxRefreshFailures != null) {
+            // Zero first: the log below runs foreign code that might fail too.
+            suspendKeyAccess();
+            consequence = "Key access has been suspended and the key zeroed; every operation fails until the process restarts.";
+        } else {
+            consequence = "The provider fails open, so the last good key stays in use, but a revoked KEK will no longer be detected.";
+        }
+
+        var description = consequence;
+        quietly(() -> HkdfGuardLog.backgroundTaskTerminated(logger, "background key refresh", description, cause));
+    }
+
+    // One background refresh, under its own span. False once the provider is closing. Contains
+    // every failure - Errors such as OutOfMemoryError or a LinkageError from the native binding
+    // included - so each one counts toward the refresh-failure policy and the loop keeps ticking.
     private boolean refreshOnce() {
-        try (var op = HkdfGuardTelemetry.CRYPTO_PROVIDER_AES_GCM256.startSpan(SpanNames.CryptoProviderAesGcm256.BACKGROUND_REFRESH)) {
-            try {
-                refresh();
-                var previousFailures = consecutiveRefreshFailures.getAndSet(0);
-                if (maxRefreshFailures != null && previousFailures >= maxRefreshFailures)
-                    HkdfGuardLog.keyAccessResumed(logger, previousFailures);
-                return true;
-            } catch (InterruptedException e) {
+        var op = startSpanQuietly(SpanNames.CryptoProviderAesGcm256.BACKGROUND_REFRESH);
+        var span = op != null ? op.span() : Span.getInvalid();
+        try {
+            refresh();
+            var previousFailures = consecutiveRefreshFailures.getAndSet(0);
+            if (maxRefreshFailures != null && previousFailures >= maxRefreshFailures)
+                quietly(() -> HkdfGuardLog.keyAccessResumed(logger, previousFailures));
+            return true;
+        } catch (InterruptedException e) {
+            return false;
+        } catch (Throwable t) {
+            // Shutdown: swallow whatever an in-flight refresh threw on the way out (e.g. a key
+            // wrapper failing because its client was torn down).
+            if (closing)
                 return false;
-            } catch (Exception e) {
-                // Shutdown: swallow whatever an in-flight refresh threw on the way out (e.g. a key
-                // wrapper failing because its client was torn down).
-                if (closing)
-                    return false;
 
-                var cause = e instanceof ExecutionException || e instanceof CompletionException ? e.getCause() : e;
-                op.recordException(cause);
+            var cause = (t instanceof ExecutionException || t instanceof CompletionException) && t.getCause() != null ? t.getCause() : t;
+            var failures = consecutiveRefreshFailures.incrementAndGet();
+            var suspend = maxRefreshFailures != null && failures == maxRefreshFailures;
 
-                var failures = consecutiveRefreshFailures.incrementAndGet();
-                HkdfGuardLog.keyRefreshFailed(logger, failures, refreshFailurePolicyDescription(), cause);
-                if (maxRefreshFailures != null && failures == maxRefreshFailures) {
-                    suspendKeyAccess(op.span(), failures);
-                    HkdfGuardLog.keyAccessSuspended(logger, failures);
-                }
-                return true;
+            // Enforce the policy before anything that runs foreign code (telemetry, the logger),
+            // so a failure there can't leave the key in use past the limit.
+            if (suspend)
+                suspendKeyAccess();
+
+            quietly(() -> ComponentTelemetry.recordException(span, cause));
+            quietly(() -> HkdfGuardLog.keyRefreshFailed(logger, failures, refreshFailurePolicyDescription(), cause));
+            if (suspend) {
+                quietly(() -> span.addEvent(EventNames.KEY_ACCESS_SUSPENDED, Attributes.of(CONSECUTIVE_FAILURES, (long) failures)));
+                quietly(() -> HkdfGuardLog.keyAccessSuspended(logger, failures));
             }
+            return true;
+        } finally {
+            if (op != null)
+                quietly(op::close);
         }
     }
 
@@ -387,7 +436,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
 
     // Fail closed: zero every revealed copy of the DEK and refuse operations until a refresh
     // succeeds. The next successful refresh swaps a fresh session in and resumes service.
-    private void suspendKeyAccess(Span span, int failures) {
+    private void suspendKeyAccess() {
         synchronized (gate) {
             // Null unless a refresh has succeeded since the last swap.
             if (retiring != null) {
@@ -395,15 +444,30 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
                 retiring = null;
             }
 
-            // Never null here: suspension happens once per failure streak, and a streak only
-            // restarts after a successful refresh has put a session back in current.
+            // Null if a failure streak already suspended, or the refresh loop has terminated.
             var outgoing = current;
             current = null;
             if (outgoing != null)
                 outgoing.close();
         }
+    }
 
-        span.addEvent(EventNames.KEY_ACCESS_SUSPENDED, Attributes.of(CONSECUTIVE_FAILURES, (long) failures));
+    // Telemetry is optional: a span that can't be started must never stop a refresh.
+    private static SpanScope startSpanQuietly(String spanName) {
+        try {
+            return HkdfGuardTelemetry.CRYPTO_PROVIDER_AES_GCM256.startSpan(spanName);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // Runs telemetry or logging that must not interrupt the refresh loop or its policy.
+    private static void quietly(Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable ignored) {
+            // Diagnostics are best effort; the policy has already been enforced.
+        }
     }
 
     /**
