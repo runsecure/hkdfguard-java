@@ -1,0 +1,42 @@
+# Checks every dependency this build resolves - direct and transitive, from the
+# POMs - against the OSV vulnerability database, and fails when a pinned
+# version has a known advisory.
+#
+# Runs on every push and pull request, and daily: a version that was clean when
+# it was pinned can gain an advisory later with no commit here, and the daily
+# run is what notices. Dependabot then proposes the fixed version.
+#
+# Findings appear under Security > Code scanning. A pull request from a fork
+# can't upload them (its token is read-only), so it only fails or passes.
+name: Dependency scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-scan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  osv-scan:
+    # Google's reusable workflow, pinned to the commit of release v2.7.0
+    # (an annotated tag; this is its ^{} commit).
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    permissions:
+      actions: read
+      contents: read
+      security-events: write # SARIF upload to Security > Code scanning
+    with:
+      scan-args: |-
+        --recursive
+        ./
+      fail-on-vuln: true
+      upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}

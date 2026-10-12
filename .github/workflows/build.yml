@@ -1,0 +1,126 @@
+# Reusable build-and-test workflow, called by ci.yml (every push and pull
+# request) and release.yml (version tags), so a release ships exactly what CI
+# built and tested - there is one definition of "the build", not two.
+#
+# Builds and tests on Linux, Windows and macOS: the native loaders' Win32 and
+# macOS bindings only run on their own platform. Every leg builds with the dist
+# profile (sources and javadoc jars), so a javadoc error fails here rather than
+# in a release. The Linux leg uploads the main jars as "build-output"; the
+# release workflow rebuilds and checks its jars are byte-identical to these
+# before publishing anything. Holds no signing key or Central token.
+#
+# Native integration tests run only when HKDFGUARD_TEST_SERVICE names a
+# provisioned KEK, which a hosted runner never has, so they report as skipped.
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to stamp into every POM, e.g. 1.2.3; empty keeps the POM's own snapshot version
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs, not tags: a tag can be
+# moved to different code after the fact, a commit SHA cannot. The trailing
+# comment names the release each SHA corresponds to. Dependabot keeps them
+# current. To update one by hand, look up the tag's commit with
+#   git ls-remote https://github.com/<owner>/<action> 'refs/tags/<tag>*'
+# (for an annotated tag, the ^{} line) and replace both.
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false # nothing later in this job pushes
+
+      # Java 21 only runs tests (see "Test the core modules on Java 21");
+      # Java 25, set up second, is the default the build runs on.
+      - name: Set up Java 21
+        id: jdk21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Java 25
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
+      - name: Stamp the release version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: ./mvnw -B -ntp versions:set -DnewVersion="$VERSION" -DprocessAllModules -DgenerateBackupFiles=false
+
+      # install, not just verify: the Java 21 step below runs a subset of the
+      # modules, which resolves their siblings (key wrapping included, a test
+      # dependency) from the local repository.
+      - name: Build and test
+        run: ./mvnw -B -ntp -Pdist install
+
+      # Every module but hkdfguard-keywrapping-v1 targets Java 21 (see the
+      # POM's maven.compiler.release). Rerun their tests - compiled above,
+      # unchanged - on a real Java 21 runtime, so "supports 21" is tested, not
+      # assumed. NativeEndToEndTest is the one core test that loads the Java 25
+      # key-wrapping module, so it can only run on 25 (it already has, above).
+      - name: Test the core modules on Java 21
+        env:
+          JDK21: ${{ steps.jdk21.outputs.path }}
+        run: |
+          set -euo pipefail
+          java21="$JDK21/bin/java"
+          [[ -f "$java21.exe" ]] && java21="$java21.exe"
+          "$java21" -version
+          ./mvnw -B -ntp \
+            -pl hkdfguard-diagnostics,hkdfguard-abstractions,hkdfguard-cryptoprovider-aesgcm256,hkdfguard-dataencryptionkey,hkdfguard-cache \
+            surefire:test -Djvm="$java21" '-Dtest=!NativeEndToEndTest' -Dsurefire.failIfNoSpecifiedTests=false
+
+      # Keeps this project's own just-installed jars out of the Maven cache
+      # setup-java saves at the end of the job: the cache is for third-party
+      # dependencies, and a later run must never pick up a stale build of ours.
+      - name: Remove this project's artifacts from the local repository
+        if: always()
+        run: rm -rf ~/.m2/repository/io/github/runsecure
+
+      - name: Upload the test reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-reports-${{ matrix.os }}
+          path: "*/target/surefire-reports/"
+          retention-days: 7
+
+      # The main jars only: what release.yml compares its own rebuild against.
+      - name: Upload the build output
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-output
+          path: |
+            */target/*.jar
+            !*/target/*-sources.jar
+            !*/target/*-javadoc.jar
+          if-no-files-found: error
+          retention-days: 3

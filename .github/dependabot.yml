@@ -1,0 +1,49 @@
+# Keeps every pinned version current without ever un-pinning it: each new
+# release arrives as a pull request that CI builds and tests, and merging it is
+# the review. The POM bans version ranges and LATEST (banDynamicVersions), so
+# this is the only way a dependency moves.
+#
+# Dependabot alerts and security updates must also be on (Settings > Code
+# security): those open a pull request as soon as an advisory names a version
+# pinned here, rather than waiting for the next scheduled check.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps
+    groups:
+      # The cryptography: always its own pull request, so it is never buried
+      # in an unrelated batch.
+      bouncycastle:
+        patterns:
+          - "org.bouncycastle:*"
+      opentelemetry:
+        patterns:
+          - "io.opentelemetry:*"
+      test:
+        patterns:
+          - "org.junit:*"
+          - "org.junit.jupiter:*"
+      # Build plugins: wrapper, compiler, surefire, enforcer, publishing.
+      maven-plugins:
+        patterns:
+          - "org.apache.maven.plugins:*"
+          - "org.sonatype.central:*"
+          - "org.codehaus.mojo:*"
+
+  # Workflow actions are pinned to commit SHAs; this bumps the SHA and the
+  # version comment beside it together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"

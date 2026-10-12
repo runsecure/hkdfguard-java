@@ -1,0 +1,239 @@
+# Builds and tests every HkdfGuard module, publishes them to Maven Central,
+# signed, and creates a GitHub Release with the same files.
+#
+# Triggered by pushing a version tag (vX.Y.Z, optionally with a pre-release
+# suffix such as v1.2.3-rc.1). Four jobs:
+#
+#   version  turns the tag into a Maven version; fails on a malformed tag.
+#   build    build.yml, the same reusable workflow ci.yml runs: build and test
+#            on Linux, Windows and macOS with the version stamped in, and
+#            upload the Linux jars. Holds no secrets at all.
+#   publish  in the "release" environment, the only job that sees the signing
+#            key or the Central token: rebuilds, refuses to continue unless
+#            its jars are byte-identical to the ones build tested (the build
+#            is reproducible - see project.build.outputTimestamp), then signs
+#            and publishes to Central and attests provenance.
+#   github   creates the GitHub Release from publish's files.
+#
+# Publishing to Maven Central is PERMANENT: a version can never be deleted or
+# replaced. Give the "release" environment a required reviewer, so a pushed
+# tag waits for a human before anything is published.
+#
+# To cut a release: git tag v1.0.0; git push origin v1.0.0
+# Any v0.x.y tag, and any tag with a pre-release suffix, is marked a GitHub
+# pre-release. (On Central every version is simply a version.)
+#
+# Setup this workflow depends on (Sonatype and GitHub, not code):
+#   - The io.github.runsecure namespace verified in the Central Portal
+#     (central.sonatype.com), and a Portal user token generated for it.
+#   - A GPG signing key whose public half is on a public keyserver
+#     (e.g. keys.openpgp.org), so Central can check the signatures.
+#   - A "release" environment (Settings > Environments) restricted to tags
+#     matching v*, with a required reviewer, holding four secrets:
+#       CENTRAL_TOKEN_USERNAME  the Portal user token's username
+#       CENTRAL_TOKEN_PASSWORD  the Portal user token's password
+#       MAVEN_GPG_PRIVATE_KEY   the armored private key (gpg --armor --export-secret-keys <id>)
+#       MAVEN_GPG_PASSPHRASE    its passphrase
+#     Environment secrets, not repository secrets: only a job running in the
+#     environment - after its protection rules pass - can read them.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Least privilege by default; each job asks for exactly what it needs below.
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs; see build.yml.
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Determine the release version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # vMAJOR.MINOR.PATCH with an optional -suffix; no leading zeros.
+          if [[ ! "$TAG" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a release tag (vX.Y.Z or vX.Y.Z-suffix)."
+            exit 1
+          fi
+          version="${TAG#v}"
+          if [[ "$version" == *-SNAPSHOT* ]]; then
+            echo "::error::A release can't be a SNAPSHOT version."
+            exit 1
+          fi
+          prerelease=false
+          if [[ "${BASH_REMATCH[2]}" == "0" || -n "${BASH_REMATCH[5]}" ]]; then
+            prerelease=true
+          fi
+          echo "Version $version (pre-release: $prerelease)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  # Build and test on every platform; uploads build-output. The same workflow
+  # ci.yml runs on every push.
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04 # the same image build.yml's uploaded jars came from
+    timeout-minutes: 45   # waitUntil=published can take a while on Central's side
+    # The signing key and Central token are secrets of this environment only.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write     # build provenance attestation (signing)
+      attestations: write # build provenance attestation (storage)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Writes ~/.m2/settings.xml with a "central" server whose credentials
+      # are read from the two environment variables named here, at run time.
+      - name: Set up Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+          server-id: central
+          server-username: CENTRAL_TOKEN_USERNAME
+          server-password: CENTRAL_TOKEN_PASSWORD
+
+      - name: Stamp the release version
+        run: ./mvnw -B -ntp versions:set -DnewVersion="$VERSION" -DprocessAllModules -DgenerateBackupFiles=false
+
+      - name: Download the tested jars
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: build-output
+          path: tested
+
+      # Tests already passed in build, on all three platforms, for this commit.
+      # Rebuild without them, and stop unless every jar matches what was
+      # tested byte for byte - so what ships is exactly what was tested.
+      - name: Rebuild, and check it matches what was tested
+        run: |
+          set -euo pipefail
+          ./mvnw -B -ntp -Pdist -DskipTests package
+          status=0
+          count=0
+          while IFS= read -r tested; do
+            built="${tested#tested/}"
+            count=$((count + 1))
+            if ! cmp -s "$tested" "$built"; then
+              echo "::error::$built differs from the jar build tested."
+              status=1
+            else
+              echo "identical: $built"
+            fi
+          done < <(find tested -name '*.jar' | sort)
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::No tested jars were downloaded."
+            exit 1
+          fi
+          exit "$status"
+
+      # Signs every artifact (BouncyCastle signer: the key comes straight from
+      # the environment, no gpg install) and publishes through the Central
+      # Portal, waiting until Central reports the version as published.
+      - name: Sign and publish to Maven Central
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: ./mvnw -B -ntp -Pdist,release -DskipTests deploy
+
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release
+          # Each module's jars (main, sources, javadoc), its POM, and the .asc
+          # signature of every one of them, exactly as Central received them.
+          for module in */pom.xml; do
+            dir="$(dirname "$module")"
+            cp "$dir"/target/*.jar "$dir"/target/*.asc artifacts/release/
+            cp "$module" "artifacts/release/$dir-$VERSION.pom"
+          done
+          cp pom.xml "artifacts/release/hkdfguard-parent-$VERSION.pom"
+          cp target/*.asc artifacts/release/
+          cd artifacts/release
+          for file in *.jar *.pom; do
+            sha256sum "$file" | cut -d' ' -f1 > "$file.sha256"
+          done
+          ls -l
+
+      # Signed, verifiable statement that these exact files (by SHA-256) were
+      # built by this workflow, from this commit, in this repository. Verify
+      # one with:
+      #   gh attestation verify <file> --repo runsecure/hkdfguard-java
+      # Attestations need a public repository, or GitHub Enterprise Cloud for
+      # a private one.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            artifacts/release/*.jar
+            artifacts/release/*.pom
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: artifacts/release/
+          if-no-files-found: error
+
+  github:
+    needs: [version, publish]
+    runs-on: ubuntu-24.04 # only needs the `gh` CLI (preinstalled)
+    permissions:
+      contents: write # required to create the GitHub Release
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          extra=()
+          # A 0.x or suffixed version is pre-release testing: published as a
+          # GitHub pre-release, so it is never shown as "Latest".
+          if [[ "$PRERELEASE" == "true" ]]; then
+            extra+=(--prerelease)
+            echo "Publishing as a pre-release"
+          fi
+          gh release create "$TAG" release-assets/* --title "$TAG" --generate-notes --repo "$REPOSITORY" "${extra[@]}"
