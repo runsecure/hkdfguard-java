@@ -131,7 +131,11 @@ class EphemeralKeyRotationTest {
 
             var current = ring.getCurrentVersion();
             assertTrue(current >= 3, "current version is " + current);
-            assertEquals("v" + current, encryptedVersion(protector.encrypt("written under the current key")));
+            // Rotation keeps running, so the version may advance between reading it and encrypting.
+            var encrypted = protector.encrypt("written under the current key");
+            var encryptedUnder = Integer.parseInt(encryptedVersion(encrypted).substring(1));
+            assertTrue(encryptedUnder >= current && encryptedUnder <= ring.getCurrentVersion(),
+                    "encrypted under v" + encryptedUnder + ", read current as v" + current);
             assertEquals("v1", encryptedVersion(underV1));
             var result = new char[64];
             assertEquals("written under v1", new String(result, 0, protector.decrypt(underV1, result)));
