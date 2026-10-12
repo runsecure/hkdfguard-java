@@ -31,6 +31,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -192,6 +193,44 @@ class EphemeralKeyRotationTest {
             assertEquals(Level.ERROR, failures.getFirst().level());
             assertTrue(failures.getFirst().message().contains("version 1 stays current"));
             assertTrue(ring.getCurrentVersion() >= 2, "a later interval should have rotated");
+        }
+    }
+
+    @Test
+    void aRotationFailingWithAnError_IsLogged_AndTheLoopKeepsRotating() {
+        var logger = new RecordingLogger();
+        var factory = new FlakyFactory(0, false);
+        try (var ring = await(builder(factory).withEphemeralKey(1).withEphemeralKeyRotationForTesting(FAST).withLogger(logger).buildAsync())) {
+            var linkage = new LinkageError("native binding broke");
+            factory.errorOnce.set(linkage);
+            factory.armed.set(true);
+
+            sleep(FAST.toMillis() * 4);
+
+            var failures = withEventId(logger, HkdfGuardLog.EPHEMERAL_KEY_ROTATION_FAILED);
+            assertEquals(1, failures.size());
+            assertSame(linkage, failures.getFirst().exception());
+            assertTrue(withEventId(logger, HkdfGuardLog.BACKGROUND_TASK_TERMINATED).isEmpty());
+            assertTrue(ring.getCurrentVersion() >= 2, "a later interval should have rotated");
+        }
+    }
+
+    @Test
+    void rotate_WhenCreatingTheKeyThrowsAnError_ReturnsFalse_AndLogsIt() throws InterruptedException {
+        var logger = new RecordingLogger();
+        try (var ring = new KeyRingImpl(new DefaultFormatProviderImpl())) {
+            ring.add(1, new TestKeys.TrackingKey());
+            var oom = new OutOfMemoryError("simulated");
+
+            var rotated = ring.rotateEphemeralKey(() -> {
+                throw oom;
+            }, logger, RUNNING);
+
+            assertFalse(rotated);
+            assertEquals(1, ring.getCurrentVersion());
+            var failures = withEventId(logger, HkdfGuardLog.EPHEMERAL_KEY_ROTATION_FAILED);
+            assertEquals(1, failures.size());
+            assertSame(oom, failures.getFirst().exception());
         }
     }
 
@@ -413,6 +452,8 @@ class EphemeralKeyRotationTest {
         private final boolean hang;
         final AtomicBoolean armed = new AtomicBoolean();
         final CountDownLatch hanging = new CountDownLatch(1);
+        // Thrown once, synchronously, by the next armed createEphemeralAsync.
+        final AtomicReference<Error> errorOnce = new AtomicReference<>();
 
         FlakyFactory(int failuresBeforeSuccess, boolean hang) {
             this.failuresBeforeSuccess = failuresBeforeSuccess;
@@ -426,6 +467,10 @@ class EphemeralKeyRotationTest {
 
         @Override
         public CompletableFuture<CryptoProvider> createEphemeralAsync(KeyWrapper wrapper, int expirySeconds, Integer maxRefreshFailures) {
+            var error = armed.get() ? errorOnce.getAndSet(null) : null;
+            if (error != null)
+                throw error;
+
             if (armed.get() && hang) {
                 hanging.countDown();
                 return new CompletableFuture<>(); // never completes: the ring must stop waiting on close

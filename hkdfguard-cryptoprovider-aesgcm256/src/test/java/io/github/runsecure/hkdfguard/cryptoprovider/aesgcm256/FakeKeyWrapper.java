@@ -22,6 +22,12 @@ class FakeKeyWrapper implements KeyWrapper {
     volatile RuntimeException throwOnUnwrap;
 
     /**
+     * When set, unwrapAsync throws this Error (synchronously) - models a failure outside the
+     * Exception hierarchy, such as OutOfMemoryError or a LinkageError from a native binding.
+     */
+    volatile Error errorOnUnwrap;
+
+    /**
      * When set, unwrapAsync fills only this many bytes and reports that count - models a wrapper
      * backed by a key of the wrong size (e.g. a KMS data key generated as AES-128).
      */
@@ -65,6 +71,9 @@ class FakeKeyWrapper implements KeyWrapper {
         var failure = throwOnUnwrap;
         if (failure != null)
             throw failure;
+        var error = errorOnUnwrap;
+        if (error != null)
+            throw error;
 
         var override = unwrapBytesWrittenOverride;
         var written = override != null ? override : result.length;
