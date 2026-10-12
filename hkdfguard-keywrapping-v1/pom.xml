@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-keywrapping-v1</artifactId>
+  <name>HkdfGuard KeyWrapping V1</name>
+  <description>
+    Wraps DEKs under a KEK held by the platform's native HkdfGuard KMS library (TPM, Platform Crypto
+    Provider, Secure Enclave), called through the Java FFM API.
+  </description>
+
+  <!--
+    No native library is packed into this artifact. Each platform's native KMS library is installed
+    separately, to a fixed location, and loaded only from there after verification:
+      Windows: %ProgramFiles%\HkdfGuard\v1\HkdfGuardV1.dll        (WindowsNativeLibraryLoader)
+      macOS:   /Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib, or
+               ~/.hkdfguard/v1/libhkdfguard_v1.dylib               (MacOsNativeLibraryLoader)
+      Linux:   libHkdfGuardKeyProtectionLinux.so, by the default dynamic-linker search
+    Applications must grant this module native access with the JVM's enable-native-access option,
+    naming io.github.runsecure.hkdfguard.keywrapping.v1 (or ALL-UNNAMED on the class path).
+  -->
+
+  <properties>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1,ALL-UNNAMED</hkdfguard.test.argLine>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+    </dependency>
+  </dependencies>
+</project>
