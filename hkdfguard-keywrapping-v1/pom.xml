@@ -29,6 +29,12 @@
   -->
 
   <properties>
+    <!-- Java 25, unlike the rest of the library (Java 21): the native KMS calls use the Foreign
+         Function & Memory API, which Java 21 only has as a preview. Don't lower this by moving to
+         JNI or JNA: the native loaders' verification itself runs through FFM, and JNA unpacks its
+         own native library to a temporary directory - both would weaken how the KMS library is
+         verified before it is trusted with every DEK. -->
+    <maven.compiler.release>25</maven.compiler.release>
     <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1,ALL-UNNAMED</hkdfguard.test.argLine>
   </properties>
 

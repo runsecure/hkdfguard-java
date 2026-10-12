@@ -52,11 +52,18 @@
     <module>hkdfguard-keywrapping-v1</module>
     <module>hkdfguard-dataencryptionkey</module>
     <module>hkdfguard-cache</module>
+    <module>hkdfguard-options</module>
+    <module>hkdfguard-spring-boot-starter</module>
   </modules>
 
   <properties>
-    <!-- Java 25 is the current Long Term Support release. -->
-    <maven.compiler.release>25</maven.compiler.release>
+    <!-- The bytecode level every module targets unless it says otherwise: Java 21, the previous
+         Long Term Support release, so applications still on 21 can use the cryptographic core
+         (diagnostics, abstractions, the AES-GCM provider, key rings and caches). Only
+         hkdfguard-keywrapping-v1 needs Java 25 and overrides this: its native calls use the Foreign
+         Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
+         enforcer's requireJavaVersion) because that module is part of every build. -->
+    <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <!-- Reproducible builds: a fixed timestamp in every archive entry. -->
@@ -102,6 +109,16 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cache</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-options</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-spring-boot-starter</artifactId>
         <version>${project.version}</version>
       </dependency>
 

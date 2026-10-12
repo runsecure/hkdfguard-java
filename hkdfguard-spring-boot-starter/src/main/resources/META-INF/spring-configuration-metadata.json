@@ -1,0 +1,75 @@
+{
+  "groups": [
+    {
+      "name": "hkdfguard",
+      "type": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "sourceType": "io.github.runsecure.hkdfguard.springboot.HkdfGuardAutoConfiguration",
+      "sourceMethod": "hkdfGuardOptions()",
+      "description": "The HkdfGuard key ring. The ring is built only when service-name is set."
+    }
+  ],
+  "properties": [
+    {
+      "name": "hkdfguard.service-name",
+      "type": "java.lang.String",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "The service whose KEK protects the ring's keys: 1-128 ASCII letters, digits or '.', e.g. com.example.orders. Setting it turns the key ring on."
+    },
+    {
+      "name": "hkdfguard.key-refresh-interval",
+      "type": "java.lang.Integer",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Seconds (1-300) between re-reveals of each key through the KEK, confirming the KEK is still available. Required."
+    },
+    {
+      "name": "hkdfguard.max-refresh-failures",
+      "type": "java.lang.Integer",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Consecutive failed refreshes tolerated before a key fails closed. At least 1. Unset keeps the builder's default."
+    },
+    {
+      "name": "hkdfguard.fail-open-on-refresh-failure",
+      "type": "java.lang.Boolean",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Keep serving on the last good key however many refreshes fail, so revoking the KEK never stops the process. Can't be combined with max-refresh-failures.",
+      "defaultValue": false
+    },
+    {
+      "name": "hkdfguard.ephemeral-key-rotation-hours",
+      "type": "java.lang.Integer",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Hours (1-1193) between ephemeral key rotations. Unset keeps 24 hours. Can't be combined with disable-ephemeral-key-rotation."
+    },
+    {
+      "name": "hkdfguard.disable-ephemeral-key-rotation",
+      "type": "java.lang.Boolean",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Turn scheduled rotation off: the startup ephemeral key stays current until restart.",
+      "defaultValue": false
+    },
+    {
+      "name": "hkdfguard.ephemeral-key-retention-hours",
+      "type": "java.lang.Integer",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Hours a superseded ephemeral key stays available for decryption. At least 1. Unset keeps 24 hours."
+    },
+    {
+      "name": "hkdfguard.key-files",
+      "type": "java.util.List<io.github.runsecure.hkdfguard.options.KeyFileOptions>",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Versions whose wrapped DEK is read from a file, each with a version and a path."
+    },
+    {
+      "name": "hkdfguard.ephemeral-keys",
+      "type": "java.util.List<java.lang.Integer>",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Versions whose key is generated in memory at startup and never persisted."
+    },
+    {
+      "name": "management.health.hkdfguard.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to report the key ring's health through Actuator.",
+      "defaultValue": true
+    }
+  ]
+}
