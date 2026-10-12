@@ -75,5 +75,41 @@ and PE checks on Windows; ownership, code signature and dyld checks on macOS).
 ./mvnw verify        # mvnw.cmd on Windows
 ```
 
-Native integration tests run against `HKDFGUARD_TEST_SERVICE`, or on Windows the provisioned
-`com.hkdfguard.native.windows.test` KEK, and are reported as skipped when neither is available.
+## Native integration tests
+
+The native tests make real calls into this platform's KMS library: `NativeKeyWrappingIntegrationTest`
+in hkdfguard-keywrapping-v1 and `NativeEndToEndTest` in hkdfguard-dataencryptionkey. Every
+platform's library refuses to create a KEK while wrapping or unwrapping, so these tests run only
+against a service provisioned beforehand. Without one they are reported as skipped, never as
+passed. Once a service is chosen, a missing or failing library is a test failure.
+
+**Windows.** Install the HkdfGuard native package, then provision the test KEK
+`com.hkdfguard.native.windows.test` once, from an elevated PowerShell at the repository root:
+
+```powershell
+./scripts/provision-windows-test-key.ps1
+```
+
+The script runs the installed `hkdfguard-v1-initialize provision`, after checking it is the signed
+tool from its fixed install location (the same publisher, pinned root and Artifact Signing profile
+the library's own loader requires). It is safe to re-run: an existing KEK is re-verified, not
+replaced. Afterwards the tests find the KEK on their own:
+
+```powershell
+.\mvnw.cmd verify
+```
+
+If the KEK exists but your account may not use it, add the account to the `HkdfGuardUsers` group
+(then sign out and in), or run the tests elevated.
+
+**Any platform.** Name a provisioned service in `HKDFGUARD_TEST_SERVICE`; it always wins over the
+Windows default, and setting it means the native tests must run. Set `HKDFGUARD_TEST_SERVICE_OTHER`
+to a second provisioned service to test cross-service isolation against a different KEK (otherwise
+that test uses a service that is never provisioned):
+
+```bash
+hkdfguard-v1-initialize provision --service-name hkdfguard.integrationtest   # elevated on Windows
+HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest ./mvnw verify
+```
+
+The tests only ever use a provisioned KEK: they never create or delete one.
