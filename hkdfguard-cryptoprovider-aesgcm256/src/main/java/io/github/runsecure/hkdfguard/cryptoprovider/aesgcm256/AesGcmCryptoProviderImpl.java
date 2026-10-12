@@ -1,0 +1,485 @@
+package io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256;
+
+import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
+import io.github.runsecure.hkdfguard.abstractions.CryptoProvider;
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
+import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
+import io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy;
+import io.github.runsecure.hkdfguard.diagnostics.AttributeNames;
+import io.github.runsecure.hkdfguard.diagnostics.EventNames;
+import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardLog;
+import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardTelemetry;
+import io.github.runsecure.hkdfguard.diagnostics.SpanNames;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import java.time.Duration;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Tracks one cached {@link AesGcmCryptoSession}, bound to a single wrapped DEK. A background virtual
+ * thread, ticking every expirySeconds, proactively reveals the DEK fresh (via
+ * {@code keyWrapper.unwrapAsync(wrapped, ...)}) and builds the next session before the current one
+ * expires, then swaps it in - so encrypt/decrypt never pay the unwrap cost themselves; only
+ * {@link #createAsync} does, once. The replaced session is kept for one more interval before being
+ * closed (zeroing its key), so an operation that captured it just before the swap completes
+ * normally. Thread-safe: only createAsync and the single background loop ever reveal the key.
+ * <p>
+ * A refresh re-reveals the <em>same</em> DEK, so it is a periodic re-check that the KEK is still
+ * accessible, not a bound on how long the DEK value exists in memory. What happens when that check
+ * fails is the refresh-failure policy: by default,
+ * {@link RefreshFailurePolicy#DEFAULT_MAX_REFRESH_FAILURES} consecutive failures close every session
+ * (zeroing the DEK) and suspend encrypt/decrypt - they throw {@link CryptographicException} - until
+ * a later refresh succeeds and operation resumes. Passing a null {@code maxRefreshFailures} instead
+ * keeps the last good session in use indefinitely (fail open).
+ */
+public final class AesGcmCryptoProviderImpl implements CryptoProvider {
+    /**
+     * Encryptions after which this provider refuses to encrypt (decryption keeps working): half of
+     * NIST SP 800-38D's 2^32 random-nonce limit, since a per-process counter can't see the other
+     * processes sharing the same key file. The count is per DEK and shared by every provider in
+     * this process that reveals it; a background refresh re-reveals the same key, so it does not
+     * reset the count.
+     */
+    public static final long MAX_ENCRYPTIONS_PER_KEY = EncryptionBudget.DEFAULT_LIMIT;
+
+    /**
+     * Encryptions after which an {@link EventNames#ENCRYPTION_BUDGET_WARNING} event is raised, once,
+     * on the encrypt span that crosses it.
+     */
+    public static final long ENCRYPTION_WARNING_THRESHOLD = EncryptionBudget.DEFAULT_WARNING_THRESHOLD;
+
+    private static final int KEY_LENGTH = 32;
+    private static final int EXTRA_ALLOCATION_LENGTH = AesGcmCryptoSession.NONCE_SIZE + AesGcmCryptoSession.TAG_SIZE;
+    private static final byte[] EMPTY = new byte[0];
+    private static final AttributeKey<Long> CONSECUTIVE_FAILURES = AttributeKey.longKey(AttributeNames.CONSECUTIVE_FAILURES);
+
+    private final KeyWrapper keyWrapper;
+    private final EncryptionBudget budget;
+    private final Integer maxRefreshFailures;
+    private final Logger logger;
+    private final byte[] wrapped;
+    private final Duration interval;
+    private final AtomicInteger consecutiveRefreshFailures = new AtomicInteger();
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private final Object gate = new Object();
+    private final Thread refreshThread;
+    private volatile boolean closing;
+    private volatile AesGcmCryptoSession current;
+    // The session a refresh replaced. encrypt/decrypt read current without a lock, so a call that
+    // captured the old session just before a swap may still be using it; it's closed one interval
+    // later, on the next swap (or on close), rather than immediately.
+    private AesGcmCryptoSession retiring;
+
+    // Construction always goes through createAsync, so the first key reveal is never blocked on.
+    private AesGcmCryptoProviderImpl(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds, Integer maxRefreshFailures,
+                                     EncryptionBudget budget, AesGcmCryptoSession firstSession, Logger logger) {
+        this.keyWrapper = keyWrapper;
+        this.wrapped = wrapped;
+        this.interval = Duration.ofSeconds(expirySeconds);
+        this.maxRefreshFailures = maxRefreshFailures;
+        this.budget = budget;
+        this.logger = logger;
+        this.current = firstSession;
+
+        refreshThread = Thread.ofVirtual().name("hkdfguard-aesgcm-refresh").unstarted(this::runRefreshLoop);
+        refreshThread.start();
+    }
+
+    /**
+     * {@link #createAsync(KeyWrapper, byte[], int, Integer, Logger)}, failing closed after
+     * {@link RefreshFailurePolicy#DEFAULT_MAX_REFRESH_FAILURES} failures and logging through this
+     * class's SLF4J logger.
+     */
+    public static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds) {
+        return createAsync(keyWrapper, wrapped, expirySeconds, RefreshFailurePolicy.DEFAULT_MAX_REFRESH_FAILURES, null);
+    }
+
+    /** {@link #createAsync(KeyWrapper, byte[], int, Integer, Logger)}, logging through this class's SLF4J logger. */
+    public static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds,
+                                                                          Integer maxRefreshFailures) {
+        return createAsync(keyWrapper, wrapped, expirySeconds, maxRefreshFailures, null);
+    }
+
+    /**
+     * Creates a provider: reveals the DEK through {@code keyWrapper} (asynchronously, so a
+     * network-backed key wrapper never blocks the caller) and starts the background refresh.
+     *
+     * @param keyWrapper         reveals wrapped's DEK - see {@link KeyWrapper#unwrapAsync}
+     * @param wrapped            the wrapped DEK payload this provider's sessions decrypt; owned by
+     *                           the provider from here on, and zeroed when it's closed
+     * @param expirySeconds      how long each session is used before the next background refresh,
+     *                           1-300 seconds; also the refresh interval
+     * @param maxRefreshFailures consecutive failed background refreshes tolerated before failing
+     *                           closed (see the class description), at least 1; null to fail open
+     * @param logger             receives an error for every failed background refresh, an error
+     *                           marked CRITICAL when key access is suspended, an info entry when it
+     *                           resumes, and a warning when the key nears its encryption limit;
+     *                           null for this class's SLF4J logger
+     * @return completes with the provider once the first key is revealed, or exceptionally if that fails
+     * @throws IllegalArgumentException expirySeconds is not between 1 and 300, or maxRefreshFailures is below 1
+     */
+    public static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds,
+                                                                          Integer maxRefreshFailures, Logger logger) {
+        return createAsync(keyWrapper, wrapped, expirySeconds, maxRefreshFailures, null, logger);
+    }
+
+    /** Tests: a budget of their own, failing open. */
+    static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds, EncryptionBudget budget) {
+        return createAsync(keyWrapper, wrapped, expirySeconds, null, budget, null);
+    }
+
+    /**
+     * @param budget the count to draw on; null for the process-wide one for whichever key is
+     *               revealed (see {@link EncryptionBudget#forKey}). Tests pass their own.
+     */
+    static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds,
+                                                                   Integer maxRefreshFailures, EncryptionBudget budget, Logger logger) {
+        Objects.requireNonNull(keyWrapper, "keyWrapper");
+        Objects.requireNonNull(wrapped, "wrapped");
+        validate(expirySeconds, maxRefreshFailures);
+        var effectiveLogger = logger != null ? logger : LoggerFactory.getLogger(AesGcmCryptoProviderImpl.class);
+
+        return revealAsync(keyWrapper, wrapped, budget, effectiveLogger)
+                .thenApply(first -> new AesGcmCryptoProviderImpl(keyWrapper, wrapped, expirySeconds, maxRefreshFailures,
+                        first.budget(), first, effectiveLogger));
+    }
+
+    /**
+     * Checks the arguments of createAsync, before any key-wrapper call is made.
+     *
+     * @throws IllegalArgumentException either is out of range
+     */
+    static void validate(int expirySeconds, Integer maxRefreshFailures) {
+        if (expirySeconds < 1 || expirySeconds > 300)
+            throw new IllegalArgumentException("expirySeconds must be between 1 and 300; it is " + expirySeconds + ".");
+        if (maxRefreshFailures != null && maxRefreshFailures < 1)
+            throw new IllegalArgumentException("maxRefreshFailures must be at least 1; it is " + maxRefreshFailures + ".");
+    }
+
+    /** The configured refresh-failure policy; null means fail open. */
+    public Integer getMaxRefreshFailures() {
+        return maxRefreshFailures;
+    }
+
+    /**
+     * True while this provider has failed closed: its sessions are closed and every
+     * encrypt/decrypt throws, until a background refresh succeeds.
+     */
+    public boolean isKeyAccessSuspended() {
+        return current == null && !closed.get();
+    }
+
+    /** Encryptions performed under this provider's key so far - see {@link #MAX_ENCRYPTIONS_PER_KEY}. */
+    public long getEncryptionCount() {
+        return budget.getCount();
+    }
+
+    /** The session in use, for tests; null while suspended or after close. */
+    AesGcmCryptoSession currentSession() {
+        return current;
+    }
+
+    @Override
+    public int encrypt(byte[] plaintext, byte[] result) {
+        return encrypt(plaintext, EMPTY, result);
+    }
+
+    @Override
+    public int encrypt(byte[] plaintext, byte[] aad, byte[] result) {
+        Objects.requireNonNull(plaintext, "plaintext");
+        while (true) {
+            AesGcmCryptoSession session;
+            try {
+                session = session();
+            } catch (RuntimeException e) {
+                // Suspended or closed: no session will run its own zeroing, so honour the
+                // CryptoProvider contract here.
+                ArrayUtility.zeroMemory(plaintext);
+                throw e;
+            }
+
+            // Once it starts, the session zeroes plaintext itself, on success and on every failure.
+            // -1 means it was retired and closed after it was read here, before it started -
+            // nothing was touched, so go round again for the session that replaced it. current is
+            // never set to a closed session, so this ends.
+            var written = session.tryEncrypt(plaintext, aad, result);
+            if (written >= 0)
+                return written;
+        }
+    }
+
+    @Override
+    public int decrypt(byte[] ciphertext, byte[] result) {
+        return decrypt(ciphertext, EMPTY, result);
+    }
+
+    @Override
+    public int decrypt(byte[] ciphertext, byte[] aad, byte[] result) {
+        // As encrypt: a session retired between reading it and starting is skipped for the current one.
+        while (true) {
+            var written = session().tryDecrypt(ciphertext, aad, result);
+            if (written >= 0)
+                return written;
+        }
+    }
+
+    private AesGcmCryptoSession session() {
+        var session = current;
+        if (session != null)
+            return session;
+
+        if (closed.get())
+            throw new IllegalStateException("This AES-GCM crypto provider has been closed.");
+        throw new CryptographicException("Key access is suspended: " + maxRefreshFailures
+                + " consecutive attempts to re-reveal the key through the key wrapper failed. Operations resume once a refresh succeeds.");
+    }
+
+    @Override
+    public int getEncryptedAllocationLength(int length) {
+        return length + EXTRA_ALLOCATION_LENGTH;
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Never negative: input shorter than the nonce and tag can't be valid ciphertext, and decrypt
+     * rejects it, but a size computed from it must still be a usable buffer length.
+     */
+    @Override
+    public int getDecryptedAllocationLength(int length) {
+        return Math.max(0, length - EXTRA_ALLOCATION_LENGTH);
+    }
+
+    // Reveals the DEK through the key wrapper and builds a session around it. Shared by the first
+    // reveal and every background refresh. A null budget means the process-wide one for whichever
+    // key is revealed.
+    private static CompletableFuture<AesGcmCryptoSession> revealAsync(KeyWrapper keyWrapper, byte[] wrapped,
+                                                                      EncryptionBudget budget, Logger logger) {
+        // Becomes the session's key and lives until the next refresh.
+        var key = new byte[KEY_LENGTH];
+        CompletableFuture<Integer> unwrap;
+        try {
+            unwrap = Objects.requireNonNull(keyWrapper.unwrapAsync(wrapped, key), "unwrapAsync returned null");
+        } catch (RuntimeException e) {
+            ArrayUtility.zeroMemory(key);
+            return CompletableFuture.failedFuture(e);
+        }
+
+        return unwrap.handle((written, error) -> {
+            if (error != null) {
+                ArrayUtility.zeroMemory(key);
+                throw error instanceof CompletionException completion ? completion : new CompletionException(error);
+            }
+
+            try {
+                // A wrapper that reveals fewer bytes (e.g. a misconfigured KMS returning a 128-bit
+                // data key) would otherwise leave the rest of the key zero and silently weaken
+                // every session.
+                if (written == null || written != KEY_LENGTH)
+                    throw new CryptographicException("Key wrapper revealed " + written + " bytes; a " + KEY_LENGTH + "-byte DEK is required.");
+
+                return new AesGcmCryptoSession(key, budget != null ? budget : EncryptionBudget.forKey(key), logger);
+            } catch (RuntimeException e) {
+                ArrayUtility.zeroMemory(key);
+                throw e;
+            }
+        });
+    }
+
+    // Only the single background loop refreshes once the provider exists.
+    private void refresh() throws InterruptedException, ExecutionException {
+        var pending = revealAsync(keyWrapper, wrapped, budget, logger);
+        AesGcmCryptoSession fresh;
+        try {
+            fresh = pending.get();
+        } catch (InterruptedException e) {
+            // close interrupted the wait: a session the wrapper still produces is never used.
+            pending.thenAccept(AesGcmCryptoSession::close);
+            throw e;
+        }
+
+        synchronized (gate) {
+            // close may have run while the key was being revealed (from inside the key wrapper,
+            // say): never put a session back into a closed provider.
+            if (closing) {
+                fresh.close();
+                return;
+            }
+
+            var outgoing = current;
+            current = fresh;
+            var stale = retiring;
+            retiring = outgoing;
+            if (stale != null)
+                stale.close();
+        }
+    }
+
+    private void runRefreshLoop() {
+        // Ticks at fixed intervals from creation; ticks missed while a slow refresh ran collapse
+        // into one, so a refresh never runs back to back with itself more than once.
+        var next = System.nanoTime() + interval.toNanos();
+        while (!closing) {
+            try {
+                var wait = next - System.nanoTime();
+                if (wait > 0)
+                    Thread.sleep(Duration.ofNanos(wait));
+            } catch (InterruptedException e) {
+                return;
+            }
+
+            if (closing)
+                return;
+
+            next += interval.toNanos();
+            if (next < System.nanoTime())
+                next = System.nanoTime();
+
+            if (!refreshOnce())
+                return;
+        }
+    }
+
+    // One background refresh, under its own span. False once the provider is closing.
+    private boolean refreshOnce() {
+        try (var op = HkdfGuardTelemetry.CRYPTO_PROVIDER_AES_GCM256.startSpan(SpanNames.CryptoProviderAesGcm256.BACKGROUND_REFRESH)) {
+            try {
+                refresh();
+                var previousFailures = consecutiveRefreshFailures.getAndSet(0);
+                if (maxRefreshFailures != null && previousFailures >= maxRefreshFailures)
+                    HkdfGuardLog.keyAccessResumed(logger, previousFailures);
+                return true;
+            } catch (InterruptedException e) {
+                return false;
+            } catch (Exception e) {
+                // Shutdown: swallow whatever an in-flight refresh threw on the way out (e.g. a key
+                // wrapper failing because its client was torn down).
+                if (closing)
+                    return false;
+
+                var cause = e instanceof ExecutionException || e instanceof CompletionException ? e.getCause() : e;
+                op.recordException(cause);
+
+                var failures = consecutiveRefreshFailures.incrementAndGet();
+                HkdfGuardLog.keyRefreshFailed(logger, failures, refreshFailurePolicyDescription(), cause);
+                if (maxRefreshFailures != null && failures == maxRefreshFailures) {
+                    suspendKeyAccess(op.span(), failures);
+                    HkdfGuardLog.keyAccessSuspended(logger, failures);
+                }
+                return true;
+            }
+        }
+    }
+
+    private String refreshFailurePolicyDescription() {
+        return maxRefreshFailures != null
+                ? "fail closed after " + maxRefreshFailures + " consecutive failures"
+                : "fail open (the last good key stays in use)";
+    }
+
+    // Fail closed: zero every revealed copy of the DEK and refuse operations until a refresh
+    // succeeds. The next successful refresh swaps a fresh session in and resumes service.
+    private void suspendKeyAccess(Span span, int failures) {
+        synchronized (gate) {
+            // Null unless a refresh has succeeded since the last swap.
+            if (retiring != null) {
+                retiring.close();
+                retiring = null;
+            }
+
+            // Never null here: suspension happens once per failure streak, and a streak only
+            // restarts after a successful refresh has put a session back in current.
+            var outgoing = current;
+            current = null;
+            if (outgoing != null)
+                outgoing.close();
+        }
+
+        span.addEvent(EventNames.KEY_ACCESS_SUSPENDED, Attributes.of(CONSECUTIVE_FAILURES, (long) failures));
+    }
+
+    /**
+     * Stops the background refresh without blocking the caller - the returned future completes
+     * once a refresh already in flight has finished - then zeroes the wrapped payload and every
+     * revealed key. Prefer this over {@link #close}: an in-flight refresh may be a network call to
+     * a KMS. Safe to call more than once.
+     */
+    @Override
+    public CompletableFuture<Void> closeAsync() {
+        if (!beginClose())
+            return CompletableFuture.completedFuture(null);
+
+        var done = new CompletableFuture<Void>();
+        Thread.ofVirtual().name("hkdfguard-aesgcm-close").start(() -> {
+            try {
+                awaitRefreshThread();
+                endClose();
+                done.complete(null);
+            } catch (Throwable t) {
+                done.completeExceptionally(t);
+            }
+        });
+        return done;
+    }
+
+    /** Synchronous {@link #closeAsync}: blocks until a refresh already in flight has finished. */
+    @Override
+    public void close() {
+        if (!beginClose())
+            return;
+
+        awaitRefreshThread();
+        endClose();
+    }
+
+    private boolean beginClose() {
+        if (closed.getAndSet(true))
+            return false;
+
+        closing = true;
+        refreshThread.interrupt();
+        ArrayUtility.zeroMemory(wrapped);
+        return true;
+    }
+
+    private void awaitRefreshThread() {
+        // Closed from inside the loop (a logger callback, say): it exits on its own.
+        if (Thread.currentThread() == refreshThread)
+            return;
+
+        var interrupted = false;
+        while (true) {
+            try {
+                refreshThread.join();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted)
+            Thread.currentThread().interrupt();
+    }
+
+    private void endClose() {
+        synchronized (gate) {
+            if (retiring != null) {
+                retiring.close();
+                retiring = null;
+            }
+
+            // Null if this provider had already failed closed.
+            var outgoing = current;
+            current = null;
+            if (outgoing != null)
+                outgoing.close();
+        }
+    }
+}
