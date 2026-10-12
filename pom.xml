@@ -32,6 +32,7 @@
     <module>hkdfguard-cryptoprovider-aesgcm256</module>
     <module>hkdfguard-keywrapping-v1</module>
     <module>hkdfguard-dataencryptionkey</module>
+    <module>hkdfguard-cache</module>
   </modules>
 
   <properties>
@@ -77,6 +78,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-dataencryptionkey</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache</artifactId>
         <version>${project.version}</version>
       </dependency>
 
