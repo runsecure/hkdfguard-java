@@ -26,7 +26,7 @@ public final class NativeTestEnvironment {
     public static final String SERVICE_VARIABLE = "HKDFGUARD_TEST_SERVICE";
 
     /**
-     * The Windows test KEK that scripts/provision-windows-test-key.ps1 (in the .NET repository)
+     * The Windows test KEK that scripts/provision-windows-test-key.ps1 (in this repository)
      * provisions. Used when {@link #SERVICE_VARIABLE} is unset and the installed library reports it
      * exists.
      */

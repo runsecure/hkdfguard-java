@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"
+         child.project.url.inherit.append.path="false">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>io.github.runsecure</groupId>
@@ -21,10 +22,28 @@
     </license>
   </licenses>
 
-  <scm>
+  <!-- Maven Central requires at least one developer on every published POM. -->
+  <developers>
+    <developer>
+      <id>torinblair</id>
+      <name>Torin Blair</name>
+      <organization>runsecure</organization>
+      <organizationUrl>https://github.com/runsecure</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm child.scm.connection.inherit.append.path="false"
+       child.scm.developerConnection.inherit.append.path="false"
+       child.scm.url.inherit.append.path="false">
     <url>https://github.com/runsecure/hkdfguard-java</url>
-    <connection>scm:git:git@github.com:runsecure/hkdfguard-java.git</connection>
+    <connection>scm:git:https://github.com/runsecure/hkdfguard-java.git</connection>
+    <developerConnection>scm:git:git@github.com:runsecure/hkdfguard-java.git</developerConnection>
   </scm>
+
+  <issueManagement>
+    <system>GitHub</system>
+    <url>https://github.com/runsecure/hkdfguard-java/issues</url>
+  </issueManagement>
 
   <modules>
     <module>hkdfguard-diagnostics</module>
@@ -33,15 +52,22 @@
     <module>hkdfguard-keywrapping-v1</module>
     <module>hkdfguard-dataencryptionkey</module>
     <module>hkdfguard-cache</module>
+    <module>hkdfguard-options</module>
+    <module>hkdfguard-spring-boot-starter</module>
   </modules>
 
   <properties>
-    <!-- Java 25 is the current Long Term Support release. -->
-    <maven.compiler.release>25</maven.compiler.release>
+    <!-- The bytecode level every module targets unless it says otherwise: Java 21, the previous
+         Long Term Support release, so applications still on 21 can use the cryptographic core
+         (diagnostics, abstractions, the AES-GCM provider, key rings and caches). Only
+         hkdfguard-keywrapping-v1 needs Java 25 and overrides this: its native calls use the Foreign
+         Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
+         enforcer's requireJavaVersion) because that module is part of every build. -->
+    <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <!-- Reproducible builds: a fixed timestamp in every archive entry. -->
-    <project.build.outputTimestamp>2026-10-01T00:00:00Z</project.build.outputTimestamp>
+    <project.build.outputTimestamp>2026-10-12T05:38:12Z</project.build.outputTimestamp>
 
     <bouncycastle.version>1.86</bouncycastle.version>
     <opentelemetry.version>1.67.0</opentelemetry.version>
@@ -83,6 +109,16 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cache</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-options</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-spring-boot-starter</artifactId>
         <version>${project.version}</version>
       </dependency>
 
@@ -127,27 +163,53 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
-          <version>3.15.0</version>
+          <version>3.16.0</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
-          <version>3.5.6</version>
+          <version>3.6.0</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-jar-plugin</artifactId>
-          <version>3.5.0</version>
+          <version>3.5.1</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-enforcer-plugin</artifactId>
-          <version>3.6.2</version>
+          <version>3.6.3</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-wrapper-plugin</artifactId>
           <version>3.3.4</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>3.4.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.12.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-gpg-plugin</artifactId>
+          <version>3.2.8</version>
+        </plugin>
+        <plugin>
+          <groupId>org.sonatype.central</groupId>
+          <artifactId>central-publishing-maven-plugin</artifactId>
+          <version>0.11.0</version>
+        </plugin>
+        <!-- The release workflow stamps the tag's version into every POM with versions:set. -->
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>versions-maven-plugin</artifactId>
+          <version>2.22.0</version>
         </plugin>
       </plugins>
     </pluginManagement>
@@ -171,6 +233,15 @@
                   <version>[3.9,)</version>
                 </requireMavenVersion>
                 <dependencyConvergence/>
+                <!-- Every third-party version is exact: no ranges, LATEST/RELEASE or snapshots,
+                     so a build is reproducible and a new release (of BouncyCastle, say) only
+                     arrives as a reviewed Dependabot pull request. This project's own modules
+                     are exempt, since they are snapshots between releases. -->
+                <banDynamicVersions>
+                  <ignores>
+                    <ignore>io.github.runsecure:*</ignore>
+                  </ignores>
+                </banDynamicVersions>
               </rules>
             </configuration>
           </execution>
@@ -208,4 +279,82 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!-- Sources and javadoc jars, which Maven Central requires. CI builds with this profile on so a
+         javadoc error fails a pull request, not a release. -->
+    <profile>
+      <id>dist</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!-- Signs every artifact and publishes to Maven Central through the Central Portal. Run only by
+         .github/workflows/release.yml, together with dist. The signing key and passphrase come from
+         the MAVEN_GPG_KEY and MAVEN_GPG_PASSPHRASE environment variables (BouncyCastle signer, so no
+         gpg install or agent is needed); the Portal token from the "central" server in settings.xml. -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+                <configuration>
+                  <signer>bc</signer>
+                  <bestPractices>true</bestPractices>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <!-- Publishing to Central is permanent: a version can never be replaced or deleted.
+                   The release workflow's "release" environment is where a human approves it. -->
+              <autoPublish>true</autoPublish>
+              <waitUntil>published</waitUntil>
+              <deploymentName>hkdfguard-java ${project.version}</deploymentName>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

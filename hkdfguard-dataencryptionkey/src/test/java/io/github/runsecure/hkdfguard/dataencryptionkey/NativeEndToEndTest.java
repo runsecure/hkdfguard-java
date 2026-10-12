@@ -62,7 +62,8 @@ class NativeEndToEndTest {
             var message = String.valueOf(e.getCause() == null ? e : e.getCause().getMessage());
             // Not installed, not provisioned, or not permitted: skip. Anything else is a real failure.
             Assumptions.assumeFalse(message.contains("not installed") || message.contains("status -12") || message.contains("status -13"),
-                    "The Windows test KEK is unavailable: " + message);
+                    "The Windows test KEK is unavailable: " + message
+                            + " Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set HKDFGUARD_TEST_SERVICE to a provisioned service.");
         }
         service = candidate;
     }

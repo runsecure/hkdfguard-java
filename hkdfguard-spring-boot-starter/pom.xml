@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-spring-boot-starter</artifactId>
+  <name>HkdfGuard Spring Boot Starter</name>
+  <description>Spring Boot auto-configuration: binds hkdfguard.* properties, builds and closes the key ring, reveals protected configuration values on demand, and reports the ring's health through Actuator.</description>
+
+  <properties>
+    <spring-boot.version>4.1.1</spring-boot.version>
+    <assertj.version>3.27.7</assertj.version>
+  </properties>
+
+  <!-- Spring's own dependencies disagree on jspecify (spring-core 1.0.0, micrometer 1.0.1); the
+       enforcer requires one version, so take the one Spring Boot's BOM manages. -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.jspecify</groupId>
+        <artifactId>jspecify</artifactId>
+        <version>1.0.1</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-options</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+    </dependency>
+    <!-- Runtime only: the native wrapper needs Java 25, and this starter targets Java 21 like the
+         rest of the core. It is created by name, and only when its class loads, so a Java 21
+         application declares its own KeyWrapper bean instead. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-keywrapping-v1</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-autoconfigure</artifactId>
+      <version>${spring-boot.version}</version>
+    </dependency>
+    <!-- Optional: the health indicator appears only in applications that use Actuator. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-health</artifactId>
+      <version>${spring-boot.version}</version>
+      <optional>true</optional>
+    </dependency>
+    <!-- Compile-only: Spring Boot's Health carries Jackson's @JsonInclude, and without the
+         annotation's class the compiler warns (and -Werror fails the build). Spring Boot 4.1's
+         Jackson 3 BOM manages this version; applications bring their own at run time. -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-annotations</artifactId>
+      <version>2.21</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-test</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- The end-to-end tests load application.yml as Spring Boot does, and compose a cache collection. -->
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <version>2.6</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>${assertj.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Spring applications run on the class path, where Spring reflects into this package; a
+           module descriptor would only get in the way. The jar still names its module. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>io.github.runsecure.hkdfguard.springboot</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -1,0 +1,3 @@
+io.github.runsecure.hkdfguard.springboot.HkdfGuardAutoConfiguration
+io.github.runsecure.hkdfguard.springboot.HkdfGuardHealthAutoConfiguration
+io.github.runsecure.hkdfguard.springboot.HkdfGuardEncryptedConfigurationAutoConfiguration
