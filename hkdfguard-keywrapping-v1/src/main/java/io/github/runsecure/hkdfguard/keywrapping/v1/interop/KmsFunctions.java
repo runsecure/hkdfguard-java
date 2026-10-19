@@ -13,11 +13,12 @@ import java.util.Objects;
 import java.util.function.Function;
 
 /**
- * The three native KMS functions, bound through the FFM API - identical on every platform:
+ * The native KMS functions, bound through the FFM API - identical on every platform:
  * <pre>
  * int hkdfguard_wrap_dek(const char* service, const uint8_t* dek, int dek_len, uint8_t* out, int* out_len);
  * int hkdfguard_unwrap_dek(const char* service, const uint8_t* wrapped, int wrapped_len, uint8_t* out, int* out_len);
  * int hkdfguard_generate_and_wrap_dek(const char* service, uint8_t* out, int* out_len);
+ * int hkdfguard_open_file(const char* path, uint8_t* out, int* out_len);
  * </pre>
  * Every argument is copied into native memory owned by one call, and every buffer that held key
  * material is zeroed before that memory is released. Native memory isn't moved by the garbage
@@ -31,11 +32,13 @@ final class KmsFunctions {
     private final MethodHandle wrap;
     private final MethodHandle unwrap;
     private final MethodHandle generateAndWrap;
+    private final MethodHandle openFile;
 
-    private KmsFunctions(MethodHandle wrap, MethodHandle unwrap, MethodHandle generateAndWrap) {
+    private KmsFunctions(MethodHandle wrap, MethodHandle unwrap, MethodHandle generateAndWrap, MethodHandle openFile) {
         this.wrap = wrap;
         this.unwrap = unwrap;
         this.generateAndWrap = generateAndWrap;
+        this.openFile = openFile;
     }
 
     /**
@@ -46,7 +49,9 @@ final class KmsFunctions {
         return new KmsFunctions(
                 linker.downcallHandle(exports.apply("hkdfguard_wrap_dek"), WITH_INPUT),
                 linker.downcallHandle(exports.apply("hkdfguard_unwrap_dek"), WITH_INPUT),
-                linker.downcallHandle(exports.apply("hkdfguard_generate_and_wrap_dek"), WITHOUT_INPUT));
+                linker.downcallHandle(exports.apply("hkdfguard_generate_and_wrap_dek"), WITHOUT_INPUT),
+                // (const char* path, uint8_t* out, int* out_len): the same shape.
+                linker.downcallHandle(exports.apply("hkdfguard_open_file"), WITHOUT_INPUT));
     }
 
     KmsResult wrapDek(String service, byte[] dek, byte[] destination) {
@@ -58,14 +63,23 @@ final class KmsFunctions {
     }
 
     KmsResult generateAndWrapDek(String service, byte[] destination) {
-        Objects.requireNonNull(service, "service");
+        return callWithoutInput(generateAndWrap, service, destination);
+    }
+
+    /** {@code path} is passed as a NUL-terminated UTF-8 string. */
+    KmsResult openFile(String path, byte[] destination) {
+        return callWithoutInput(openFile, path, destination);
+    }
+
+    private static KmsResult callWithoutInput(MethodHandle function, String text, byte[] destination) {
+        Objects.requireNonNull(text, "text");
         Objects.requireNonNull(destination, "destination");
         try (var arena = Arena.ofConfined()) {
-            var serviceSegment = arena.allocateFrom(service);
+            var textSegment = arena.allocateFrom(text);
             var output = arena.allocate(Math.max(1, destination.length));
             var outputLength = arena.allocateFrom(JAVA_INT, destination.length);
             try {
-                var status = (int) generateAndWrap.invokeExact(serviceSegment, output, outputLength);
+                var status = (int) function.invokeExact(textSegment, output, outputLength);
                 return finish(status, output, outputLength, destination);
             } finally {
                 output.fill((byte) 0);

@@ -1,96 +1,302 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
+import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
+import java.io.IOException;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.FileSystemException;
+import java.nio.file.NoSuchFileException;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class KmsLibraryContractTest {
+    /** Every status code, exactly as every platform's hkdfguard.h defines it: {constant, header value}. */
+    static Stream<Arguments> sharedStatusCodes() {
+        return Stream.of(
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_INVALID_ARGUMENT, -1),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_BUFFER_TOO_SMALL, -2),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PROVIDER_UNAVAILABLE, -3),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PROVIDER_ERROR, -4),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_CRYPTO_ERROR, -5),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_INTERNAL_ERROR, -6),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_INVALID_SERVICE_NAME, -8),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_POLICY_INVALID, -9),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_MALFORMED, -10),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_AUTH_FAILED, -11),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_UNSUPPORTED, -12),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_FINGERPRINT_MISMATCH, -16),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND, -17),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED, -18),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_INVALID, -19),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PROCESS_HARDENING_FAILED, -20),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_NOT_FOUND, -32),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_ACCESS_DENIED, -33),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_IO, -34),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_SHORT, -35),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_LONG, -36),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_PLAINTEXT_KEY, -37),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_MALFORMED, -38),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED, -39),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_WIN_GROUP_INVALID, -64),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_ACCESS_CONTROL_CREATION_FAILED, -96),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_KEY_GENERATION_FAILED, -97),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_KEYCHAIN_WRITE_FAILED, -98),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_KEK_VERIFICATION_FAILED, -99),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_KEYCHAIN_READ_FAILED, -100));
+    }
+
+    private static int[] definedCodes() {
+        return sharedStatusCodes().mapToInt(arguments -> (int) arguments.get()[1]).toArray();
+    }
+
+    private static AbstractHkdfGuardKmsLibrary libraryFor(String platform) {
+        return switch (platform) {
+            case "Windows" -> new WindowsHkdfGuardKmsLibrary();
+            case "Linux" -> new LinuxHkdfGuardKmsLibrary();
+            default -> new MacOsHkdfGuardKmsLibrary();
+        };
+    }
+
     @Test
     void sharedConstants_MatchTheNativeHeaders() {
         assertEquals(32, AbstractHkdfGuardKmsLibrary.DEK_LENGTH);
         assertEquals(0, AbstractHkdfGuardKmsLibrary.OK);
     }
 
-    @Test
-    void windowsErrorConstants_MatchTheNativeHeader() {
-        int[] expected = {-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14};
-        int[] actual = {
-                WindowsHkdfGuardKmsLibrary.ERR_INVALID_ARG, WindowsHkdfGuardKmsLibrary.ERR_BUFFER_TOO_SMALL,
-                WindowsHkdfGuardKmsLibrary.ERR_PROVIDER, WindowsHkdfGuardKmsLibrary.ERR_CRYPTO,
-                WindowsHkdfGuardKmsLibrary.ERR_AUTH_FAILED, WindowsHkdfGuardKmsLibrary.ERR_MALFORMED,
-                WindowsHkdfGuardKmsLibrary.ERR_INTERNAL, WindowsHkdfGuardKmsLibrary.ERR_SERVICE_NAME_INVALID,
-                WindowsHkdfGuardKmsLibrary.ERR_INVALID_POLICY, WindowsHkdfGuardKmsLibrary.ERR_GROUP_INVALID,
-                WindowsHkdfGuardKmsLibrary.ERR_KEK_MISMATCH, WindowsHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND,
-                WindowsHkdfGuardKmsLibrary.ERR_ACCESS_DENIED, WindowsHkdfGuardKmsLibrary.ERR_KEK_ACL_INVALID,
-        };
-        assertEquals(java.util.Arrays.toString(expected), java.util.Arrays.toString(actual));
+    @ParameterizedTest
+    @MethodSource("sharedStatusCodes")
+    void theStatusCodes_MatchTheNativeHeader(int constant, int expected) {
+        assertEquals(expected, constant);
     }
 
-    @Test
-    void windows_DescribesEveryDefinedStatus_AndNothingElse() {
-        var library = new WindowsHkdfGuardKmsLibrary();
+    @ParameterizedTest
+    @ValueSource(strings = {"Windows", "Linux", "macOS"})
+    void everyPlatform_DescribesEveryDefinedStatus_AndNothingElse(String platform) {
+        var library = libraryFor(platform);
 
-        for (var status = -14; status <= -1; status++) {
+        for (var status : definedCodes()) {
             var description = library.describeStatus(status);
-            assertFalse(description == null || description.isEmpty(), "no description for " + status);
+            assertFalse(description == null || description.isEmpty(), platform + ": no description for " + status);
         }
 
-        assertNull(library.describeStatus(-15));
-        assertNull(library.describeStatus(1));
-        assertTrue(library.describeStatus(WindowsHkdfGuardKmsLibrary.ERR_ACCESS_DENIED).contains("not authorized"));
-        assertTrue(library.describeStatus(WindowsHkdfGuardKmsLibrary.ERR_ACCESS_DENIED).contains("HkdfGuardUsers"));
-        assertTrue(library.describeStatus(WindowsHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND).contains("provision"));
+        // Reserved and unassigned codes, and anything positive or zero, have no meaning to describe.
+        var defined = definedCodes();
+        IntStream.rangeClosed(-130, 1)
+                .filter(status -> IntStream.of(defined).noneMatch(code -> code == status))
+                .forEach(status -> assertNull(library.describeStatus(status), platform + ": described reserved status " + status));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Windows", "Linux", "macOS"})
+    void everyPlatform_SaysHowToProvisionAMissingKek(String platform) {
+        assertTrue(libraryFor(platform).describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND).contains("provision"));
     }
 
     @Test
-    void macOs_DescribesEveryReturnedStatus_ButNotTheReservedOnes() {
+    void windows_SaysWhichGroupGrantsAccessToAKek() {
+        var description = new WindowsHkdfGuardKmsLibrary().describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED);
+
+        assertTrue(description.contains("not authorized"));
+        assertTrue(description.contains("HkdfGuardUsers"));
+        assertTrue(description.contains("KeyUseGroups"));
+    }
+
+    @Test
+    void windows_NamesTheMachinePolicyKey() {
+        assertTrue(new WindowsHkdfGuardKmsLibrary().describeStatus(AbstractHkdfGuardKmsLibrary.ERR_POLICY_INVALID)
+                .contains("HKLM\\Software\\Policies\\HkdfGuard"));
+    }
+
+    @Test
+    void windows_NamesTheCurrentCommandLineTool() {
+        var description = new WindowsHkdfGuardKmsLibrary().describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND);
+
+        assertTrue(description.contains("hkdfguard provision"));
+        assertFalse(description.contains("v1-initialize"));
+    }
+
+    @Test
+    void linux_NamesThePolicyFile_AndTheCurrentCommandLineTool() {
+        var library = new LinuxHkdfGuardKmsLibrary();
+
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_POLICY_INVALID).contains("/etc/hkdfguard/policy.toml"));
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_FINGERPRINT_MISMATCH).contains("different KEK"));
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND).contains("hkdfguard provision"));
+    }
+
+    @Test
+    void macOs_NamesTheKeychain() {
         var library = new MacOsHkdfGuardKmsLibrary();
 
-        for (var status : new int[] {-1, -2, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18}) {
-            var description = library.describeStatus(status);
-            assertFalse(description == null || description.isEmpty(), "no description for " + status);
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED).contains("keychain"));
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_PROVIDER_UNAVAILABLE).contains("Secure Enclave"));
+    }
+
+    @Test
+    void aPlatformFallsBackToTheSharedDescriptions() {
+        var shared = new StubLibrary();
+
+        for (var platform : new String[] {"Windows", "Linux", "macOS"})
+            assertEquals(shared.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED),
+                    libraryFor(platform).describeStatus(AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED));
+    }
+
+    @Test
+    void aPlaintextKeyFile_IsDescribedAsAKeyExposure() {
+        assertTrue(new StubLibrary().describeStatus(AbstractHkdfGuardKmsLibrary.ERR_FILE_PLAINTEXT_KEY).contains("key exposure"));
+    }
+
+    // --- openFile: the interop returns the file's bytes, or throws ---------------------------------
+
+    /** A library whose hkdfguard_open_file is scripted, recording every call. */
+    private static final class StubLibrary extends AbstractHkdfGuardKmsLibrary {
+        int openFileStatus = OK;
+        byte[] payload = new byte[132];
+        String lastPath;
+        int lastCapacity;
+        int openFileCallCount;
+
+        @Override
+        public KmsResult wrapDek(String service, byte[] dek, byte[] destination) {
+            throw new UnsupportedOperationException();
         }
 
-        assertNull(library.describeStatus(MacOsHkdfGuardKmsLibrary.ERR_KEY_UNAVAILABLE));        // reserved, never returned
-        assertNull(library.describeStatus(MacOsHkdfGuardKmsLibrary.ERR_PUBLIC_KEY_UNAVAILABLE)); // reserved, never returned
-        assertNull(library.describeStatus(-19));
+        @Override
+        public KmsResult unwrapDek(String service, byte[] wrapped, byte[] destination) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public KmsResult generateAndWrapDek(String service, byte[] destination) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        protected KmsResult openFileRaw(String path, byte[] destination) {
+            openFileCallCount++;
+            lastPath = path;
+            lastCapacity = destination.length;
+            if (openFileStatus != OK)
+                return new KmsResult(openFileStatus, 0);
+
+            System.arraycopy(payload, 0, destination, 0, payload.length);
+            return new KmsResult(OK, payload.length);
+        }
     }
 
     @Test
-    void linuxErrorConstants_MatchTheNativeHeader_AndHaveNoDescriptions() {
-        assertEquals(-1, LinuxHkdfGuardKmsLibrary.ERR_INVALID_ARGUMENT);
-        assertEquals(-2, LinuxHkdfGuardKmsLibrary.ERR_BUFFER_TOO_SMALL);
-        assertEquals(-3, LinuxHkdfGuardKmsLibrary.ERR_PROVIDER_UNAVAILABLE);
-        assertEquals(-4, LinuxHkdfGuardKmsLibrary.ERR_PROVIDER_ERROR);
-        assertEquals(-5, LinuxHkdfGuardKmsLibrary.ERR_CRYPTO_ERROR);
-        assertEquals(-6, LinuxHkdfGuardKmsLibrary.ERR_INTERNAL_ERROR);
-        assertEquals(-7, LinuxHkdfGuardKmsLibrary.ERR_INVALID_UTF8);
-        assertEquals(-8, LinuxHkdfGuardKmsLibrary.ERR_MISSING_SERVICE_NAME);
-        assertNull(new LinuxHkdfGuardKmsLibrary().describeStatus(-1));
+    void openFile_ReturnsExactlyTheBytesTheNativeLibraryRead() throws IOException {
+        var library = new StubLibrary();
+        library.payload = new byte[132];
+        for (var i = 0; i < library.payload.length; i++)
+            library.payload[i] = (byte) i;
+
+        var bytes = library.openFile("C:\\keys\\dek.bin");
+
+        assertArrayEquals(library.payload, bytes);
+        assertEquals("C:\\keys\\dek.bin", library.lastPath);
+        assertEquals(1, library.openFileCallCount);
     }
 
     @Test
-    void macOsErrorConstants_MatchTheNativeHeader() {
-        assertEquals(-1, MacOsHkdfGuardKmsLibrary.ERR_INVALID_INPUT_LENGTH);
-        assertEquals(-2, MacOsHkdfGuardKmsLibrary.ERR_OUTPUT_BUFFER_TOO_SMALL);
-        assertEquals(-3, MacOsHkdfGuardKmsLibrary.ERR_KEY_UNAVAILABLE);
-        assertEquals(-4, MacOsHkdfGuardKmsLibrary.ERR_PUBLIC_KEY_UNAVAILABLE);
-        assertEquals(-5, MacOsHkdfGuardKmsLibrary.ERR_ENCRYPTION_FAILED);
-        assertEquals(-6, MacOsHkdfGuardKmsLibrary.ERR_DECRYPTION_FAILED);
-        assertEquals(-7, MacOsHkdfGuardKmsLibrary.ERR_UNEXPECTED_OUTPUT_LENGTH);
-        assertEquals(-8, MacOsHkdfGuardKmsLibrary.ERR_INVALID_SERVICE_IDENTIFIER);
-        assertEquals(-9, MacOsHkdfGuardKmsLibrary.ERR_ENCLAVE_UNAVAILABLE);
-        assertEquals(-10, MacOsHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND);
-        assertEquals(-11, MacOsHkdfGuardKmsLibrary.ERR_KEK_CORRUPTED);
-        assertEquals(-12, MacOsHkdfGuardKmsLibrary.ERR_ACCESS_CONTROL_CREATION_FAILED);
-        assertEquals(-13, MacOsHkdfGuardKmsLibrary.ERR_KEY_GENERATION_FAILED);
-        assertEquals(-14, MacOsHkdfGuardKmsLibrary.ERR_KEYCHAIN_WRITE_FAILED);
-        assertEquals(-15, MacOsHkdfGuardKmsLibrary.ERR_KEK_VERIFICATION_FAILED);
-        assertEquals(-16, MacOsHkdfGuardKmsLibrary.ERR_FINGERPRINT_MISMATCH);
-        assertEquals(-17, MacOsHkdfGuardKmsLibrary.ERR_KEYCHAIN_ACCESS_DENIED);
-        assertEquals(-18, MacOsHkdfGuardKmsLibrary.ERR_KEYCHAIN_READ_FAILED);
+    void openFile_PassesABufferLargeEnoughForEveryPlatformsWrappedDek() throws IOException {
+        var library = new StubLibrary();
+        library.payload = new byte[WrappedKeyLimits.MAX_BYTES];
+
+        assertEquals(WrappedKeyLimits.MAX_BYTES, library.openFile("dek.bin").length);
+        assertEquals(WrappedKeyLimits.MAX_BYTES, library.lastCapacity);
+    }
+
+    static Stream<Arguments> openFileFailures() {
+        return Stream.of(
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_NOT_FOUND, NoSuchFileException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_ACCESS_DENIED, AccessDeniedException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED, AccessDeniedException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_SHORT, InvalidKeyFileException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_LONG, InvalidKeyFileException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_PLAINTEXT_KEY, InvalidKeyFileException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_MALFORMED, InvalidKeyFileException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_IO, IOException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_INVALID_ARGUMENT, IllegalArgumentException.class),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_INTERNAL_ERROR, IOException.class));
+    }
+
+    @ParameterizedTest
+    @MethodSource("openFileFailures")
+    void openFile_TurnsEachRefusalIntoTheMatchingException(int status, Class<? extends Exception> expected) {
+        var library = new StubLibrary();
+        library.openFileStatus = status;
+
+        var thrown = assertThrows(Exception.class, () -> library.openFile("C:\\keys\\dek.bin"));
+
+        // Exactly the expected type: a plain IOException must not be a more specific one, and vice versa.
+        assertEquals(expected, thrown.getClass());
+        var reason = thrown instanceof FileSystemException fileSystem ? fileSystem.getReason() : thrown.getMessage();
+        assertEquals("Key file 'C:\\keys\\dek.bin' was refused by the native library with status " + status
+                + " (" + library.describeStatus(status) + ").", reason);
+        assertTrue(thrown.getMessage().contains("C:\\keys\\dek.bin"));
+        assertTrue(thrown.getMessage().contains("status " + status));
+    }
+
+    @Test
+    void openFile_NamesTheMissingFile() {
+        var library = new StubLibrary();
+        library.openFileStatus = AbstractHkdfGuardKmsLibrary.ERR_FILE_NOT_FOUND;
+
+        var thrown = assertThrows(NoSuchFileException.class, () -> library.openFile("missing.bin"));
+
+        assertEquals("missing.bin", thrown.getFile());
+    }
+
+    @Test
+    void openFile_NamesAnUntrustedFile() {
+        var library = new StubLibrary();
+        library.openFileStatus = AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED;
+
+        var thrown = assertThrows(AccessDeniedException.class, () -> library.openFile("junction\\dek.bin"));
+
+        assertEquals("junction\\dek.bin", thrown.getFile());
+        assertTrue(thrown.getMessage().contains("not trusted"));
+    }
+
+    @Test
+    void openFile_SaysWhenAStatusIsUnknown() {
+        var library = new StubLibrary();
+        library.openFileStatus = -63;
+
+        var thrown = assertThrows(IOException.class, () -> library.openFile("dek.bin"));
+
+        assertEquals(IOException.class, thrown.getClass());
+        assertTrue(thrown.getMessage().endsWith("with status -63 (unknown status)."));
+    }
+
+    @Test
+    void openFile_RefusesANullPath_BeforeReachingTheNativeLibrary() {
+        var library = new StubLibrary();
+
+        assertThrows(NullPointerException.class, () -> library.openFile(null));
+        assertEquals(0, library.openFileCallCount);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "dek.bin\0.txt"})
+    void openFile_RefusesAnEmptyPathOrOneWithANul_BeforeReachingTheNativeLibrary(String path) {
+        var library = new StubLibrary();
+
+        assertInstanceOf(IllegalArgumentException.class, assertThrows(RuntimeException.class, () -> library.openFile(path)));
+        assertEquals(0, library.openFileCallCount);
     }
 }

@@ -6,6 +6,7 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
@@ -88,7 +89,7 @@ public final class NativeTestEnvironment {
             return new Resolution(explicit, "");
 
         if (!isWindows())
-            return new Resolution(null, "Set " + SERVICE_VARIABLE + " to a service provisioned with hkdfguard-v1-initialize to run native integration tests.");
+            return new Resolution(null, "Set " + SERVICE_VARIABLE + " to a service provisioned with hkdfguard provision (hkdfguard-v1-initialize provision on macOS) to run native integration tests.");
 
         if (!windowsLibraryInstalled())
             return new Resolution(null, "The native KMS library is not installed at " + WindowsNativeLibraryLoader.installedPath() + ".");
@@ -106,10 +107,10 @@ public final class NativeTestEnvironment {
         var exists = answer[1] != 0;
         if (status == 0 && exists)
             return new Resolution(DEFAULT_WINDOWS_SERVICE_NAME, "");
-        if (status == 0 || status == WindowsHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND)
+        if (status == 0 || status == AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND)
             return new Resolution(null, "The test KEK '" + DEFAULT_WINDOWS_SERVICE_NAME + "' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set "
                     + SERVICE_VARIABLE + " to a provisioned service.");
-        if (status == WindowsHkdfGuardKmsLibrary.ERR_ACCESS_DENIED)
+        if (status == AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED)
             return new Resolution(null, "The test KEK '" + DEFAULT_WINDOWS_SERVICE_NAME
                     + "' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.");
         return new Resolution(DEFAULT_WINDOWS_SERVICE_NAME, "");
@@ -136,6 +137,16 @@ public final class NativeTestEnvironment {
         } catch (Throwable t) {
             throw new IllegalStateException(t);
         }
+    }
+
+    /**
+     * A new temporary folder for key files the native library reads, by its real, long path.
+     * hkdfguard_open_file refuses an 8.3 short name or a link anywhere in a path, and Windows can
+     * hand out the temp folder in short form (for example C:\Users\RUNNER~1\... on GitHub-hosted
+     * runners); toRealPath expands every short component and resolves any link.
+     */
+    public static Path createTempDirectory(String prefix) throws IOException {
+        return Files.createTempDirectory(prefix).toRealPath();
     }
 
     private static String read(String variable) {

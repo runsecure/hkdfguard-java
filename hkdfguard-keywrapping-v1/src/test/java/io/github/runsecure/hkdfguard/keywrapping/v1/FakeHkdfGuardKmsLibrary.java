@@ -27,14 +27,19 @@ final class FakeHkdfGuardKmsLibrary extends AbstractHkdfGuardKmsLibrary {
     int unwrapCallCount;
     int generateAndWrapCallCount;
 
-    /** When set, answers describeStatus; otherwise the base class (no description). */
+    int openFileStatus = OK;
+    byte[] openFilePayloadToEmit = new byte[132];
+    String lastOpenFilePath;
+    int openFileCallCount;
+
+    /** When set, answers describeStatus; otherwise the base class (the shared descriptions). */
     IntFunction<String> describe;
 
     /** When set, every call throws this, as a binding whose library failed to load does. */
     RuntimeException throwOnCall;
 
     int totalCalls() {
-        return wrapCallCount + unwrapCallCount + generateAndWrapCallCount;
+        return wrapCallCount + unwrapCallCount + generateAndWrapCallCount + openFileCallCount;
     }
 
     @Override
@@ -90,5 +95,19 @@ final class FakeHkdfGuardKmsLibrary extends AbstractHkdfGuardKmsLibrary {
         var payload = generateAndWrapPayloadToEmit != null ? generateAndWrapPayloadToEmit : new byte[64];
         System.arraycopy(payload, 0, destination, 0, payload.length);
         return new KmsResult(OK, bytesWrittenOverride != null ? bytesWrittenOverride : payload.length);
+    }
+
+    @Override
+    protected KmsResult openFileRaw(String path, byte[] destination) {
+        openFileCallCount++;
+        lastOpenFilePath = path;
+        if (throwOnCall != null)
+            throw throwOnCall;
+
+        if (openFileStatus != OK)
+            return new KmsResult(openFileStatus, 0);
+
+        System.arraycopy(openFilePayloadToEmit, 0, destination, 0, openFilePayloadToEmit.length);
+        return new KmsResult(OK, openFilePayloadToEmit.length);
     }
 }

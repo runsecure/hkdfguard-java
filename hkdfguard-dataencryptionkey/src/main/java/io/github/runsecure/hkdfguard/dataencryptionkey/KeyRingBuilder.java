@@ -7,14 +7,10 @@ import io.github.runsecure.hkdfguard.abstractions.EncryptedFormatProvider;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy;
 import io.github.runsecure.hkdfguard.abstractions.ServiceNames;
-import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.dataencryptionkey.formatprovider.DefaultFormatProviderImpl;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -30,7 +26,9 @@ import org.slf4j.LoggerFactory;
  * creating once at startup and sharing. One {@link KeyWrapper} is shared by every registered key -
  * it's bound only to a KEK (e.g. a native wrapper's service name), not to any one wrapped payload,
  * so it can reveal any number of different files' DEKs. For each key file, build asks the
- * {@link CryptoProviderFactory} to create a provider bound to that file's wrapped bytes; for each
+ * {@link CryptoProviderFactory} to create a provider bound to that file's wrapped bytes, read through
+ * the key wrapper's {@link KeyWrapper#readKeyFileAsync} (so the native wrapper reads it through the
+ * native library's own checks on the file and its location); for each
  * ephemeral version, to create one around a fresh DEK generated (and wrapped) at build time. Every
  * provider is wrapped in a {@link DataEncryptionKeyImpl} owned by the ring, and the key refresh
  * interval is passed to the factory as each provider's refresh interval.
@@ -333,7 +331,9 @@ public final class KeyRingBuilder {
             var ring = new KeyRingImpl(formatProvider);
             try {
                 for (var keyFile : new TreeMap<>(keyFiles).entrySet()) {
-                    var wrapped = readKeyFile(keyFile.getValue());
+                    // Read through the key wrapper: a native KMS reads its own key files, with its
+                    // own checks on who could have written them.
+                    var wrapped = await(keyWrapper.readKeyFileAsync(keyFile.getValue()));
                     var provider = await(factory.createAsync(keyWrapper, wrapped, keyRefreshInterval, maxRefreshFailures));
                     addOwned(ring, keyFile.getKey(), provider);
                 }
@@ -358,7 +358,7 @@ public final class KeyRingBuilder {
             }
         }
 
-        private static CryptoProvider await(CompletableFuture<CryptoProvider> future) throws Exception {
+        private static <T> T await(CompletableFuture<T> future) throws Exception {
             try {
                 return future.get();
             } catch (ExecutionException e) {
@@ -366,31 +366,6 @@ public final class KeyRingBuilder {
             } catch (CompletionException e) {
                 throw e.getCause() instanceof Exception cause ? cause : e;
             }
-        }
-
-        /**
-         * Reads a wrapped DEK, refusing an empty file or one over {@link WrappedKeyLimits#MAX_BYTES}.
-         * Never reads more than one byte past the limit, whatever the file's size - so a wrong path
-         * (a log, a device) or a file still growing can't make startup allocate an unbounded buffer.
-         *
-         * @throws IOException the file can't be read, is empty, or is larger than the limit
-         */
-        private static byte[] readKeyFile(Path path) throws IOException {
-            var buffer = new byte[WrappedKeyLimits.MAX_BYTES + 1];
-            var total = 0;
-            try (var stream = Files.newInputStream(path)) {
-                int read;
-                while (total < buffer.length && (read = stream.read(buffer, total, buffer.length - total)) > 0)
-                    total += read;
-            }
-
-            if (total == 0)
-                throw new IOException("Key file '" + path + "' is empty.");
-            if (total > WrappedKeyLimits.MAX_BYTES)
-                throw new IOException("Key file '" + path + "' is larger than " + WrappedKeyLimits.MAX_BYTES
-                        + " bytes (WrappedKeyLimits.MAX_BYTES); a wrapped key never is.");
-
-            return Arrays.copyOf(buffer, total);
         }
 
         private static void addOwned(KeyRingImpl ring, int version, CryptoProvider provider) {

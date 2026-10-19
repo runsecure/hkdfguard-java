@@ -9,7 +9,7 @@ abstract sealed class NativeKmsLibrary extends AbstractHkdfGuardKmsLibrary
         permits WindowsHkdfGuardKmsLibrary, LinuxHkdfGuardKmsLibrary, MacOsHkdfGuardKmsLibrary {
     private volatile KmsFunctions functions;
 
-    /** Loads (and verifies) the platform's library and binds its three functions. */
+    /** Loads (and verifies) the platform's library and binds its functions. */
     protected abstract KmsFunctions bind();
 
     private KmsFunctions functions() {
@@ -37,5 +37,10 @@ abstract sealed class NativeKmsLibrary extends AbstractHkdfGuardKmsLibrary
     @Override
     public final KmsResult generateAndWrapDek(String service, byte[] destination) {
         return functions().generateAndWrapDek(service, destination);
+    }
+
+    @Override
+    protected final KmsResult openFileRaw(String path, byte[] destination) {
+        return functions().openFile(path, destination);
     }
 }

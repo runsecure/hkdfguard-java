@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test;
  * Real key wrapping and unwrapping against this platform's native KMS library. No native library
  * creates a KEK during wrap/unwrap, so these run against an operator-provisioned service:
  * <pre>
- * hkdfguard-v1-initialize provision --service-name hkdfguard.integrationtest   (elevated on Windows)
+ * hkdfguard provision --service-name hkdfguard.integrationtest   (elevated on Windows; hkdfguard-v1-initialize on macOS)
  * HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest mvn verify
  * </pre>
  * On Windows the provisioned test KEK com.hkdfguard.native.windows.test is used when present.

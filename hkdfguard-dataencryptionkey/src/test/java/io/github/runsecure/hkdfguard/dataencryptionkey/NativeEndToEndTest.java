@@ -61,7 +61,7 @@ class NativeEndToEndTest {
         } catch (ExecutionException | InterruptedException e) {
             var message = String.valueOf(e.getCause() == null ? e : e.getCause().getMessage());
             // Not installed, not provisioned, or not permitted: skip. Anything else is a real failure.
-            Assumptions.assumeFalse(message.contains("not installed") || message.contains("status -12") || message.contains("status -13"),
+            Assumptions.assumeFalse(message.contains("not installed") || message.contains("status -17") || message.contains("status -18"),
                     "The Windows test KEK is unavailable: " + message
                             + " Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set HKDFGUARD_TEST_SERVICE to a provisioned service.");
         }
@@ -91,7 +91,9 @@ class NativeEndToEndTest {
             try {
                 var wrapped = new byte[WrappedKeyLimits.MAX_BYTES];
                 int length = new NativeHkdfKeyWrapperV1Impl(service).wrapAsync(dek, wrapped).get();
-                var path = Files.write(directory.resolve("wrapped-dek-v" + KEY_FILE_VERSION + ".bin"), Arrays.copyOf(wrapped, length));
+                // By its real, long path: the native library refuses a key file path with an 8.3
+                // short name or a link in it, and the temp folder can be handed out in short form.
+                var path = Files.write(directory.toRealPath().resolve("wrapped-dek-v" + KEY_FILE_VERSION + ".bin"), Arrays.copyOf(wrapped, length));
                 return new Release(path, configuration);
             } finally {
                 ArrayUtility.zeroMemory(dek);

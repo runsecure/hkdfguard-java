@@ -270,7 +270,7 @@ class HkdfGuardAutoConfigurationTest {
         // Creating the native wrapper loads and verifies the real library, so this runs only where
         // it is installed. The ring itself is the application's, so nothing calls the KMS.
         assumeTrue(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows")
-                && Files.isRegularFile(Path.of(System.getenv("ProgramFiles"), "HkdfGuard", "v1", "HkdfGuardV1.dll")),
+                && Files.isRegularFile(Path.of(System.getenv("ProgramFiles"), "HkdfGuard", "v1", "HkdfGuard.dll")),
                 "The Windows native KMS library is not installed.");
 
         new ApplicationContextRunner()

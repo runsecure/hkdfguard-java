@@ -45,14 +45,14 @@ class WindowsNativeLibraryLoaderTest {
     void installedPath_IsTheFixedProgramFilesLocation() {
         var programFiles = System.getenv("ProgramFiles");
 
-        assertEquals(Path.of(programFiles, "HkdfGuard", "v1", "HkdfGuardV1.dll").toString().toLowerCase(Locale.ROOT),
+        assertEquals(Path.of(programFiles, "HkdfGuard", "v1", "HkdfGuard.dll").toString().toLowerCase(Locale.ROOT),
                 WindowsNativeLibraryLoader.installedPath().toLowerCase(Locale.ROOT));
     }
 
     @Test
     @EnabledOnOs(OS.WINDOWS)
     void load_WhenTheFileIsMissing_ThrowsNotFound_NamingTheOnlySupportedPath() {
-        var missing = Path.of(System.getProperty("java.io.tmpdir"), "hkdfguard-missing-" + UUID.randomUUID(), "HkdfGuardV1.dll").toString();
+        var missing = Path.of(System.getProperty("java.io.tmpdir"), "hkdfguard-missing-" + UUID.randomUUID(), "HkdfGuard.dll").toString();
 
         var ex = assertThrows(NativeLibraryNotFoundException.class, () -> WindowsNativeLibraryLoader.load(missing, WindowsNativeLibraryLoader.EXPECTED_PUBLISHER));
 
@@ -263,7 +263,7 @@ class WindowsNativeLibraryLoaderTest {
 
     @Test
     void verifyImageKind_AnExecutable_IsRefused() {
-        // e.g. hkdfguard-v1-initialize.exe renamed into place: signed by the same profile.
+        // e.g. hkdfguard.exe renamed into place: signed by the same profile.
         var ex = assertThrows(SecurityException.class, () -> WindowsNativeLibraryLoader.verifyImageKind("test",
                 WindowsNativeLibraryLoader.IMAGE_FILE_EXECUTABLE_IMAGE, WindowsNativeLibraryLoader.IMAGE_FILE_MACHINE_AMD64, CpuArchitecture.X64));
 
@@ -435,7 +435,7 @@ class WindowsNativeLibraryLoaderTest {
         NativeTestEnvironment.assumeWindowsLibraryInstalled();
         // Installed beside the library and signed under the same profile: only the image check
         // tells them apart.
-        var tool = Path.of(WindowsNativeLibraryLoader.installedPath()).resolveSibling("hkdfguard-v1-initialize.exe").toString();
+        var tool = Path.of(WindowsNativeLibraryLoader.installedPath()).resolveSibling("hkdfguard.exe").toString();
         assertTrue(Files.isRegularFile(Path.of(tool)), tool + " is installed with the library.");
 
         assertDoesNotThrow(() -> WindowsNativeLibraryLoader.verifySignature(tool, WindowsNativeLibraryLoader.EXPECTED_PUBLISHER));

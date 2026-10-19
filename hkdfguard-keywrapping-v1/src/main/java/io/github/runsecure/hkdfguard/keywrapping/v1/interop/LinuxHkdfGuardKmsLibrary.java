@@ -7,21 +7,29 @@ import java.lang.foreign.SymbolLookup;
 /**
  * Binds libHkdfGuardKeyProtectionLinux.so (see hkdfguard.h), which picks the strongest available
  * provider on the host - TPM2 &gt; PKCS#11 &gt; external secret &gt; software &gt; ephemeral - to hold
- * the per-service KEK. Every native call returns a plain status code. Loaded by the dynamic
- * linker's default search, as the .NET library does.
+ * the per-service KEK. Every native call returns a plain status code, from the shared table in
+ * {@link AbstractHkdfGuardKmsLibrary}. Loaded by the dynamic linker's default search, as the .NET
+ * library does.
+ * <p>
+ * No call here creates a KEK: {@code hkdfguard provision --service-name <name>} (/usr/bin/hkdfguard)
+ * must create it first, or wrap fails with {@link #ERR_KEK_NOT_FOUND}.
  */
 @SuppressWarnings("restricted") // Loads the library through the FFM API; the module requires --enable-native-access.
 public final class LinuxHkdfGuardKmsLibrary extends NativeKmsLibrary {
     static final String LIBRARY_NAME = "HkdfGuardKeyProtectionLinux";
 
-    public static final int ERR_INVALID_ARGUMENT = -1;
-    public static final int ERR_BUFFER_TOO_SMALL = -2;
-    public static final int ERR_PROVIDER_UNAVAILABLE = -3;
-    public static final int ERR_PROVIDER_ERROR = -4;
-    public static final int ERR_CRYPTO_ERROR = -5;
-    public static final int ERR_INTERNAL_ERROR = -6;
-    public static final int ERR_INVALID_UTF8 = -7;
-    public static final int ERR_MISSING_SERVICE_NAME = -8;
+    @Override
+    public String describeStatus(int status) {
+        return switch (status) {
+            case ERR_PROVIDER_UNAVAILABLE -> "no KEK provider could be reached: no usable TPM, PKCS#11 token or external secret under /etc/hkdfguard/policy.toml";
+            case ERR_PROVIDER_ERROR -> "a KEK provider was reached but failed (policy file, secret file permissions, TPM or token error); the native library's log names the reason";
+            case ERR_POLICY_INVALID -> "/etc/hkdfguard/policy.toml can't be used: unparsable, an invalid or contradictory setting, insecure ownership or permissions, or a provider this build lacks";
+            case ERR_KEK_NOT_FOUND -> "no KEK is provisioned for this service; run hkdfguard provision";
+            case ERR_KEK_FINGERPRINT_MISMATCH -> "the payload was wrapped under a different KEK than this service's current one: another service, or the KEK or TPM derivation secret has changed";
+            case ERR_PROCESS_HARDENING_FAILED -> "process hardening failed: core dumps or ptrace access could not be disabled";
+            default -> super.describeStatus(status);
+        };
+    }
 
     @Override
     protected KmsFunctions bind() {
