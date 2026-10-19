@@ -19,6 +19,7 @@ import java.util.function.Function;
  * int hkdfguard_unwrap_dek(const char* service, const uint8_t* wrapped, int wrapped_len, uint8_t* out, int* out_len);
  * int hkdfguard_generate_and_wrap_dek(const char* service, uint8_t* out, int* out_len);
  * int hkdfguard_open_file(const char* path, uint8_t* out, int* out_len);
+ * int hkdfguard_harden_process_with_flags(unsigned int flags);
  * </pre>
  * Every argument is copied into native memory owned by one call, and every buffer that held key
  * material is zeroed before that memory is released. Native memory isn't moved by the garbage
@@ -28,17 +29,22 @@ import java.util.function.Function;
 final class KmsFunctions {
     private static final FunctionDescriptor WITH_INPUT = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS);
     private static final FunctionDescriptor WITHOUT_INPUT = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS);
+    // unsigned int is 32 bits on every supported platform; the flags never use the sign bit.
+    private static final FunctionDescriptor WITH_FLAGS = FunctionDescriptor.of(JAVA_INT, JAVA_INT);
 
     private final MethodHandle wrap;
     private final MethodHandle unwrap;
     private final MethodHandle generateAndWrap;
     private final MethodHandle openFile;
+    private final MethodHandle hardenProcess;
 
-    private KmsFunctions(MethodHandle wrap, MethodHandle unwrap, MethodHandle generateAndWrap, MethodHandle openFile) {
+    private KmsFunctions(MethodHandle wrap, MethodHandle unwrap, MethodHandle generateAndWrap, MethodHandle openFile,
+                         MethodHandle hardenProcess) {
         this.wrap = wrap;
         this.unwrap = unwrap;
         this.generateAndWrap = generateAndWrap;
         this.openFile = openFile;
+        this.hardenProcess = hardenProcess;
     }
 
     /**
@@ -51,7 +57,8 @@ final class KmsFunctions {
                 linker.downcallHandle(exports.apply("hkdfguard_unwrap_dek"), WITH_INPUT),
                 linker.downcallHandle(exports.apply("hkdfguard_generate_and_wrap_dek"), WITHOUT_INPUT),
                 // (const char* path, uint8_t* out, int* out_len): the same shape.
-                linker.downcallHandle(exports.apply("hkdfguard_open_file"), WITHOUT_INPUT));
+                linker.downcallHandle(exports.apply("hkdfguard_open_file"), WITHOUT_INPUT),
+                linker.downcallHandle(exports.apply("hkdfguard_harden_process_with_flags"), WITH_FLAGS));
     }
 
     KmsResult wrapDek(String service, byte[] dek, byte[] destination) {
@@ -69,6 +76,17 @@ final class KmsFunctions {
     /** {@code path} is passed as a NUL-terminated UTF-8 string. */
     KmsResult openFile(String path, byte[] destination) {
         return callWithoutInput(openFile, path, destination);
+    }
+
+    /** {@code flags} is a bitwise OR of the HKDFGUARD_HARDEN_* flags, or 0. */
+    int hardenProcess(int flags) {
+        try {
+            return (int) hardenProcess.invokeExact(flags);
+        } catch (RuntimeException | Error e) {
+            throw e;
+        } catch (Throwable t) {
+            throw new IllegalStateException("The native KMS call failed.", t);
+        }
     }
 
     private static KmsResult callWithoutInput(MethodHandle function, String text, byte[] destination) {

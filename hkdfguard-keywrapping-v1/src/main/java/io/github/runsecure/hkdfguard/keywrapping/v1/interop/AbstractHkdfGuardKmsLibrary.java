@@ -73,6 +73,13 @@ public abstract class AbstractHkdfGuardKmsLibrary {
     public static final int ERR_MAC_KEK_VERIFICATION_FAILED = -99;
     public static final int ERR_MAC_KEYCHAIN_READ_FAILED = -100;
 
+    /**
+     * hkdfguard_harden_process_with_flags' HKDFGUARD_HARDEN_REQUIRE_PROTECTED_SIGNATURE: fail unless
+     * no other process of the same user can debug or inject into this one. Same bit on every
+     * platform.
+     */
+    public static final int HARDEN_REQUIRE_PROTECTED_SIGNATURE = 0x1;
+
     protected AbstractHkdfGuardKmsLibrary() {
     }
 
@@ -145,6 +152,18 @@ public abstract class AbstractHkdfGuardKmsLibrary {
      * @return {@link #OK} and the number of bytes written; or a negative status
      */
     public abstract KmsResult generateAndWrapDek(String service, byte[] destination);
+
+    /**
+     * Makes this process's memory harder to recover, through hkdfguard_harden_process_with_flags -
+     * on every platform: no crash dumps of its memory, and no debugger attach or memory reads by
+     * other processes of the same user. What that takes differs per platform; see
+     * NativeProcessHardening.
+     *
+     * @param flags a bitwise OR of the HKDFGUARD_HARDEN_* flags ({@link #HARDEN_REQUIRE_PROTECTED_SIGNATURE}), or 0
+     * @return {@link #OK} on success, or a negative status: {@link #ERR_PROCESS_HARDENING_FAILED},
+     *         or {@link #ERR_INVALID_ARGUMENT} for an unknown flag
+     */
+    public abstract int hardenProcess(int flags);
 
     /**
      * Reads a wrapped-key file through the native library's hkdfguard_open_file, which refuses a

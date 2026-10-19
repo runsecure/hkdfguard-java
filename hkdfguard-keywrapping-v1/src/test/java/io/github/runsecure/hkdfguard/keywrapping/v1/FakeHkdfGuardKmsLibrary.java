@@ -35,6 +35,11 @@ final class FakeHkdfGuardKmsLibrary extends AbstractHkdfGuardKmsLibrary {
     /** When set, answers describeStatus; otherwise the base class (the shared descriptions). */
     IntFunction<String> describe;
 
+    /** What hardenProcess returns. */
+    int hardenStatus = OK;
+    int hardenCallCount;
+    Integer lastHardenFlags;
+
     /** When set, every call throws this, as a binding whose library failed to load does. */
     RuntimeException throwOnCall;
 
@@ -95,6 +100,15 @@ final class FakeHkdfGuardKmsLibrary extends AbstractHkdfGuardKmsLibrary {
         var payload = generateAndWrapPayloadToEmit != null ? generateAndWrapPayloadToEmit : new byte[64];
         System.arraycopy(payload, 0, destination, 0, payload.length);
         return new KmsResult(OK, bytesWrittenOverride != null ? bytesWrittenOverride : payload.length);
+    }
+
+    @Override
+    public int hardenProcess(int flags) {
+        hardenCallCount++;
+        lastHardenFlags = flags;
+        if (throwOnCall != null)
+            throw throwOnCall;
+        return hardenStatus;
     }
 
     @Override

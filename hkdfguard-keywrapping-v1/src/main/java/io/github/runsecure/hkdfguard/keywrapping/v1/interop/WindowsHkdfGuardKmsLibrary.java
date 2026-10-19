@@ -19,6 +19,7 @@ public final class WindowsHkdfGuardKmsLibrary extends NativeKmsLibrary {
             case ERR_KEK_NOT_FOUND -> "no KEK is provisioned for this service; run hkdfguard provision from an elevated prompt";
             case ERR_KEK_ACCESS_DENIED -> "the KEK exists, but this account is not authorized to use it (or, for a new KEK, the process is not elevated); add it to the HkdfGuardUsers group or a KeyUseGroups group";
             case ERR_KEK_INVALID -> "the existing KEK's ACL is missing, lacks SYSTEM/Administrators, or grants an over-broad principal";
+            case ERR_PROCESS_HARDENING_FAILED -> "process hardening failed: the crash-report heap exclusion or the process and thread access lists could not be set, or (with REQUIRE_PROTECTED_SIGNATURE) the process could not be closed to its own user";
             default -> super.describeStatus(status);
         };
     }

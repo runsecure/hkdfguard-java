@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -74,6 +75,16 @@ class KmsLibraryContractTest {
     void sharedConstants_MatchTheNativeHeaders() {
         assertEquals(32, AbstractHkdfGuardKmsLibrary.DEK_LENGTH);
         assertEquals(0, AbstractHkdfGuardKmsLibrary.OK);
+        assertEquals(0x1, AbstractHkdfGuardKmsLibrary.HARDEN_REQUIRE_PROTECTED_SIGNATURE);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"Windows, access lists", "Linux, ptrace", "macOS, Hardened Runtime"})
+    void eachPlatform_DescribesAHardeningFailureInItsOwnTerms(String platform, String hint) {
+        var description = libraryFor(platform).describeStatus(AbstractHkdfGuardKmsLibrary.ERR_PROCESS_HARDENING_FAILED);
+
+        assertTrue(description.startsWith("process hardening failed: "), description);
+        assertTrue(description.contains(hint), description);
     }
 
     @ParameterizedTest
@@ -181,6 +192,11 @@ class KmsLibraryContractTest {
 
         @Override
         public KmsResult generateAndWrapDek(String service, byte[] destination) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public int hardenProcess(int flags) {
             throw new UnsupportedOperationException();
         }
 

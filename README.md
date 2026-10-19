@@ -19,7 +19,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-diagnostics`               | HkdfGuard.Diagnostics                | `HkdfGuardTelemetry`, span/attribute/event/metric names, `HkdfGuardLog` |
 | `hkdfguard-abstractions`              | HkdfGuard.Abstractions               | `CryptoProvider`, `KeyWrapper`, `KeyRing`, `DataProtector`, ... ; `ProtectedCacheBase`, `ServiceNames`, `ProtectedConfigurationPurpose` |
 | `hkdfguard-cryptoprovider-aesgcm256`  | HkdfGuard.CryptoProvider.AesGcm256   | `AesGcmCryptoProviderImpl`, `AesGcmCryptoProviderFactoryImpl`, `AesGcmPipelineDataProtectorImpl` |
-| `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library (Java 25+) |
+| `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
 | `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl` |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
@@ -223,6 +223,65 @@ number for number, and every failure message names the status and what it means:
 
 Every other negative code (-7, -13..-15, -21..-31, -40..-63, ...) is reserved.
 
+## Process hardening
+
+DEKs pass through your process's memory, so a crash dump, or another process of the same user
+attaching a debugger or reading that memory, could recover them. `NativeProcessHardening.apply()`
+(in `hkdfguard-keywrapping-v1`) calls the native library's `hkdfguard_harden_process_with_flags`
+to close that off, on every platform:
+
+| Platform | What it does |
+|---|---|
+| Windows | Crash reports leave out the heap, and the process's and its threads' access lists are replaced so only SYSTEM can read or write its memory, inject threads or duplicate its handles. Its own account keeps only query, synchronize and terminate. |
+| Linux | Core dumps off (hard limit included), and the process marked non-dumpable, which also stops ptrace and `/proc/<pid>/mem` access by the same user. |
+| macOS | Core dumps off and debugger attachment denied. Whether code can be injected depends on the host executable's code signature, which the library checks but can't change. |
+
+Neither the native library nor any machine policy does this for you: it changes process-wide
+state your application owns, so it is opt-in. Call it once, early in startup - first thing in
+`main`, before starting a framework or worker threads on Windows, and after any privilege drop on
+Linux:
+
+```java
+public static void main(String[] args) {
+    NativeProcessHardening.apply();   // throws IllegalStateException if it fails: don't start
+    SpringApplication.run(MyApplication.class, args);
+}
+```
+
+It loads and verifies the native library first, so it can also throw what loading throws
+(`NativeLibraryNotFoundException`, `SecurityException`, or `UnsupportedOperationException` on a
+platform without one). Debuggers, `jcmd`, `jstack` and other attach-based tools, and crash dumps
+stop working for the process. It is a same-user barrier: it does not stop administrators, root,
+SYSTEM, `SeDebugPrivilege`, `CAP_SYS_PTRACE` or the kernel, and it does not keep memory out of
+swap, the page file or hibernation files. Nor does it stop the JVM's own injection points
+(`-agentpath`, `-javaagent`, `JAVA_TOOL_OPTIONS`), which act before `main`.
+
+`NativeProcessHardening.apply(ProcessHardeningOption.REQUIRE_PROTECTED_SIGNATURE)` is the strict
+form the native command-line tools use: it fails unless no other process of the same user can
+debug or inject into this one.
+
+- **Windows:** it also closes threads started later, and everything else the process creates
+  afterwards without its own security descriptor (child processes, named pipes, named events), to
+  its own account. Use it in a service that shares no objects with other processes by name.
+- **macOS:** it fails unless the host executable is signed with the Hardened Runtime and without
+  the `get-task-allow` or `DYLD_*` entitlements, so an unsigned host, or a JDK launcher whose
+  entitlements allow either, can't use it (check with `codesign -d --entitlements - <java>`).
+  Without it, a weak signature is only logged.
+- **Linux:** it adds nothing; the plain call already guarantees it.
+
+**Java on Windows:** the plain call closes the threads that exist when it runs, and threads started
+later keep the default access, which lets other processes of the same user read and change their
+registers. A Java application can't call it "before starting threads": the JVM starts threads of its
+own before `main` runs (garbage collector, JIT compiler, reference handler and finalizer threads),
+and keeps adding more whenever it needs them - more compiler threads, the common `ForkJoinPool`,
+virtual-thread carriers, a framework's executors. Calling it first thing in `main` covers the
+threads that exist then, not the ones added later, so **use `REQUIRE_PROTECTED_SIGNATURE` for a
+Windows service**: it closes later threads too.
+
+The Spring Boot starter deliberately has no property for this: auto-configuration runs after
+Spring has started its own threads and loaded the application's classes, too late to be the
+"first thing at startup" it should be, so call it in `main` before `SpringApplication.run`.
+
 ## Building
 
 ```
@@ -269,3 +328,15 @@ HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest ./mvnw verify
 ```
 
 The tests only ever use a provisioned KEK: they never create or delete one.
+
+**Process hardening.** `NativeProcessHardeningTest`'s Windows and Linux tests harden the test JVM
+itself, so they run only with `HKDFGUARD_TEST_PROCESS_HARDENING=1` (and the native library
+installed). Run them on their own, each in its own JVM, since the plain and strict forms can't be
+undone:
+
+```bash
+export HKDFGUARD_TEST_PROCESS_HARDENING=1
+./mvnw -pl hkdfguard-keywrapping-v1 -am test -Dsurefire.failIfNoSpecifiedTests=false -Dtest='NativeProcessHardeningTest#apply_OnWindows_ClosesTheProcessToItsOwnAccount'
+./mvnw -pl hkdfguard-keywrapping-v1 -am test -Dsurefire.failIfNoSpecifiedTests=false -Dtest='NativeProcessHardeningTest#apply_OnWindows_WithRequireProtectedSignature_Succeeds'
+./mvnw -pl hkdfguard-keywrapping-v1 -am test -Dsurefire.failIfNoSpecifiedTests=false -Dtest='NativeProcessHardeningTest#apply_OnLinux_*'
+```

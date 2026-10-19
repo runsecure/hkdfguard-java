@@ -40,6 +40,11 @@ abstract sealed class NativeKmsLibrary extends AbstractHkdfGuardKmsLibrary
     }
 
     @Override
+    public final int hardenProcess(int flags) {
+        return functions().hardenProcess(flags);
+    }
+
+    @Override
     protected final KmsResult openFileRaw(String path, byte[] destination) {
         return functions().openFile(path, destination);
     }
