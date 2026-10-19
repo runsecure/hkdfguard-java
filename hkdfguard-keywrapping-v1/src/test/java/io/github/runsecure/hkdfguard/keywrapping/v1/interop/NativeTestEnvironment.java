@@ -64,6 +64,42 @@ public final class NativeTestEnvironment {
                 () -> "The native KMS library is not installed at " + WindowsNativeLibraryLoader.installedPath() + ".");
     }
 
+    /** True on Linux. */
+    public static boolean isLinux() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("linux");
+    }
+
+    /** Skips the calling test unless it runs on Linux. */
+    public static void assumeLinux() {
+        Assumptions.assumeTrue(isLinux(), "Linux only.");
+    }
+
+    /**
+     * Where the libhkdfguard1 package installed the Linux library (the first of
+     * LinuxNativeLibraryLoader's candidate locations that holds a file), or null if it isn't
+     * installed, this isn't Linux, or no package is built for this architecture.
+     */
+    public static String linuxInstalledPath() {
+        if (!isLinux())
+            return null;
+        try {
+            return LinuxNativeLibraryLoader.candidatePaths(CpuArchitecture.current()).stream()
+                    .filter(p -> Files.exists(Path.of(p)))
+                    .findFirst()
+                    .orElse(null);
+        } catch (UnsupportedOperationException e) {
+            return null; // no package for this architecture
+        }
+    }
+
+    /** The installed Linux library's path, skipping the calling test when it isn't installed. */
+    public static String assumeLinuxLibraryInstalled() {
+        assumeLinux();
+        var path = linuxInstalledPath();
+        Assumptions.assumeTrue(path != null, "The libhkdfguard1 package is not installed.");
+        return path;
+    }
+
     /** The provisioned service, skipping the calling test when there is none. */
     public static String assumeService() {
         var resolution = resolve();

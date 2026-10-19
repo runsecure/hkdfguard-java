@@ -23,7 +23,8 @@
       Windows: %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll          (WindowsNativeLibraryLoader)
       macOS:   /Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib, or
                ~/.hkdfguard/v1/libhkdfguard_v1.dylib               (MacOsNativeLibraryLoader)
-      Linux:   libHkdfGuardKeyProtectionLinux.so, by the default dynamic-linker search
+      Linux:   /usr/lib/<multiarch>/libhkdfguard.so.1, or /usr/lib64/libhkdfguard.so.1
+               (the libhkdfguard1 package)                         (LinuxNativeLibraryLoader)
     Applications must grant this module native access with the JVM's enable-native-access option,
     naming io.github.runsecure.hkdfguard.keywrapping.v1 (or ALL-UNNAMED on the class path).
   -->

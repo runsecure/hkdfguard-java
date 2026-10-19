@@ -1,23 +1,17 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
-import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
-import java.lang.foreign.Arena;
-import java.lang.foreign.SymbolLookup;
-
 /**
- * Binds libHkdfGuardKeyProtectionLinux.so (see hkdfguard.h), which picks the strongest available
- * provider on the host - TPM2 &gt; PKCS#11 &gt; external secret &gt; software &gt; ephemeral - to hold
- * the per-service KEK. Every native call returns a plain status code, from the shared table in
- * {@link AbstractHkdfGuardKmsLibrary}. Loaded by the dynamic linker's default search, as the .NET
- * library does.
+ * Binds libhkdfguard.so.1 from the libhkdfguard1 package (hkdfguard-libs on RPM distributions; see
+ * hkdfguard.h), loaded only from its install location - /usr/lib/&lt;multiarch&gt; or /usr/lib64 -
+ * after the checks in {@link LinuxNativeLibraryLoader}, never by name through the dynamic linker's
+ * search. It holds the per-service KEK on the strongest provider the root-owned policy allows -
+ * TPM2, PKCS#11 or an external secret file. Every native call returns a plain status code, from the
+ * shared table in {@link AbstractHkdfGuardKmsLibrary}.
  * <p>
  * No call here creates a KEK: {@code hkdfguard provision --service-name <name>} (/usr/bin/hkdfguard)
  * must create it first, or wrap fails with {@link #ERR_KEK_NOT_FOUND}.
  */
-@SuppressWarnings("restricted") // Loads the library through the FFM API; the module requires --enable-native-access.
 public final class LinuxHkdfGuardKmsLibrary extends NativeKmsLibrary {
-    static final String LIBRARY_NAME = "HkdfGuardKeyProtectionLinux";
-
     @Override
     public String describeStatus(int status) {
         return switch (status) {
@@ -33,15 +27,7 @@ public final class LinuxHkdfGuardKmsLibrary extends NativeKmsLibrary {
 
     @Override
     protected KmsFunctions bind() {
-        var fileName = System.mapLibraryName(LIBRARY_NAME);
-        SymbolLookup library;
-        try {
-            library = SymbolLookup.libraryLookup(fileName, Arena.global());
-        } catch (IllegalArgumentException e) {
-            throw new NativeLibraryNotFoundException("The HkdfGuard native KMS library '" + fileName + "' could not be loaded.", e);
-        }
-
-        return KmsFunctions.bind(name -> library.find(name)
-                .orElseThrow(() -> new IllegalStateException("'" + fileName + "' has no '" + name + "' export.")));
+        var library = LinuxNativeLibraryLoader.load();
+        return KmsFunctions.bind(name -> LinuxNativeLibraryLoader.export(library, name));
     }
 }
