@@ -47,8 +47,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * real KEK provider - on a TPM host, provisioned by the .NET port's scripts/provision-linux-test-key.sh:
  * <pre>
  * sudo scripts/provision-linux-test-key.sh
- * HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
- * HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+ * HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
+ * HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
  * ./mvnw verify
  * </pre>
  * NativeKeyWrappingIntegrationTest covers what every platform shares; these pin down the exact

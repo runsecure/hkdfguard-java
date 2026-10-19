@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
  * The runtime keys a process generates for itself through the real native KEK, protecting values
  * and a cache - the .NET port's NativeEndToEndTests.RuntimeKeys_GeneratedThroughTheNativeKek_ProtectValuesAndTheCache,
  * here because the cache module is the one that sees both the key ring and the cache. Runs against
- * HKDFGUARD_TEST_SERVICE, or on Windows the provisioned test KEK com.hkdfguard.native.windows.test;
+ * HKDFGUARD_TEST_SERVICE, or on Windows the provisioned test KEK com.hkdfguard.integration.test.221;
  * reported as skipped where there is none (as hkdfguard-dataencryptionkey's NativeEndToEndTest).
  */
 class NativeEndToEndCacheTest {
@@ -34,7 +34,7 @@ class NativeEndToEndCacheTest {
 
         Assumptions.assumeTrue(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows"),
                 "Set HKDFGUARD_TEST_SERVICE to a provisioned service to run native end-to-end tests.");
-        var candidate = "com.hkdfguard.native.windows.test";
+        var candidate = "com.hkdfguard.integration.test.221";
         try {
             new NativeHkdfKeyWrapperV1Impl(candidate).generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]).get();
         } catch (ExecutionException | InterruptedException e) {

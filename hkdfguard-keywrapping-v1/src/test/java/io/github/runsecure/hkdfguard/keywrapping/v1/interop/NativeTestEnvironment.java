@@ -36,21 +36,21 @@ public final class NativeTestEnvironment {
      * provisions. Used when {@link #SERVICE_VARIABLE} is unset and the installed library reports it
      * exists.
      */
-    public static final String DEFAULT_WINDOWS_SERVICE_NAME = "com.hkdfguard.native.windows.test";
+    public static final String DEFAULT_WINDOWS_SERVICE_NAME = "com.hkdfguard.integration.test.221";
 
     /**
      * The macOS test KEK the other ports' scripts/provision-macos-test-key.sh provisions. Used when
      * {@link #SERVICE_VARIABLE} is unset and the installed hkdfguard-v1-initialize reports it
      * present.
      */
-    public static final String DEFAULT_MACOS_SERVICE_NAME = "com.hkdfguard.native.macos.test";
+    public static final String DEFAULT_MACOS_SERVICE_NAME = "com.hkdfguard.integration.test.221";
 
     /**
      * The Linux test KEK the .NET port's scripts/provision-linux-test-key.sh provisions (with
      * {@code <name>.other} as the second service). Linux has no non-prompting way to ask whether a
      * KEK exists, so it is only used when named in {@link #SERVICE_VARIABLE}.
      */
-    public static final String DEFAULT_LINUX_SERVICE_NAME = "com.hkdfguard.native.linux.test";
+    public static final String DEFAULT_LINUX_SERVICE_NAME = "com.hkdfguard.integration.test.221";
 
     /** Optional second provisioned service, for the cross-service isolation test. */
     public static final String OTHER_SERVICE_VARIABLE = "HKDFGUARD_TEST_SERVICE_OTHER";

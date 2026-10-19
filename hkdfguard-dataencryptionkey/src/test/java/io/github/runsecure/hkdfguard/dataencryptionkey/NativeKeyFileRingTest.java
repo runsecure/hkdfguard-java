@@ -26,10 +26,10 @@ import org.junit.jupiter.api.Test;
  * A key ring reads its key files through the real native library's hkdfguard_open_file. Refusing a
  * plaintext key file needs only the installed Windows library; building from a real wrapped key
  * needs HKDFGUARD_TEST_SERVICE, or on Windows the provisioned test KEK
- * com.hkdfguard.native.windows.test. Reported as skipped where those are missing.
+ * com.hkdfguard.integration.test.221. Reported as skipped where those are missing.
  */
 class NativeKeyFileRingTest {
-    private static final String WINDOWS_TEST_SERVICE = "com.hkdfguard.native.windows.test";
+    private static final String WINDOWS_TEST_SERVICE = "com.hkdfguard.integration.test.221";
 
     private Path directory;
 

@@ -33,7 +33,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * End to end over the real native KEK: a pipeline encrypting configuration through to the
  * application reading it back, and the runtime keys a process generates for itself. Runs against
- * HKDFGUARD_TEST_SERVICE, or on Windows the provisioned test KEK com.hkdfguard.native.windows.test;
+ * HKDFGUARD_TEST_SERVICE, or on Windows the provisioned test KEK com.hkdfguard.integration.test.221;
  * reported as skipped where there is none.
  */
 class NativeEndToEndTest {
@@ -55,7 +55,7 @@ class NativeEndToEndTest {
 
         Assumptions.assumeTrue(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows"),
                 "Set HKDFGUARD_TEST_SERVICE to a provisioned service to run native end-to-end tests.");
-        var candidate = "com.hkdfguard.native.windows.test";
+        var candidate = "com.hkdfguard.integration.test.221";
         try {
             new NativeHkdfKeyWrapperV1Impl(candidate).generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]).get();
         } catch (ExecutionException | InterruptedException e) {

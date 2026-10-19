@@ -305,17 +305,17 @@ ports; every test that can't run here is reported as skipped, never as passed:
 | Windows | `WindowsNativeLibraryLoaderTest` (its installed-library tests), `NativeKeyFileTest`, `NativeKeyWrappingIntegrationTest`, `NativeEndToEndTest`, `NativeEndToEndCacheTest`, `NativeProcessHardeningTest` | Windows; `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` installed; a provisioned KEK for the round trips |
 
 On Linux the test KEKs come from the .NET port's `scripts/provision-linux-test-key.sh` on a TPM
-host, which provisions `com.hkdfguard.native.linux.test` and `com.hkdfguard.native.linux.test.other`
+host, which provisions `com.hkdfguard.integration.test.221` and `com.hkdfguard.integration.test.221.other`
 and sets the pinned-names allowlist; Linux has no non-prompting way to ask whether a KEK exists, so
 name them explicitly:
 
 ```bash
-HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
-HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
+HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
 ./mvnw verify
 ```
 
-On macOS, with `HKDFGUARD_TEST_SERVICE` unset, the tests use `com.hkdfguard.native.macos.test` when
+On macOS, with `HKDFGUARD_TEST_SERVICE` unset, the tests use `com.hkdfguard.integration.test.221` when
 the installed `hkdfguard-v1-initialize status` reports it present, and are skipped when it reports it
 absent. Every
 platform's library refuses to create a KEK while wrapping or unwrapping, so these tests run only
@@ -323,7 +323,7 @@ against a service provisioned beforehand. Without one they are reported as skipp
 passed. Once a service is chosen, a missing or failing library is a test failure.
 
 **Windows.** Install the HkdfGuard native package, then provision the test KEK
-`com.hkdfguard.native.windows.test` once, from an elevated PowerShell at the repository root:
+`com.hkdfguard.integration.test.221` once, from an elevated PowerShell at the repository root:
 
 ```powershell
 ./scripts/provision-windows-test-key.ps1
