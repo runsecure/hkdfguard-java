@@ -19,6 +19,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -165,6 +167,12 @@ class NativeProcessHardeningTest {
         var queryable = Kernel32.openOwnProcess(Kernel32.PROCESS_QUERY_LIMITED_INFORMATION);
         assertNotEquals(0L, queryable.handle(), "PROCESS_QUERY_LIMITED_INFORMATION was refused, error " + queryable.lastError());
 
+        // This thread existed when the hardening ran, so it is closed too (Go's
+        // TestWindowsNative_HardenProcess_ClosesTheProcessToItsOwnAccount).
+        var context = Kernel32.openThreadContext(Kernel32.currentThreadId());
+        assertEquals(0L, context.handle(), "THREAD_GET_CONTEXT on an existing thread was still granted");
+        assertEquals(Kernel32.ERROR_ACCESS_DENIED, context.lastError());
+
         // Idempotent: hardening an already hardened process succeeds.
         NativeProcessHardening.apply();
     }
@@ -184,9 +192,27 @@ class NativeProcessHardeningTest {
         assertEquals(0L, readable.handle(), "PROCESS_VM_READ was still granted");
         assertEquals(Kernel32.ERROR_ACCESS_DENIED, readable.lastError());
 
-        // The JVM still works afterwards: it can start threads and run them to completion.
-        var thread = Thread.ofPlatform().start(() -> { });
-        thread.join();
+        // The JVM still works afterwards: it can start threads and run them to completion - and a
+        // thread started afterwards is closed to this account too (Go's
+        // TestWindowsNative_HardenProcess_WithRequireProtectedSignature_ClosesLaterThreadsToo).
+        var started = new CompletableFuture<Integer>();
+        var release = new CountDownLatch(1);
+        var thread = Thread.ofPlatform().start(() -> {
+            try {
+                started.complete(Kernel32.currentThreadId());
+                release.await();
+            } catch (Throwable t) {
+                started.completeExceptionally(t);
+            }
+        });
+        try {
+            var context = Kernel32.openThreadContext(started.get());
+            assertEquals(0L, context.handle(), "THREAD_GET_CONTEXT on a thread started afterwards was still granted");
+            assertEquals(Kernel32.ERROR_ACCESS_DENIED, context.lastError());
+        } finally {
+            release.countDown();
+            thread.join();
+        }
     }
 
     private static void assumeOptedIn() {
@@ -198,6 +224,7 @@ class NativeProcessHardeningTest {
     private static final class Kernel32 {
         static final int PROCESS_VM_READ = 0x0010;
         static final int PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        static final int THREAD_GET_CONTEXT = 0x0008;
         static final int ERROR_ACCESS_DENIED = 5;
 
         private static final Linker LINKER = Linker.nativeLinker();
@@ -211,7 +238,31 @@ class NativeProcessHardeningTest {
         private static final MethodHandle CLOSE_HANDLE = LINKER.downcallHandle(KERNEL32.find("CloseHandle").orElseThrow(),
                 FunctionDescriptor.of(JAVA_INT, ADDRESS));
 
+        // HANDLE OpenThread(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwThreadId)
+        private static final MethodHandle OPEN_THREAD = LINKER.downcallHandle(KERNEL32.find("OpenThread").orElseThrow(),
+                FunctionDescriptor.of(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT), Linker.Option.captureCallState("GetLastError"));
+        // DWORD GetCurrentThreadId(void)
+        private static final MethodHandle GET_CURRENT_THREAD_ID = LINKER.downcallHandle(KERNEL32.find("GetCurrentThreadId").orElseThrow(),
+                FunctionDescriptor.of(JAVA_INT));
+
         record Opened(long handle, int lastError) {
+        }
+
+        /** The calling platform thread's Windows thread id. */
+        static int currentThreadId() throws Throwable {
+            return (int) GET_CURRENT_THREAD_ID.invokeExact();
+        }
+
+        /** Opens a thread of this process for THREAD_GET_CONTEXT, closing any handle it got. */
+        static Opened openThreadContext(int threadId) throws Throwable {
+            try (var arena = Arena.ofConfined()) {
+                var state = arena.allocate(CAPTURED);
+                var handle = (MemorySegment) OPEN_THREAD.invokeExact(state, THREAD_GET_CONTEXT, 0, threadId);
+                var lastError = (int) LAST_ERROR.get(state, 0L);
+                if (handle.address() != 0)
+                    assertNotEquals(0, (int) CLOSE_HANDLE.invokeExact(handle));
+                return new Opened(handle.address(), lastError);
+            }
         }
 
         /** Opens this process for {@code access}, closing any handle it got: only the outcome is kept. */

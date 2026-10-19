@@ -291,9 +291,33 @@ Spring has started its own threads and loaded the application's classes, too lat
 ## Native integration tests
 
 The native tests make real calls into this platform's KMS library: `NativeKeyWrappingIntegrationTest`
-and `NativeKeyFileTest` in hkdfguard-keywrapping-v1, and `NativeEndToEndTest` and
-`NativeKeyFileRingTest` in hkdfguard-dataencryptionkey. The key-file refusals that need no KEK run
-wherever the Windows library is installed. Every
+and `NativeKeyFileTest` in hkdfguard-keywrapping-v1, `NativeEndToEndTest` and
+`NativeKeyFileRingTest` in hkdfguard-dataencryptionkey, and `NativeEndToEndCacheTest` in
+hkdfguard-cache. The key-file refusals that need no KEK run wherever the Windows library is
+installed. Each platform also has its own suite, the same cases as the .NET, Go, Python and Node
+ports; every test that can't run here is reported as skipped, never as passed:
+
+| Platform | Suite (hkdfguard-keywrapping-v1, `interop` package) | Gating |
+|---|---|---|
+| Linux | `LinuxNativeLibraryLoaderSystemTest`: the loader against this machine's filesystem and dynamic linker | Linux only; the installed-library tests also need the libhkdfguard1 package |
+| Linux | `LinuxNativeIntegrationTest`: exact status codes, the library's own input checks, zeroing on failure, and the hkdfguard CLI deployment path | Linux, the libhkdfguard1 package and `HKDFGUARD_TEST_SERVICE`; some tests also need `HKDFGUARD_TEST_SERVICE_OTHER`, `tpm.require_pinned_names = true` in `/etc/hkdfguard/policy.toml`, or `/usr/bin/hkdfguard` |
+| macOS | `MacOsNativeIntegrationTest`: the installed `libhkdfguard_v1.dylib` passes location and signature checks, the provisioning tool and unsigned or user-owned files are refused, and `hkdfguard-v1-initialize status` agrees with the test service resolution | macOS only; most tests also need the library, or `hkdfguard-v1-initialize` beside it, installed |
+| Windows | `WindowsNativeLibraryLoaderTest` (its installed-library tests), `NativeKeyFileTest`, `NativeKeyWrappingIntegrationTest`, `NativeEndToEndTest`, `NativeEndToEndCacheTest`, `NativeProcessHardeningTest` | Windows; `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` installed; a provisioned KEK for the round trips |
+
+On Linux the test KEKs come from the .NET port's `scripts/provision-linux-test-key.sh` on a TPM
+host, which provisions `com.hkdfguard.native.linux.test` and `com.hkdfguard.native.linux.test.other`
+and sets the pinned-names allowlist; Linux has no non-prompting way to ask whether a KEK exists, so
+name them explicitly:
+
+```bash
+HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
+HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+./mvnw verify
+```
+
+On macOS, with `HKDFGUARD_TEST_SERVICE` unset, the tests use `com.hkdfguard.native.macos.test` when
+the installed `hkdfguard-v1-initialize status` reports it present, and are skipped when it reports it
+absent. Every
 platform's library refuses to create a KEK while wrapping or unwrapping, so these tests run only
 against a service provisioned beforehand. Without one they are reported as skipped, never as
 passed. Once a service is chosen, a missing or failing library is a test failure.

@@ -2,6 +2,7 @@ package io.github.runsecure.hkdfguard.keywrapping.v1;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -85,6 +86,38 @@ class NativeKeyFileTest {
         int length = new NativeHkdfKeyWrapperV1Impl(service).wrapAsync(dek.clone(), buffer).get();
         var wrapped = Arrays.copyOf(buffer, length);
         return new WrappedFile(write("wrapped-dek.bin", wrapped), wrapped, dek);
+    }
+
+    // --- The folder the key files are written to -------------------------------------------------
+
+    @Test
+    void theKeyFileFolder_IsInItsLongForm() {
+        // hkdfguard_open_file refuses an 8.3 short name anywhere in a path, so every Windows test
+        // here relies on NativeTestEnvironment.createTempDirectory expanding one (for example
+        // C:\Users\RUNNER~1\... on GitHub-hosted runners).
+        NativeTestEnvironment.assumeWindowsLibraryInstalled();
+
+        for (var part : directory) {
+            var name = part.toString();
+            var tilde = name.indexOf('~');
+            assertFalse(tilde >= 0 && tilde + 1 < name.length() && Character.isDigit(name.charAt(tilde + 1)),
+                    directory + " still has the short name " + name);
+        }
+    }
+
+    // --- Any platform's installed library --------------------------------------------------------
+
+    @Test
+    void theInstalledLibrary_AnswersOpenFile_WithADescribedRefusal() {
+        // hkdfguard_open_file needs no KEK: a file that isn't there is refused with a status this
+        // platform describes - which proves the binding reached it.
+        NativeTestEnvironment.assumeLibraryInstalled();
+
+        var failure = readFailure(directory.resolve("missing").resolve("dek.bin"));
+
+        assertInstanceOf(IOException.class, failure);
+        assertTrue(failure.getMessage().contains("refused by the native library with status"), failure.getMessage());
+        assertFalse(failure.getMessage().contains("unknown status"), failure.getMessage());
     }
 
     // --- A real key file ------------------------------------------------------------------------

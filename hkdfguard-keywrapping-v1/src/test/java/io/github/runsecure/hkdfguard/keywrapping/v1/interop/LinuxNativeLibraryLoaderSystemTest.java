@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.lang.foreign.Linker;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -46,6 +47,52 @@ class LinuxNativeLibraryLoaderSystemTest {
         var libc = LinuxNative.loadedPath("libc.so.6");
         assertNotNull(libc);
         assertTrue(resolve(libc).startsWith("/"));
+    }
+
+    @Test
+    void theRootAndSystemLibraryDirectories_AreTrusted() {
+        // Go's TestLinuxSystem_TheRootAndSystemLibraryDirectories_AreTrusted.
+        for (var directory : List.of("/", "/usr/lib"))
+            assertEquals(directory, resolve(directory, UnixFileType.DIRECTORY, false));
+    }
+
+    @Test
+    void probeDistinguishesMissingFromPresent() {
+        assertEquals(0, LinuxNative.probe("/"));
+        assertEquals(2, LinuxNative.probe("/definitely/not/here")); // ENOENT
+    }
+
+    @Test
+    void statusAndReadLink_DescribeThisUsersFiles() throws IOException {
+        var directory = Files.createTempDirectory("hkdfguard-status-");
+        var file = directory.resolve("file");
+        var link = directory.resolve("link");
+        try {
+            Files.createFile(file, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-r-----")));
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r-----")); // whatever the umask
+            Files.createSymbolicLink(link, Path.of("file"));
+            var uid = ((Number) Files.getAttribute(directory, "unix:uid")).longValue();
+
+            var status = LinuxNative.statusOrNull(file.toString());
+            assertEquals(UnixFileType.REGULAR_FILE, status.type());
+            assertEquals(uid, status.ownerId());
+            assertEquals(PosixFilePermissions.fromString("rw-r-----"), status.permissions());
+
+            var linkStatus = LinuxNative.statusOrNull(link.toString());
+            assertEquals(UnixFileType.SYMBOLIC_LINK, linkStatus.type());
+            assertEquals(uid, linkStatus.ownerId());
+            assertEquals("file", LinuxNative.readLink(link.toString()));
+            assertNull(LinuxNative.statusOrNull(directory.resolve("missing").toString()));
+
+            // In a temporary directory - world-writable, or owned by this user - so the loader
+            // refuses it, however it is reached.
+            assertThrows(SecurityException.class, () -> resolve(file.toString()));
+            assertThrows(SecurityException.class, () -> resolve(link.toString()));
+        } finally {
+            Files.deleteIfExists(link);
+            Files.deleteIfExists(file);
+            Files.delete(directory);
+        }
     }
 
     @Test
@@ -156,5 +203,9 @@ class LinuxNativeLibraryLoaderSystemTest {
         // And the export the binding calls came from the verified file.
         var export = LinuxNativeLibraryLoader.export(library, LinuxNativeLibraryLoader.PROBE_EXPORT);
         assertEquals(path, resolve(LinuxNative.imagePath(export)));
+
+        // And every dependency the dynamic linker pulled in came from a trusted file (Go's
+        // TestLinuxSystem_TheInstalledLibrary_LoadsThroughTheVerifiedLoader_AndItsDependenciesAreTrusted).
+        LinuxNativeLibraryLoader.verifyDependencies(path, ElfDependencies::readNeeded, LinuxNative::loadedPath, LinuxNativeLibraryLoaderSystemTest::resolve);
     }
 }
