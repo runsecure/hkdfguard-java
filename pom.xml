@@ -50,6 +50,8 @@
     <module>hkdfguard-abstractions</module>
     <module>hkdfguard-cryptoprovider-aesgcm256</module>
     <module>hkdfguard-keywrapping-v1</module>
+    <!-- Test-only helpers shared by other modules' tests; never published (see its POM). -->
+    <module>hkdfguard-test-support</module>
     <module>hkdfguard-dataencryptionkey</module>
     <module>hkdfguard-cache</module>
     <module>hkdfguard-options</module>
@@ -119,6 +121,12 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-spring-boot-starter</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Tests only (test scope wherever it is used); never published. -->
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-test-support</artifactId>
         <version>${project.version}</version>
       </dependency>
 
@@ -204,6 +212,12 @@
           <groupId>org.sonatype.central</groupId>
           <artifactId>central-publishing-maven-plugin</artifactId>
           <version>0.11.0</version>
+        </plugin>
+        <!-- hkdfguard-keywrapping-v1 compiles hkdfguard-test-support's sources into its tests. -->
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <version>3.6.2</version>
         </plugin>
         <!-- The release workflow stamps the tag's version into every POM with versions:set. -->
         <plugin>
@@ -351,6 +365,10 @@
               <autoPublish>true</autoPublish>
               <waitUntil>published</waitUntil>
               <deploymentName>hkdfguard-java ${project.version}</deploymentName>
+              <!-- Test-only, never published (it also sets skipPublishing itself). -->
+              <excludeArtifacts>
+                <excludeArtifact>hkdfguard-test-support</excludeArtifact>
+              </excludeArtifacts>
             </configuration>
           </plugin>
         </plugins>

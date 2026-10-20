@@ -53,22 +53,25 @@
   <build>
     <plugins>
       <!-- NativeTestEnvironment - which provisioned service the native tests use, and where key
-           files may be written - shared with the native end-to-end tests of
-           hkdfguard-dataencryptionkey and hkdfguard-cache, which depend on this tests jar. Only that
-           class is packed. -->
+           files may be written - lives in hkdfguard-test-support, shared with the native tests of
+           hkdfguard-dataencryptionkey and hkdfguard-cache. This module can't depend on it (it
+           depends on this module), so its sources are compiled into this module's tests instead:
+           the same package, so the helper reaches the interop package's package-private loaders
+           here as there. Nothing of it ships in this module's jar. -->
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-jar-plugin</artifactId>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
         <executions>
           <execution>
-            <id>native-test-environment</id>
+            <id>add-test-support-sources</id>
+            <phase>generate-test-sources</phase>
             <goals>
-              <goal>test-jar</goal>
+              <goal>add-test-source</goal>
             </goals>
             <configuration>
-              <includes>
-                <include>io/github/runsecure/hkdfguard/keywrapping/v1/interop/NativeTestEnvironment*.class</include>
-              </includes>
+              <sources>
+                <source>${project.basedir}/../hkdfguard-test-support/src/main/java</source>
+              </sources>
             </configuration>
           </execution>
         </executions>

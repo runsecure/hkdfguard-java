@@ -25,6 +25,12 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
+The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
+native integration tests of several modules share (which provisioned service they use, and where key
+files may be written). It is test code only - a test-scope dependency of hkdfguard-dataencryptionkey
+and hkdfguard-cache, compiled straight into hkdfguard-keywrapping-v1's tests (which it depends on) -
+and is never published, signed or shipped in a release.
+
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
 implementing them end in `Impl`.
 Plain data classes that implement no interface (`HkdfGuardOptions`, `KeyFileOptions`) keep their
@@ -305,20 +311,21 @@ ports; every test that can't run here is reported as skipped, never as passed:
 | Windows | `WindowsNativeLibraryLoaderTest` (its installed-library tests), `NativeKeyFileTest`, `NativeKeyWrappingIntegrationTest`, `NativeEndToEndTest`, `NativeEndToEndCacheTest`, `NativeProcessHardeningTest` | Windows; `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` installed; a provisioned KEK for the round trips |
 
 On Linux the test KEKs come from `scripts/provision-linux-test-key.sh`, run once with `sudo` on a
-TPM host from the account that runs the tests (`--remove` removes the policy it wrote). It provisions `com.hkdfguard.integration.test.221` and `com.hkdfguard.integration.test.221.other`
-and sets the pinned-names allowlist; Linux has no non-prompting way to ask whether a KEK exists, so
-name them explicitly:
+TPM host from the account that runs the tests (`--remove` removes the policy it wrote). It provisions `com.hkdfguard.integration.test.221` and sets the pinned-names allowlist; Linux has
+no non-prompting way to ask whether a KEK exists, so name it explicitly. The cross-service
+isolation tests use a service that is never provisioned, unless `HKDFGUARD_TEST_SERVICE_OTHER`
+names a second real KEK:
 
 ```bash
 HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
-HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
 ./mvnw verify
 ```
 
 The Linux library refuses a key file below any group- or world-writable directory, sticky or not
 (`/tmp`, `/var/tmp`, `/dev/shm`), so the tests write key files to a private 0700 directory under
 `$XDG_RUNTIME_DIR` when that is trusted, else under `~/.cache/hkdfguard-tests`, and skip the
-key-file tests (saying why) when neither is (`NativeTestEnvironment.createTempDirectory`).
+key-file tests (saying why) when neither is (`NativeTestEnvironment.createTempDirectory`, in
+hkdfguard-test-support).
 
 On macOS, with `HKDFGUARD_TEST_SERVICE` unset, the tests use `com.hkdfguard.integration.test.221` when
 the installed `hkdfguard-v1-initialize status` reports it present, and are skipped when it reports it

@@ -47,7 +47,6 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <pre>
  * sudo scripts/provision-linux-test-key.sh
  * HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
- * HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
  * ./mvnw verify
  * </pre>
  * (the first is NativeTestEnvironment.DEFAULT_SERVICE_NAME). Key files are written to

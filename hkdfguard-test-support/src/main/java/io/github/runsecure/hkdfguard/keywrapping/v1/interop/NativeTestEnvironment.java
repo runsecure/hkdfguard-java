@@ -31,6 +31,11 @@ import org.junit.jupiter.api.Assumptions;
  * refuses to create a KEK during wrap/unwrap - one must be provisioned beforehand - so these tests
  * run only against a provisioned service and are reported as skipped otherwise. Once a service is
  * chosen, a missing or failing library is a test failure, never a silent pass.
+ *
+ * <p>Test code only: it lives in hkdfguard-test-support, which is never published, and is shared by
+ * the native tests of hkdfguard-keywrapping-v1 (which compiles this source into its own tests),
+ * hkdfguard-dataencryptionkey and hkdfguard-cache. It is in the key wrapper's interop package so
+ * it can use that package's package-private loaders without making them public.
  */
 public final class NativeTestEnvironment {
     /**
@@ -42,8 +47,8 @@ public final class NativeTestEnvironment {
 
     /**
      * The test KEK every platform's provisioning script provisions: scripts/provision-windows-test-key.ps1
-     * and scripts/provision-linux-test-key.sh (in this repository, the latter with
-     * {@code <name>.other} as the second service), and the other ports' scripts/provision-macos-test-key.sh.
+     * and scripts/provision-linux-test-key.sh (in this repository), and the other ports'
+     * scripts/provision-macos-test-key.sh.
      * Used when {@link #SERVICE_VARIABLE} is unset and the platform can confirm it is provisioned:
      * on Windows the installed library reports it exists, on macOS the installed
      * hkdfguard-v1-initialize reports it present. Linux has no non-prompting way to ask whether a
