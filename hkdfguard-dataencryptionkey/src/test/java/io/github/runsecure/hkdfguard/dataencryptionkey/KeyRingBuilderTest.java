@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.abstractions.CryptoProvider;
+import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProviderFactoryImpl;
 import java.io.IOException;
@@ -19,6 +20,8 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -222,7 +225,7 @@ class KeyRingBuilderTest {
     void keyFilesOverTheLimit_AreRefused(int length) throws IOException {
         var path = keyFile("big.bin", new byte[length]);
 
-        var ex = awaitFailure(IOException.class, configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).buildAsync());
+        var ex = awaitFailure(InvalidKeyFileException.class, configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).buildAsync());
 
         assertTrue(ex.getMessage().contains("larger than " + WrappedKeyLimits.MAX_BYTES + " bytes"));
     }
@@ -231,8 +234,74 @@ class KeyRingBuilderTest {
     void anEmptyKeyFile_IsRefused() throws IOException {
         var path = keyFile("empty.bin", new byte[0]);
 
-        var ex = awaitFailure(IOException.class, configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).buildAsync());
+        var ex = awaitFailure(InvalidKeyFileException.class, configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).buildAsync());
 
         assertTrue(ex.getMessage().contains("is empty"));
+    }
+
+    // --- Key files are read through the key wrapper ---------------------------------------------
+
+    /** A wrapper that reads its own "key files" - none of which exist on disk. */
+    private static final class ReadingKeyWrapper extends TestKeys.FakeKeyWrapper {
+        final List<Path> reads = new CopyOnWriteArrayList<>();
+        volatile IOException failure;
+        volatile Path failingPath;
+
+        ReadingKeyWrapper() {
+            super(TestKeys.randomKey());
+        }
+
+        @Override
+        public CompletableFuture<byte[]> readKeyFileAsync(Path path) {
+            reads.add(path);
+            if (failure != null && path.equals(failingPath))
+                return CompletableFuture.failedFuture(failure);
+            return CompletableFuture.completedFuture(utf8("wrapped:" + path.getFileName()));
+        }
+    }
+
+    @Test
+    void build_ReadsEveryKeyFileThroughTheKeyWrapper_NotItsOwnFileIo() {
+        var wrapper = new ReadingKeyWrapper();
+        var factory = new TestKeys.RecordingCryptoProviderFactory();
+        var v1 = directory.resolve("not-on-disk-v1.bin");
+        var v2 = directory.resolve("not-on-disk-v2.bin");
+
+        try (var ignored = await(new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory).withKeyRefreshInterval(60)
+                .withKeyFile(2, v2).withKeyFile(1, v1).buildAsync())) {
+            assertEquals(List.of(v1, v2), wrapper.reads);
+            assertArrayEquals(utf8("wrapped:not-on-disk-v1.bin"), factory.createdWrapped.get(0));
+            assertArrayEquals(utf8("wrapped:not-on-disk-v2.bin"), factory.createdWrapped.get(1));
+        }
+    }
+
+    @Test
+    void build_WhenTheKeyWrapperRefusesAKeyFile_FailsWithItsException_AndClosesWhatItCreated() {
+        var wrapper = new ReadingKeyWrapper();
+        wrapper.failingPath = directory.resolve("v2.bin");
+        wrapper.failure = new InvalidKeyFileException("Key file 'v2.bin' was refused by the native library with status -37 (...).");
+        var factory = new TestKeys.RecordingCryptoProviderFactory();
+
+        var thrown = awaitFailure(InvalidKeyFileException.class, new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory)
+                .withKeyRefreshInterval(60).withEphemeralKey(5)
+                .withKeyFile(1, directory.resolve("v1.bin"))
+                .withKeyFile(2, wrapper.failingPath)
+                .buildAsync());
+
+        assertSame(wrapper.failure, thrown);
+        assertEquals(1, factory.createdProviders.size());
+        assertClosed(factory.createdProviders.getFirst());
+    }
+
+    @Test
+    void build_WithAWrapperUsingTheDefaultRead_ReadsTheFileFromDisk() throws IOException {
+        // TestKeys.FakeKeyWrapper doesn't override readKeyFileAsync: the interface's default reads.
+        var content = utf8("wrapped-by-default");
+        var path = keyFile("v1.bin", content);
+        var factory = new TestKeys.RecordingCryptoProviderFactory();
+
+        try (var ignored = await(configured(factory).withKeyFile(1, path).buildAsync())) {
+            assertArrayEquals(content, factory.createdWrapped.getFirst());
+        }
     }
 }

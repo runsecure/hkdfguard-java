@@ -132,9 +132,9 @@ class MacOsNativeLibraryLoaderTest {
 
     @Test
     void theTwoLocations_AreTheAgreedPaths() {
-        assertEquals("/Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib", MacOsNativeLibraryLoader.systemPath());
-        assertEquals("/Users/dev/.hkdfguard/v1/libhkdfguard_v1.dylib", MacOsNativeLibraryLoader.userPath("/Users/dev"));
-        assertEquals("/Users/dev/.hkdfguard/v1/libhkdfguard_v1.dylib", MacOsNativeLibraryLoader.userPath("/Users/dev/"));
+        assertEquals("/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib", MacOsNativeLibraryLoader.systemPath());
+        assertEquals("/Users/dev/.hkdfguard/v1/libhkdfguard.dylib", MacOsNativeLibraryLoader.userPath("/Users/dev"));
+        assertEquals("/Users/dev/.hkdfguard/v1/libhkdfguard.dylib", MacOsNativeLibraryLoader.userPath("/Users/dev/"));
     }
 
     // lstat results for choosePath's probe.
@@ -192,7 +192,7 @@ class MacOsNativeLibraryLoaderTest {
                 MacOsNativeLibraryLoader.choosePath(path -> !path.startsWith("/") && path.endsWith(".dylib") ? PRESENT : ENOENT, home));
 
         assertTrue(ex.getMessage().contains(MacOsNativeLibraryLoader.systemPath()));
-        assertTrue(ex.getMessage().contains(".hkdfguard/v1/libhkdfguard_v1.dylib"));
+        assertTrue(ex.getMessage().contains(".hkdfguard/v1/libhkdfguard.dylib"));
     }
 
     @ParameterizedTest
@@ -356,7 +356,7 @@ class MacOsNativeLibraryLoaderTest {
     @Test
     void theCodeRequirement_PinsTheHkdfGuardTeam() {
         assertEquals("MFW3T8R8J3", MacOsNativeLibraryLoader.TEAM_ID);
-        assertEquals("identifier \"libhkdfguard_v1\" and anchor apple generic"
+        assertEquals("identifier \"libhkdfguard\" and anchor apple generic"
                         + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
                         + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
                         + " and certificate leaf[subject.OU] = \"MFW3T8R8J3\"",
@@ -394,8 +394,8 @@ class MacOsNativeLibraryLoaderTest {
 
     @ParameterizedTest
     @CsvSource({
-            "/tmp/decoy,/tmp/decoy/libhkdfguard_v1.dylib",
-            "/opt/lib:/tmp/decoy/:/usr/local/lib,/tmp/decoy/libhkdfguard_v1.dylib", // any entry; a trailing slash is fine
+            "/tmp/decoy,/tmp/decoy/libhkdfguard.dylib",
+            "/opt/lib:/tmp/decoy/:/usr/local/lib,/tmp/decoy/libhkdfguard.dylib", // any entry; a trailing slash is fine
     })
     void refuseShadowing_Refuses_WhenADyldLibraryPathDirectoryHoldsALibraryOfTheSameName(String searchPath, String decoy) {
         var ex = assertThrows(SecurityException.class, () ->
@@ -425,9 +425,9 @@ class MacOsNativeLibraryLoaderTest {
     @Test
     void verifyLoadedImage_Refuses_WhenDyldLoadedAnotherFile() {
         var ex = assertThrows(SecurityException.class, () ->
-                MacOsNativeLibraryLoader.verifyLoadedImage(MacOsNativeLibraryLoader.systemPath(), "/tmp/decoy/libhkdfguard_v1.dylib"));
+                MacOsNativeLibraryLoader.verifyLoadedImage(MacOsNativeLibraryLoader.systemPath(), "/tmp/decoy/libhkdfguard.dylib"));
 
-        assertTrue(ex.getMessage().contains("/tmp/decoy/libhkdfguard_v1.dylib"));
+        assertTrue(ex.getMessage().contains("/tmp/decoy/libhkdfguard.dylib"));
         assertTrue(ex.getMessage().contains(MacOsNativeLibraryLoader.systemPath()));
         assertTrue(ex.getMessage().contains("unloaded"));
     }

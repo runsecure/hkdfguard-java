@@ -6,6 +6,8 @@ import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.ServiceNames;
 import io.github.runsecure.hkdfguard.keywrapping.v1.interop.AbstractHkdfGuardKmsLibrary;
 import io.github.runsecure.hkdfguard.keywrapping.v1.interop.KmsResult;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
@@ -23,6 +25,9 @@ import java.util.function.Supplier;
  * status when the library reports an error. The native library itself is loaded and verified on
  * the first call; a missing or unverifiable library fails that call's future with
  * {@link NativeLibraryNotFoundException} or {@link SecurityException}.
+ * <p>
+ * Key files are read through the native library too ({@link #readKeyFileAsync}), so the platform's
+ * checks on a key file and its location apply before its bytes are ever used.
  */
 public final class NativeHkdfKeyWrapperV1Impl implements KeyWrapper {
     private final String serviceName;
@@ -62,6 +67,32 @@ public final class NativeHkdfKeyWrapperV1Impl implements KeyWrapper {
         return complete(() -> library.generateAndWrapDek(serviceName, result), "generate-and-wrap", null);
     }
 
+    /**
+     * Reads a key file through the native library's hkdfguard_open_file rather than Java file I/O.
+     * Besides the size and format checks, the native library refuses a file another account could
+     * have written or replaced - its path, owner and permissions are checked the way only the
+     * platform can - and one holding what looks like an unwrapped key. The bytes come back still
+     * wrapped, ready for {@link #unwrapAsync}; no KEK is touched.
+     *
+     * @param path the key file's path
+     * @return completes with the wrapped key the file holds; fails with a
+     *         {@link java.nio.file.NoSuchFileException} (the file, or a folder in its path, does not
+     *         exist), a {@link java.nio.file.AccessDeniedException} (this account may not read it,
+     *         or its path is not trusted), an
+     *         {@link io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException} (the wrong
+     *         size, what looks like an unwrapped key, or not a valid wrapped DEK), another
+     *         {@link IOException}, or - as for every call - the library failing to load
+     */
+    @Override
+    public CompletableFuture<byte[]> readKeyFileAsync(Path path) {
+        try {
+            Objects.requireNonNull(path, "path");
+            return CompletableFuture.completedFuture(library.openFile(path.toString()));
+        } catch (IOException | RuntimeException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+    }
+
     private CompletableFuture<Integer> complete(Supplier<KmsResult> call, String operation, byte[] zeroOnFailure) {
         try {
             var result = call.get();
@@ -69,7 +100,7 @@ public final class NativeHkdfKeyWrapperV1Impl implements KeyWrapper {
                 return CompletableFuture.completedFuture(result.bytesWritten());
 
             ArrayUtility.zeroMemory(zeroOnFailure);
-            // Name the platform's meaning when it is known - "-13" alone tells an operator nothing.
+            // Name the status's meaning when it is known - "-18" alone tells an operator nothing.
             var description = library.describeStatus(result.status());
             var meaning = description != null ? " (" + description + ")" : "";
             return CompletableFuture.failedFuture(new CryptographicException(

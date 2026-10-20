@@ -31,6 +31,12 @@
       <artifactId>hkdfguard-keywrapping-v1</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- NativeTestEnvironment: the provisioned test service, and private directories for key files. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk-testing</artifactId>

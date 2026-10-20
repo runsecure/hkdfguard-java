@@ -31,7 +31,7 @@ import org.bouncycastle.util.encoders.Hex;
  * search the application directory and then PATH; this loader replaces that with five checks, all
  * of which must pass before the file is mapped:
  * <ol>
- * <li>The file exists at {@code %ProgramFiles%\HkdfGuard\v1\HkdfGuardV1.dll}. The Program Files
+ * <li>The file exists at {@code %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll}. The Program Files
  * location comes from the Windows known-folder registry setting, which only an administrator can
  * change, not from the {@code ProgramFiles} environment variable.</li>
  * <li>No component of that path, from the file up to (not including) the drive root, is a reparse
@@ -43,14 +43,14 @@ import org.bouncycastle.util.encoders.Hex;
  * code signing under HkdfGuard's Artifact Signing profile ({@link #EXPECTED_PROFILE_EKU}), whose
  * chain - as WinVerifyTrust validated it - ends at the pinned root {@link #EXPECTED_ROOT_SHA256}.</li>
  * <li>Its PE header - covered by that signature - marks it a DLL for this process's architecture,
- * which refuses the profile's other binaries, such as hkdfguard-v1-initialize.exe renamed into
+ * which refuses the profile's other binaries, such as hkdfguard.exe renamed into
  * place.</li>
  * </ol>
  * The library's own dependencies are then resolved from System32 only. Any failed check throws;
  * there is deliberately no fallback and no override of the path.
  */
 final class WindowsNativeLibraryLoader {
-    static final String FILE_NAME = "HkdfGuardV1.dll";
+    static final String FILE_NAME = "HkdfGuard.dll";
 
     /**
      * The Authenticode signer subject the library must carry, in the form Windows formats a

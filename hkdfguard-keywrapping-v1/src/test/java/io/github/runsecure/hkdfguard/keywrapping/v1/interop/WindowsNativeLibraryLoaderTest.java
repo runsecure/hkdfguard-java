@@ -1,5 +1,8 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
+import static java.lang.foreign.ValueLayout.ADDRESS;
+import static java.lang.foreign.ValueLayout.JAVA_BYTE;
+import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -9,6 +12,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SymbolLookup;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -45,14 +54,14 @@ class WindowsNativeLibraryLoaderTest {
     void installedPath_IsTheFixedProgramFilesLocation() {
         var programFiles = System.getenv("ProgramFiles");
 
-        assertEquals(Path.of(programFiles, "HkdfGuard", "v1", "HkdfGuardV1.dll").toString().toLowerCase(Locale.ROOT),
+        assertEquals(Path.of(programFiles, "HkdfGuard", "v1", "HkdfGuard.dll").toString().toLowerCase(Locale.ROOT),
                 WindowsNativeLibraryLoader.installedPath().toLowerCase(Locale.ROOT));
     }
 
     @Test
     @EnabledOnOs(OS.WINDOWS)
     void load_WhenTheFileIsMissing_ThrowsNotFound_NamingTheOnlySupportedPath() {
-        var missing = Path.of(System.getProperty("java.io.tmpdir"), "hkdfguard-missing-" + UUID.randomUUID(), "HkdfGuardV1.dll").toString();
+        var missing = Path.of(System.getProperty("java.io.tmpdir"), "hkdfguard-missing-" + UUID.randomUUID(), "HkdfGuard.dll").toString();
 
         var ex = assertThrows(NativeLibraryNotFoundException.class, () -> WindowsNativeLibraryLoader.load(missing, WindowsNativeLibraryLoader.EXPECTED_PUBLISHER));
 
@@ -263,7 +272,7 @@ class WindowsNativeLibraryLoaderTest {
 
     @Test
     void verifyImageKind_AnExecutable_IsRefused() {
-        // e.g. hkdfguard-v1-initialize.exe renamed into place: signed by the same profile.
+        // e.g. hkdfguard.exe renamed into place: signed by the same profile.
         var ex = assertThrows(SecurityException.class, () -> WindowsNativeLibraryLoader.verifyImageKind("test",
                 WindowsNativeLibraryLoader.IMAGE_FILE_EXECUTABLE_IMAGE, WindowsNativeLibraryLoader.IMAGE_FILE_MACHINE_AMD64, CpuArchitecture.X64));
 
@@ -435,7 +444,7 @@ class WindowsNativeLibraryLoaderTest {
         NativeTestEnvironment.assumeWindowsLibraryInstalled();
         // Installed beside the library and signed under the same profile: only the image check
         // tells them apart.
-        var tool = Path.of(WindowsNativeLibraryLoader.installedPath()).resolveSibling("hkdfguard-v1-initialize.exe").toString();
+        var tool = Path.of(WindowsNativeLibraryLoader.installedPath()).resolveSibling("hkdfguard.exe").toString();
         assertTrue(Files.isRegularFile(Path.of(tool)), tool + " is installed with the library.");
 
         assertDoesNotThrow(() -> WindowsNativeLibraryLoader.verifySignature(tool, WindowsNativeLibraryLoader.EXPECTED_PUBLISHER));
@@ -494,6 +503,56 @@ class WindowsNativeLibraryLoaderTest {
 
         assertNotEquals(0, first.address());
         assertEquals(first.address(), second.address());
+    }
+
+    @Test
+    void verifySignature_TheInstalledLibrary_IsValidAndFromTheExpectedPublisher() {
+        NativeTestEnvironment.assumeWindowsLibraryInstalled();
+
+        assertDoesNotThrow(() -> WindowsNativeLibraryLoader.verifySignature(WindowsNativeLibraryLoader.installedPath(), WindowsNativeLibraryLoader.EXPECTED_PUBLISHER));
+    }
+
+    @Test
+    void load_TheInstalledLibrary_MapsTheFixedProgramFilesFile() throws Throwable {
+        NativeTestEnvironment.assumeWindowsLibraryInstalled();
+        // Worked out independently of the loader: %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll - and
+        // the module Windows really mapped for the handle load returned is that file.
+        var expected = Path.of(System.getenv("ProgramFiles"), "HkdfGuard", "v1", "HkdfGuard.dll").toString();
+
+        var mapped = Kernel32.moduleFileName(WindowsNativeLibraryLoader.load());
+
+        assertEquals(expected.toLowerCase(Locale.ROOT), mapped.toLowerCase(Locale.ROOT));
+    }
+
+    @Test
+    void kekExists_AnswersForAnUnprovisionedService() {
+        NativeTestEnvironment.assumeWindowsLibraryInstalled();
+
+        var answer = NativeTestEnvironment.queryKekExists(NativeTestEnvironment.UNPROVISIONED_SERVICE_NAME);
+
+        assertEquals(0, answer[1], "an unprovisioned service's KEK exists");
+        assertTrue(answer[0] == AbstractHkdfGuardKmsLibrary.OK || new WindowsHkdfGuardKmsLibrary().describeStatus(answer[0]) != null,
+                "undescribed status " + answer[0]);
+    }
+
+    /** GetModuleFileNameW, for which file a loaded module came from. */
+    @SuppressWarnings("restricted") // Test-only native calls; the tests run with --enable-native-access.
+    private static final class Kernel32 {
+        private static final int MAX_PATH_CHARS = 32768;
+
+        static String moduleFileName(MemorySegment module) throws Throwable {
+            var linker = Linker.nativeLinker();
+            var kernel32 = SymbolLookup.libraryLookup("kernel32.dll", Arena.global());
+            // DWORD GetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize)
+            var getModuleFileName = linker.downcallHandle(kernel32.find("GetModuleFileNameW").orElseThrow(),
+                    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT));
+            try (var arena = Arena.ofConfined()) {
+                var buffer = arena.allocate((long) MAX_PATH_CHARS * 2);
+                var length = (int) getModuleFileName.invokeExact(module, buffer, MAX_PATH_CHARS);
+                assertTrue(length > 0 && length < MAX_PATH_CHARS, "GetModuleFileNameW returned " + length);
+                return new String(buffer.asSlice(0, length * 2L).toArray(JAVA_BYTE), StandardCharsets.UTF_16LE);
+            }
+        }
     }
 
     @Test

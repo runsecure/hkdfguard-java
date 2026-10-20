@@ -17,55 +17,48 @@ import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProvid
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmPipelineDataProtectorImpl;
 import io.github.runsecure.hkdfguard.dataencryptionkey.formatprovider.DefaultFormatProviderImpl;
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeHkdfKeyWrapperV1Impl;
+import io.github.runsecure.hkdfguard.keywrapping.v1.interop.NativeTestEnvironment;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 /**
  * End to end over the real native KEK: a pipeline encrypting configuration through to the
  * application reading it back, and the runtime keys a process generates for itself. Runs against
- * HKDFGUARD_TEST_SERVICE, or on Windows the provisioned test KEK com.hkdfguard.native.windows.test;
- * reported as skipped where there is none.
+ * the service NativeTestEnvironment.assumeService chooses - HKDFGUARD_TEST_SERVICE, or on Windows
+ * and macOS the provisioned NativeTestEnvironment.DEFAULT_SERVICE_NAME - and is reported as skipped
+ * where there is none. Key files are written to NativeTestEnvironment.createTempDirectory, which on
+ * Linux is a private directory the native library trusts, never /tmp.
  */
 class NativeEndToEndTest {
     private static final int KEY_FILE_VERSION = 3;
-    private static final String UNPROVISIONED = "hkdfguard.integrationtest.unprovisioned";
+    private static final String UNPROVISIONED = NativeTestEnvironment.UNPROVISIONED_SERVICE_NAME;
 
     private static String service;
 
-    @TempDir
-    Path directory;
+    private Path directory;
 
     @BeforeAll
     static void requireAProvisionedService() {
-        var explicit = System.getenv("HKDFGUARD_TEST_SERVICE");
-        if (explicit != null && !explicit.isEmpty()) {
-            service = explicit;
-            return;
-        }
+        service = NativeTestEnvironment.assumeService();
+    }
 
-        Assumptions.assumeTrue(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows"),
-                "Set HKDFGUARD_TEST_SERVICE to a provisioned service to run native end-to-end tests.");
-        var candidate = "com.hkdfguard.native.windows.test";
-        try {
-            new NativeHkdfKeyWrapperV1Impl(candidate).generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]).get();
-        } catch (ExecutionException | InterruptedException e) {
-            var message = String.valueOf(e.getCause() == null ? e : e.getCause().getMessage());
-            // Not installed, not provisioned, or not permitted: skip. Anything else is a real failure.
-            Assumptions.assumeFalse(message.contains("not installed") || message.contains("status -12") || message.contains("status -13"),
-                    "The Windows test KEK is unavailable: " + message
-                            + " Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set HKDFGUARD_TEST_SERVICE to a provisioned service.");
-        }
-        service = candidate;
+    @BeforeEach
+    void createDirectory() throws IOException {
+        directory = NativeTestEnvironment.createTempDirectory("hkdfguard-e2e-");
+    }
+
+    @AfterEach
+    void deleteDirectory() throws IOException {
+        NativeTestEnvironment.deleteRecursively(directory);
     }
 
     private static KeyRingBuilder ringBuilder(String serviceName) {

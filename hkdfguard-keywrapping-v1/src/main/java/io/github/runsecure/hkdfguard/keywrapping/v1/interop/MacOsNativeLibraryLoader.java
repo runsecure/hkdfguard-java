@@ -41,7 +41,7 @@ import java.util.function.ToIntFunction;
  * Any failed check throws; there is deliberately no other fallback and no override.
  */
 final class MacOsNativeLibraryLoader {
-    static final String FILE_NAME = "libhkdfguard_v1.dylib";
+    static final String FILE_NAME = "libhkdfguard.dylib";
 
     /** The system-wide install, used whenever it exists. */
     static final String SYSTEM_DIRECTORY = "/Library/Application Support/HkdfGuard/v1";
@@ -58,7 +58,7 @@ final class MacOsNativeLibraryLoader {
      * certificate issued to the HkdfGuard team.
      */
     static final String CODE_REQUIREMENT =
-            "identifier \"libhkdfguard_v1\" and anchor apple generic"
+            "identifier \"libhkdfguard\" and anchor apple generic"
                     + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"    // Developer ID CA
                     + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists" // Developer ID Application leaf
                     + " and certificate leaf[subject.OU] = \"" + TEAM_ID + "\"";

@@ -176,8 +176,13 @@ jobs:
           mkdir -p artifacts/release
           # Each module's jars (main, sources, javadoc), its POM, and the .asc
           # signature of every one of them, exactly as Central received them.
+          # hkdfguard-test-support is test code: never signed or published
+          # (see its POM), so it is no release file either.
           for module in */pom.xml; do
             dir="$(dirname "$module")"
+            if [[ "$dir" == hkdfguard-test-support ]]; then
+              continue
+            fi
             cp "$dir"/target/*.jar "$dir"/target/*.asc artifacts/release/
             cp "$module" "artifacts/release/$dir-$VERSION.pom"
           done
