@@ -14,9 +14,6 @@ import java.lang.foreign.Linker;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.function.UnaryOperator;
@@ -176,12 +173,10 @@ class LinuxNativeLibraryLoaderSystemTest {
     }
 
     @Test
-    void theInstalledLibrary_IsAKnownReleaseInATrustedLocation() throws IOException, NoSuchAlgorithmException {
+    void theInstalledLibrary_IsInATrustedLocation() {
         var path = NativeTestEnvironment.assumeLinuxLibraryInstalled();
 
         assertEquals(path, resolve(path));
-        var hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(Path.of(path))));
-        LinuxNativeLibraryLoader.verifyContent(path, p -> hash, LinuxNativeLibraryLoader.KNOWN_RELEASES);
     }
 
     @Test

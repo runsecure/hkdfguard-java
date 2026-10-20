@@ -1,24 +1,18 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,9 +37,6 @@ import java.util.stream.Collectors;
  * file itself must be owned by root, and no directory or file may be writable by its group or by
  * others. Symbolic links are followed component by component, each one checked where it lies, so a
  * link can only lead somewhere root chose (/lib to usr/lib, say).</li>
- * <li><b>Content.</b> The file's SHA-256 must be one of {@link #KNOWN_RELEASES}. Linux has no
- * platform code signature to check, so this pin is what tells a genuine release from any other ELF
- * file root may have put at that path.</li>
  * <li><b>Environment.</b> An absolute path is never searched for, but the library's dependencies
  * are found by name: through LD_LIBRARY_PATH, and after LD_PRELOAD and LD_AUDIT objects that can
  * interpose on any symbol. So every directory on LD_LIBRARY_PATH and every path-named LD_PRELOAD or
@@ -59,6 +50,9 @@ import java.util.stream.Collectors;
  * macOS, any initializer an impostor had has already run; the environment check exists so that it
  * never gets that far in practice.</li>
  * </ol>
+ * The file's content is not pinned: a release's authenticity is verified with Sigstore/cosign when
+ * the package is installed, so path integrity is what this loader enforces.
+ * <p>
  * Any failed check throws; there is deliberately no fallback and no override. The policy is the same
  * as the .NET port's LinuxNativeLibraryLoader, check for check.
  * <p>
@@ -77,18 +71,6 @@ final class LinuxNativeLibraryLoader {
 
     /** An export every genuine build has; its address tells dladdr which file was loaded. */
     static final String PROBE_EXPORT = "hkdfguard_wrap_dek";
-
-    /**
-     * The SHA-256 of every native release this library accepts, with what it is. Each distribution
-     * and architecture gets its own build, so each needs its own entry; a release whose hash is not
-     * here is refused until this library is updated to list it.
-     * <p>
-     * Keep this list in sync with KnownReleases in the .NET port's LinuxNativeLibraryLoader
-     * (hkdfguard-dotnet, src/HkdfGuard.KeyWrapping.V1/Interop/LinuxNativeLibraryLoader.cs): both
-     * ports must accept exactly the same native releases.
-     */
-    static final Map<String, String> KNOWN_RELEASES = Map.of(
-            "a3a9312fd2d603a62e6a5b1ed46ba5e4a51adcba321aa5a1014a762ff07ca064", "libhkdfguard1 0.1.0-1~ubuntu24.04.1 (amd64)");
 
     // The dynamic-linker variables that decide where, or what, it loads.
     static final String LIBRARY_PATH_VARIABLE = "LD_LIBRARY_PATH";
@@ -120,7 +102,6 @@ final class LinuxNativeLibraryLoader {
 
         var candidates = candidatePaths(CpuArchitecture.current());
         var path = resolveTrusted(choosePath(candidates, LinuxNative::probe), UnixFileType.REGULAR_FILE, LinuxNative::statusOrNull, LinuxNative::readLink);
-        verifyContent(path, LinuxNativeLibraryLoader::hashFile, KNOWN_RELEASES);
 
         var environment = readEnvironment(System::getenv, LinuxNative.readInitialEnvironment());
         verifyEnvironment(environment, (p, type) -> resolveTrusted(p, type, LinuxNative::statusOrNull, LinuxNative::readLink, true));
@@ -306,33 +287,6 @@ final class LinuxNativeLibraryLoader {
     static String parentOf(String path) {
         var slash = path.lastIndexOf('/');
         return slash <= 0 ? "/" : path.substring(0, slash);
-    }
-
-    /**
-     * Requires the file's SHA-256 to be a known release.
-     *
-     * @param sha256Hex the file's SHA-256, as lowercase hex
-     * @throws SecurityException it isn't
-     */
-    static void verifyContent(String path, Function<String, String> sha256Hex, Map<String, String> knownReleases) {
-        var hash = sha256Hex.apply(path);
-        if (!knownReleases.containsKey(hash))
-            throw new SecurityException("'" + path + "' has SHA-256 " + hash
-                    + ", which is not a HkdfGuard native release this version of hkdfguard-keywrapping-v1 recognizes; refusing to load it. If it is a newer genuine release, update hkdfguard-keywrapping-v1.");
-    }
-
-    private static String hashFile(String path) {
-        try (InputStream stream = Files.newInputStream(Path.of(path))) {
-            var digest = MessageDigest.getInstance("SHA-256");
-            var buffer = new byte[64 * 1024];
-            for (int read; (read = stream.read(buffer)) > 0; )
-                digest.update(buffer, 0, read);
-            return HexFormat.of().formatHex(digest.digest());
-        } catch (IOException e) {
-            throw new SecurityException("'" + path + "' could not be read to verify it: " + e.getMessage(), e);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is not available.", e);
-        }
     }
 
     /**

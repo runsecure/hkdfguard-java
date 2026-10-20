@@ -2,7 +2,6 @@ package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -26,9 +25,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The Linux loader's decisions - where the library is, whether every path to it and to its
- * dependencies can be trusted, whether it is a known release, and whether the dynamic linker's
- * environment could substitute anything - checked against simulated filesystems, so they run on
- * every platform. LinuxNativeLibraryLoaderSystemTest runs the same checks against the real
+ * dependencies can be trusted, and whether the dynamic linker's environment could substitute
+ * anything - checked against simulated filesystems, so they run on every platform. LinuxNativeLibraryLoaderSystemTest runs the same checks against the real
  * filesystem and the installed package. Test names follow the .NET port's
  * LinuxNativeLibraryLoaderTests.
  */
@@ -341,40 +339,6 @@ class LinuxNativeLibraryLoaderTest {
     @CsvSource({"/, /", "/usr, /", "/usr/lib, /usr"})
     void parentOf_WalksUpToRoot(String path, String parent) {
         assertEquals(parent, LinuxNativeLibraryLoader.parentOf(path));
-    }
-
-    // --- Content --------------------------------------------------------------------------------
-
-    private static final Map<String, String> RELEASES = Map.of("a".repeat(64), "test release");
-
-    @Test
-    void verifyContent_AcceptsAKnownRelease() {
-        assertDoesNotThrow(() -> LinuxNativeLibraryLoader.verifyContent(LIBRARY, p -> "a".repeat(64), RELEASES));
-    }
-
-    @Test
-    void verifyContent_RefusesAnythingElse_NamingItsHash() {
-        var other = "b".repeat(64);
-        var ex = assertThrows(SecurityException.class, () -> LinuxNativeLibraryLoader.verifyContent(LIBRARY, p -> other, RELEASES));
-
-        assertTrue(ex.getMessage().contains(other));
-        assertTrue(ex.getMessage().contains(LIBRARY));
-    }
-
-    @Test
-    void everyKnownRelease_IsALowercaseSha256() {
-        assertFalse(LinuxNativeLibraryLoader.KNOWN_RELEASES.isEmpty());
-        LinuxNativeLibraryLoader.KNOWN_RELEASES.forEach((hash, description) -> {
-            assertTrue(hash.matches("^[0-9a-f]{64}$"), hash);
-            assertFalse(description.isBlank());
-        });
-    }
-
-    @Test
-    void theKnownReleases_MatchTheDotNetPortsList() {
-        // Both ports must accept exactly the same native releases; update both lists together.
-        assertEquals(Map.of("a3a9312fd2d603a62e6a5b1ed46ba5e4a51adcba321aa5a1014a762ff07ca064", "libhkdfguard1 0.1.0-1~ubuntu24.04.1 (amd64)"),
-                LinuxNativeLibraryLoader.KNOWN_RELEASES);
     }
 
     // --- Environment ----------------------------------------------------------------------------

@@ -151,8 +151,8 @@ hkdfguard:
 `--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1` (module path) or
 `--enable-native-access=ALL-UNNAMED` (class path). The native library is installed separately and
 loaded only from its verified location, exactly as in .NET (path ACLs, Authenticode signer/root/EKU
-and PE checks on Windows; ownership, code signature and dyld checks on macOS; ownership, a
-SHA-256 release pin, the dynamic linker's environment and every loaded dependency on Linux).
+and PE checks on Windows; ownership, code signature and dyld checks on macOS; ownership, the
+dynamic linker's environment and every loaded dependency on Linux).
 
 Installed locations:
 
@@ -165,15 +165,13 @@ Installed locations:
 On **Linux**, `LinuxNativeLibraryLoader` uses the package's file in the Debian multiarch directory
 (`/usr/lib/x86_64-linux-gnu` or `/usr/lib/aarch64-linux-gnu`) if it is there, otherwise the one in
 `/usr/lib64`. Only "nothing is there" moves on; a location that can't be examined is refused.
-Before loading, it requires all of the following:
+The file's content is not pinned: verify a release's Sigstore attestation (`cosign` or
+`gh attestation verify`) before installing the package, so path integrity is what the loader
+enforces. Before loading, it requires all of the following:
 - Every directory on the path, every symbolic link followed, and the file itself are owned by root,
   and no directory or file is writable by its group or by others. Links are followed one component
   at a time and each target is checked where it lies, so `/lib -> usr/lib` passes and a link into a
   user's directory does not.
-- The file's SHA-256 is a release this version of `hkdfguard-keywrapping-v1` lists (the same list
-  as the .NET package's). Linux has no platform code signature, so this pin is the content check.
-  Each distribution and architecture has its own build, and a release that isn't listed is refused
-  until the library lists it.
 - The dynamic linker's environment can't substitute anything. The library is loaded by its
   verified absolute path, which is never searched for, but its dependencies are found by name - and
   `libtss2-esys` receives every ECDH shared secret. So every `LD_LIBRARY_PATH` directory, and every
