@@ -9,6 +9,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
+import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
+import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
+import io.github.runsecure.hkdfguard.keywrapping.v1.interop.AbstractHkdfGuardKmsLibrary;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -41,7 +47,8 @@ class NativeHkdfKeyWrapperV1ImplTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {-1, -2, -7})
+    // Reserved codes: no platform returns them, so there is no meaning to add.
+    @ValueSource(ints = {-7, -13, -40})
     void wrapAsync_WhenTheLibraryFails_FailsWithACryptographicExceptionNamingTheStatus(int status) {
         var library = new FakeHkdfGuardKmsLibrary();
         library.wrapDekStatus = status;
@@ -56,13 +63,25 @@ class NativeHkdfKeyWrapperV1ImplTest {
     @Test
     void aFailureTheLibraryCanDescribe_NamesWhatTheStatusMeans() {
         var library = new FakeHkdfGuardKmsLibrary();
-        library.unwrapDekStatus = -13;
-        library.describe = status -> status == -13 ? "this account is not authorized to use the KEK" : null;
+        library.unwrapDekStatus = -18;
+        library.describe = status -> status == -18 ? "this account is not authorized to use the KEK" : null;
         var wrapper = new NativeHkdfKeyWrapperV1Impl("service.d", library);
 
         var failure = failureOf(wrapper.unwrapAsync(new byte[] {1}, new byte[32]));
 
-        assertEquals("Native KMS unwrap failed for service 'service.d' with status -13 (this account is not authorized to use the KEK).", failure.getMessage());
+        assertEquals("Native KMS unwrap failed for service 'service.d' with status -18 (this account is not authorized to use the KEK).", failure.getMessage());
+    }
+
+    @Test
+    void aFailure_NamesTheStatusAndItsSharedMeaning() {
+        var library = new FakeHkdfGuardKmsLibrary();
+        library.unwrapDekStatus = AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND;
+        var wrapper = new NativeHkdfKeyWrapperV1Impl("service.d", library);
+
+        var failure = failureOf(wrapper.unwrapAsync(new byte[] {1}, new byte[32]));
+
+        assertEquals("Native KMS unwrap failed for service 'service.d' with status -17 "
+                + "(no KEK is provisioned for this service; run hkdfguard provision).", failure.getMessage());
     }
 
     @Test
@@ -83,7 +102,8 @@ class NativeHkdfKeyWrapperV1ImplTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {-1, -2, -6})
+    // Reserved codes: no platform returns them, so there is no meaning to add.
+    @ValueSource(ints = {-7, -13, -40})
     void unwrapAsync_WhenTheLibraryFails_FailsAndZeroesTheResultBuffer(int status) {
         var library = new FakeHkdfGuardKmsLibrary();
         library.unwrapDekStatus = status;
@@ -116,7 +136,8 @@ class NativeHkdfKeyWrapperV1ImplTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {-1, -3, -7})
+    // Reserved codes: no platform returns them, so there is no meaning to add.
+    @ValueSource(ints = {-7, -13, -40})
     void generateAndWrapAsync_WhenTheLibraryFails_FailsWithACryptographicException(int status) {
         var library = new FakeHkdfGuardKmsLibrary();
         library.generateAndWrapDekStatus = status;
@@ -140,6 +161,78 @@ class NativeHkdfKeyWrapperV1ImplTest {
         assertSame(refusal, failureOf(wrapper.wrapAsync(new byte[32], new byte[64])));
         assertSame(refusal, failureOf(wrapper.generateAndWrapAsync(new byte[64])));
         assertArrayEquals(new byte[3], result);
+    }
+
+    // --- Key files: read through the native library ---------------------------------------------
+
+    @Test
+    void readKeyFileAsync_ReadsThroughTheNativeLibrary_NotJavaFileIo() throws Exception {
+        var library = new FakeHkdfGuardKmsLibrary();
+        library.openFilePayloadToEmit = new byte[132];
+        for (var i = 0; i < 132; i++)
+            library.openFilePayloadToEmit[i] = (byte) i;
+        var wrapper = new NativeHkdfKeyWrapperV1Impl("service.h", library);
+        var path = Path.of("no", "such", "dek.bin");
+
+        // The path doesn't exist: only the native library is asked about it.
+        var read = wrapper.readKeyFileAsync(path).get();
+
+        assertArrayEquals(library.openFilePayloadToEmit, read);
+        assertEquals(1, library.openFileCallCount);
+        assertEquals(path.toString(), library.lastOpenFilePath);
+    }
+
+    @Test
+    void readKeyFileAsync_ThroughTheInterface_ReachesTheNativeLibrary() throws Exception {
+        var library = new FakeHkdfGuardKmsLibrary();
+        KeyWrapper wrapper = new NativeHkdfKeyWrapperV1Impl("service.h", library);
+
+        wrapper.readKeyFileAsync(Path.of("dek.bin")).get();
+
+        assertEquals(1, library.openFileCallCount);
+    }
+
+    @Test
+    void readKeyFileAsync_SurfacesARefusalThroughTheReturnedFuture() {
+        var library = new FakeHkdfGuardKmsLibrary();
+        library.openFileStatus = AbstractHkdfGuardKmsLibrary.ERR_FILE_PLAINTEXT_KEY;
+        var wrapper = new NativeHkdfKeyWrapperV1Impl("service.h", library);
+
+        var failure = assertInstanceOf(InvalidKeyFileException.class, failureOf(wrapper.readKeyFileAsync(Path.of("dek.bin"))));
+
+        assertTrue(failure.getMessage().contains("status -37"));
+        assertTrue(failure.getMessage().contains("key exposure"));
+    }
+
+    @Test
+    void readKeyFileAsync_SurfacesEachFileSystemRefusalAsItsJavaException() {
+        var library = new FakeHkdfGuardKmsLibrary();
+        var wrapper = new NativeHkdfKeyWrapperV1Impl("service.h", library);
+
+        library.openFileStatus = AbstractHkdfGuardKmsLibrary.ERR_FILE_NOT_FOUND;
+        assertInstanceOf(NoSuchFileException.class, failureOf(wrapper.readKeyFileAsync(Path.of("dek.bin"))));
+        library.openFileStatus = AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED;
+        assertInstanceOf(AccessDeniedException.class, failureOf(wrapper.readKeyFileAsync(Path.of("dek.bin"))));
+    }
+
+    @Test
+    void readKeyFileAsync_AnEmptyOrNullPath_NeverReachesTheLibrary() {
+        var library = new FakeHkdfGuardKmsLibrary();
+        var wrapper = new NativeHkdfKeyWrapperV1Impl("service.h", library);
+
+        assertInstanceOf(IllegalArgumentException.class, failureOf(wrapper.readKeyFileAsync(Path.of(""))));
+        assertInstanceOf(NullPointerException.class, failureOf(wrapper.readKeyFileAsync(null)));
+        assertEquals(0, library.openFileCallCount);
+    }
+
+    @Test
+    void readKeyFileAsync_ALibraryThatFailsToLoad_FailsTheFuture() {
+        var library = new FakeHkdfGuardKmsLibrary();
+        var refusal = new SecurityException("not signed by the HkdfGuard publisher");
+        library.throwOnCall = refusal;
+        var wrapper = new NativeHkdfKeyWrapperV1Impl("service.h", library);
+
+        assertSame(refusal, failureOf(wrapper.readKeyFileAsync(Path.of("dek.bin"))));
     }
 
     // --- Service names: a bad one is rejected at construction, so it never reaches native code ----

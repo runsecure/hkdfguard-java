@@ -20,10 +20,11 @@
   <!--
     No native library is packed into this artifact. Each platform's native KMS library is installed
     separately, to a fixed location, and loaded only from there after verification:
-      Windows: %ProgramFiles%\HkdfGuard\v1\HkdfGuardV1.dll        (WindowsNativeLibraryLoader)
-      macOS:   /Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib, or
-               ~/.hkdfguard/v1/libhkdfguard_v1.dylib               (MacOsNativeLibraryLoader)
-      Linux:   libHkdfGuardKeyProtectionLinux.so, by the default dynamic-linker search
+      Windows: %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll          (WindowsNativeLibraryLoader)
+      macOS:   /Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib, or
+               ~/.hkdfguard/v1/libhkdfguard.dylib               (MacOsNativeLibraryLoader)
+      Linux:   /usr/lib/<multiarch>/libhkdfguard.so.1, or /usr/lib64/libhkdfguard.so.1
+               (the libhkdfguard1 package)                         (LinuxNativeLibraryLoader)
     Applications must grant this module native access with the JVM's enable-native-access option,
     naming io.github.runsecure.hkdfguard.keywrapping.v1 (or ALL-UNNAMED on the class path).
   -->
@@ -48,4 +49,33 @@
       <artifactId>bcprov-jdk18on</artifactId>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <!-- NativeTestEnvironment - which provisioned service the native tests use, and where key
+           files may be written - lives in hkdfguard-test-support, shared with the native tests of
+           hkdfguard-dataencryptionkey and hkdfguard-cache. This module can't depend on it (it
+           depends on this module), so its sources are compiled into this module's tests instead:
+           the same package, so the helper reaches the interop package's package-private loaders
+           here as there. Nothing of it ships in this module's jar. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-test-support-sources</id>
+            <phase>generate-test-sources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/../hkdfguard-test-support/src/main/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>

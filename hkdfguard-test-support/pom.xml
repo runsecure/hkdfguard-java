@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-test-support</artifactId>
+  <name>HkdfGuard Test Support</name>
+  <description>
+    Test-only helpers shared by the native integration tests of several modules. Never published:
+    a test-scope dependency of this build only.
+  </description>
+
+  <!--
+    NativeTestEnvironment: which provisioned service the native integration tests use, and where key
+    files may be written. hkdfguard-dataencryptionkey and hkdfguard-cache depend on this module with
+    test scope. hkdfguard-keywrapping-v1 can't (this module depends on it, and Maven refuses a cycle
+    whatever the scope), so its build compiles this module's sources into its own tests instead (see
+    its build-helper-maven-plugin execution) - one copy of the source either way.
+
+    The helper stays in the key wrapper's interop package so it can reach that package's
+    package-private loaders, adding no public API to the shipped library. That is a split package
+    only on the class path, where it is harmless: no module descriptor requires this module, so it
+    is never on a module path, and in hkdfguard-keywrapping-v1's own tests the source is compiled
+    into that module rather than added beside it.
+
+    Never published, signed or packaged with sources or javadoc: the release profile's Central
+    Portal plugin is told to leave it out of the bundle (skipPublishing here, and excludeArtifacts in
+    the parent), and deploy and signing are skipped. It is still installed, which the CI's Java 21
+    test step needs (it resolves the modules' test dependencies from the local repository).
+  -->
+
+  <properties>
+    <!-- Java 25, like hkdfguard-keywrapping-v1: the helper asks the Windows library through FFM. -->
+    <maven.compiler.release>25</maven.compiler.release>
+
+    <!-- Not published. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <skipPublishing>true</skipPublishing>
+    <gpg.skip>true</gpg.skip>
+    <maven.source.skip>true</maven.source.skip>
+    <maven.javadoc.skip>true</maven.javadoc.skip>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-keywrapping-v1</artifactId>
+    </dependency>
+    <!-- Assumptions and Assertions: a skipped or failed calling test. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+  </dependencies>
+</project>
