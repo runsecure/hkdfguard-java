@@ -38,7 +38,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
-import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -51,6 +50,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
  * ./mvnw verify
  * </pre>
+ * (the first is NativeTestEnvironment.DEFAULT_SERVICE_NAME). Key files are written to
+ * NativeTestEnvironment.createTempDirectory, a private directory the library trusts - never /tmp,
+ * whose directories it refuses.
  * NativeKeyWrappingIntegrationTest covers what every platform shares; these pin down the exact
  * Linux status codes, the native library's own input checks (which Java validation normally keeps
  * it from seeing), its zeroing on failure, and the deployment path through hkdfguard. Skipped off
@@ -291,26 +293,35 @@ class LinuxNativeIntegrationTest {
     }
 
     @Test
-    void aKeyFileWrappedByTheProvisioningTool_RevealsItsDekThroughTheWrapper(@TempDir Path directory) throws Exception {
+    void aKeyFileWrappedByTheProvisioningTool_RevealsItsDekThroughTheWrapper() throws Exception {
         // The deployment path: hkdfguard wraps a delivered DEK on the host, in its own process, and
         // the application unwraps the key file through this binding.
         NativeTestEnvironment.assumeLinuxCli();
-        var ownerOnly = Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
-        var dek = randomDek();
-        var dekFile = Files.createFile(directory.resolve("dek"), PosixFilePermissions.asFileAttribute(ownerOnly));
-        Files.writeString(dekFile, Base64.getEncoder().encodeToString(dek), StandardCharsets.US_ASCII);
-        var keyFile = directory.resolve("key.bin");
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-cli-");
+        try {
+            var ownerOnly = Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+            var dek = randomDek();
+            var dekFile = Files.createFile(directory.resolve("dek"), PosixFilePermissions.asFileAttribute(ownerOnly));
+            Files.writeString(dekFile, Base64.getEncoder().encodeToString(dek), StandardCharsets.US_ASCII);
+            var keyFile = directory.resolve("key.bin");
 
-        var run = NativeTestEnvironment.runTool(NativeTestEnvironment.LINUX_CLI, "wrap", "--key-file-path", keyFile.toString(), "--service-name", service,
-                "--dek-file", dekFile.toString());
-        assertEquals(0, run.exitCode(), () -> "hkdfguard wrap exited " + run.exitCode() + ": " + run.output());
-        assertEquals(ownerOnly, Files.getPosixFilePermissions(keyFile));
+            var run = NativeTestEnvironment.runTool(NativeTestEnvironment.LINUX_CLI, "wrap", "--key-file-path", keyFile.toString(), "--service-name", service,
+                    "--dek-file", dekFile.toString());
+            assertEquals(0, run.exitCode(), () -> "hkdfguard wrap exited " + run.exitCode() + ": " + run.output());
+            assertEquals(ownerOnly, Files.getPosixFilePermissions(keyFile));
 
-        var recovered = new byte[DEK_LENGTH];
-        int written = new NativeHkdfKeyWrapperV1Impl(service).unwrapAsync(Files.readAllBytes(keyFile), recovered).get();
+            var wrapper = new NativeHkdfKeyWrapperV1Impl(service);
+            var recovered = new byte[DEK_LENGTH];
+            int written = wrapper.unwrapAsync(Files.readAllBytes(keyFile), recovered).get();
 
-        assertEquals(DEK_LENGTH, written);
-        assertArrayEquals(dek, recovered);
+            assertEquals(DEK_LENGTH, written);
+            assertArrayEquals(dek, recovered);
+
+            // And read back as the application does, through hkdfguard_open_file.
+            assertArrayEquals(Files.readAllBytes(keyFile), wrapper.readKeyFileAsync(keyFile).get());
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
     }
 
     @Test

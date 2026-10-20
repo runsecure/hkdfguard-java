@@ -315,9 +315,15 @@ HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
 ./mvnw verify
 ```
 
+The Linux library refuses a key file below any group- or world-writable directory, sticky or not
+(`/tmp`, `/var/tmp`, `/dev/shm`), so the tests write key files to a private 0700 directory under
+`$XDG_RUNTIME_DIR` when that is trusted, else under `~/.cache/hkdfguard-tests`, and skip the
+key-file tests (saying why) when neither is (`NativeTestEnvironment.createTempDirectory`).
+
 On macOS, with `HKDFGUARD_TEST_SERVICE` unset, the tests use `com.hkdfguard.integration.test.221` when
 the installed `hkdfguard-v1-initialize status` reports it present, and are skipped when it reports it
-absent. Every
+absent. The first call from the test JVM can raise a keychain dialog (click "Always Allow"); it is
+made with a 60-second deadline, so a dialog nobody answers fails the run instead of hanging it. Every
 platform's library refuses to create a KEK while wrapping or unwrapping, so these tests run only
 against a service provisioned beforehand. Without one they are reported as skipped, never as
 passed. Once a service is chosen, a missing or failing library is a test failure.

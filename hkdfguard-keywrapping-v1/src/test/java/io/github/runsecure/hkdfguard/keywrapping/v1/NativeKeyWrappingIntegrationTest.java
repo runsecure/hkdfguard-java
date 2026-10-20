@@ -24,7 +24,8 @@ import org.junit.jupiter.api.Test;
  * hkdfguard provision --service-name hkdfguard.integrationtest   (elevated on Windows; hkdfguard-v1-initialize on macOS)
  * HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest mvn verify
  * </pre>
- * On Windows the provisioned test KEK com.hkdfguard.integration.test.221 is used when present.
+ * On Windows and macOS the provisioned test KEK NativeTestEnvironment.DEFAULT_SERVICE_NAME is used
+ * when present.
  * Without a service every test here is reported as skipped - never as passed. With one, a library
  * that is missing, fails verification, or misbehaves fails the run. The tests only use that
  * service's existing KEK; they never create or delete one.

@@ -49,4 +49,30 @@
       <artifactId>bcprov-jdk18on</artifactId>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <!-- NativeTestEnvironment - which provisioned service the native tests use, and where key
+           files may be written - shared with the native end-to-end tests of
+           hkdfguard-dataencryptionkey and hkdfguard-cache, which depend on this tests jar. Only that
+           class is packed. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>native-test-environment</id>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>io/github/runsecure/hkdfguard/keywrapping/v1/interop/NativeTestEnvironment*.class</include>
+              </includes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>

@@ -20,7 +20,6 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +35,9 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Reading key files through the real native library's hkdfguard_open_file. Refusals of a file's
  * size, contents or location need no KEK, so they run wherever the Windows library is installed;
- * reading back a real wrapped key needs a provisioned service (see NativeTestEnvironment).
+ * reading back a real wrapped key needs a provisioned service (see NativeTestEnvironment). Key files
+ * are written to NativeTestEnvironment.createTempDirectory: by its real, long path on Windows, and on
+ * Linux a private directory the native library trusts, never /tmp.
  */
 class NativeKeyFileTest {
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -50,10 +51,7 @@ class NativeKeyFileTest {
 
     @AfterEach
     void deleteDirectory() throws IOException {
-        try (var paths = Files.walk(directory)) {
-            for (var path : paths.sorted(Comparator.reverseOrder()).toList())
-                Files.deleteIfExists(path);
-        }
+        NativeTestEnvironment.deleteRecursively(directory);
     }
 
     // Any valid name: reading a file never touches a KEK.

@@ -21,7 +21,8 @@ import org.junit.jupiter.api.io.TempDir;
  * The macOS loader's system-call layer against the real filesystem and Security framework, the
  * installed libhkdfguard_v1.dylib and the hkdfguard-v1-initialize installed beside it, where they
  * are. Skipped off macOS; the tests that need an install are skipped without one. Test names follow
- * the Go port's TestDarwin_*.
+ * the Go port's TestDarwin_*. A native call that could raise a keychain dialog is made with
+ * NativeTestEnvironment's deadline, so a dialog nobody answers fails the run rather than hanging it.
  */
 @EnabledOnOs(value = OS.MAC, disabledReason = "macOS only.")
 class MacOsNativeIntegrationTest {
@@ -36,7 +37,7 @@ class MacOsNativeIntegrationTest {
     }
 
     @Test
-    void theInstalledLibrary_LoadsOnce_AndAnswersCalls() {
+    void theInstalledLibrary_LoadsOnce_AndAnswersCalls() throws Exception {
         NativeTestEnvironment.assumeMacOsLibraryInstalled();
 
         var library = MacOsNativeLibraryLoader.load();
@@ -46,9 +47,24 @@ class MacOsNativeIntegrationTest {
         // No KEK is provisioned for this name, so the library answers with an error status the
         // binding describes - which proves it loaded and ran.
         var binding = new MacOsHkdfGuardKmsLibrary();
-        var result = binding.wrapDek(NativeTestEnvironment.UNPROVISIONED_SERVICE_NAME, new byte[32], new byte[512]);
+        var result = NativeTestEnvironment.callWithKeychainTimeout("A wrap under an unprovisioned service",
+                () -> binding.wrapDek(NativeTestEnvironment.UNPROVISIONED_SERVICE_NAME, new byte[32], new byte[512]));
         assertTrue(result.status() < 0, "wrap under an unprovisioned service returned status " + result.status());
         assertNotNull(binding.describeStatus(result.status()), "undescribed status " + result.status());
+    }
+
+    @Test
+    void theTestService_AnswersItsFirstCall_WithoutAnUnansweredKeychainDialog() throws Exception {
+        // assumeService makes the first call under the test service with a deadline, failing with
+        // what to do about the keychain dialog instead of hanging; this one must then return too.
+        NativeTestEnvironment.assumeMacOsLibraryInstalled();
+        var service = NativeTestEnvironment.assumeService();
+
+        var binding = new MacOsHkdfGuardKmsLibrary();
+        var result = NativeTestEnvironment.callWithKeychainTimeout("A wrap under service '" + service + "'",
+                () -> binding.wrapDek(service, new byte[32], new byte[512]));
+
+        assertEquals(AbstractHkdfGuardKmsLibrary.OK, result.status(), () -> "wrap returned status " + result.status() + " (" + binding.describeStatus(result.status()) + ")");
     }
 
     @Test
@@ -103,10 +119,10 @@ class MacOsNativeIntegrationTest {
     void theDefaultTestService_IsFoundOnlyWhenProvisioned() throws IOException, InterruptedException {
         var tool = NativeTestEnvironment.macOsProvisioningTool();
         Assumptions.assumeTrue(tool != null, "The provisioning tool is not installed.");
-        var run = NativeTestEnvironment.runTool(tool, "status", "--service-name", NativeTestEnvironment.DEFAULT_MACOS_SERVICE_NAME);
+        var run = NativeTestEnvironment.runTool(tool, "status", "--service-name", NativeTestEnvironment.DEFAULT_SERVICE_NAME);
         assertEquals(0, run.exitCode(), run::output);
 
-        var resolution = NativeTestEnvironment.macOsResolution(NativeTestEnvironment.DEFAULT_MACOS_SERVICE_NAME);
+        var resolution = NativeTestEnvironment.macOsResolution();
 
         var provisioned = run.output().contains("kek: present");
         assertEquals(provisioned, resolution.service() != null, () -> "resolution " + resolution + ", but the tool reports provisioned = " + provisioned);

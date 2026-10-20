@@ -3,6 +3,8 @@ package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 
+import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
+import io.github.runsecure.hkdfguard.keywrapping.v1.NativeHkdfKeyWrapperV1Impl;
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -10,11 +12,18 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
 
 /**
@@ -26,31 +35,21 @@ import org.junit.jupiter.api.Assumptions;
 public final class NativeTestEnvironment {
     /**
      * Names a service already provisioned on this machine; its KEK is used, never created or
-     * deleted. Always wins over {@link #DEFAULT_WINDOWS_SERVICE_NAME}, and is never skipped:
-     * setting it means the native tests must run.
+     * deleted. Always wins over {@link #DEFAULT_SERVICE_NAME}, and is never skipped: setting it
+     * means the native tests must run.
      */
     public static final String SERVICE_VARIABLE = "HKDFGUARD_TEST_SERVICE";
 
     /**
-     * The Windows test KEK that scripts/provision-windows-test-key.ps1 (in this repository)
-     * provisions. Used when {@link #SERVICE_VARIABLE} is unset and the installed library reports it
-     * exists.
+     * The test KEK every platform's provisioning script provisions: scripts/provision-windows-test-key.ps1
+     * and scripts/provision-linux-test-key.sh (in this repository, the latter with
+     * {@code <name>.other} as the second service), and the other ports' scripts/provision-macos-test-key.sh.
+     * Used when {@link #SERVICE_VARIABLE} is unset and the platform can confirm it is provisioned:
+     * on Windows the installed library reports it exists, on macOS the installed
+     * hkdfguard-v1-initialize reports it present. Linux has no non-prompting way to ask whether a
+     * KEK exists, so there it is only used when named in {@link #SERVICE_VARIABLE}.
      */
-    public static final String DEFAULT_WINDOWS_SERVICE_NAME = "com.hkdfguard.integration.test.221";
-
-    /**
-     * The macOS test KEK the other ports' scripts/provision-macos-test-key.sh provisions. Used when
-     * {@link #SERVICE_VARIABLE} is unset and the installed hkdfguard-v1-initialize reports it
-     * present.
-     */
-    public static final String DEFAULT_MACOS_SERVICE_NAME = "com.hkdfguard.integration.test.221";
-
-    /**
-     * The Linux test KEK scripts/provision-linux-test-key.sh provisions (with
-     * {@code <name>.other} as the second service). Linux has no non-prompting way to ask whether a
-     * KEK exists, so it is only used when named in {@link #SERVICE_VARIABLE}.
-     */
-    public static final String DEFAULT_LINUX_SERVICE_NAME = "com.hkdfguard.integration.test.221";
+    public static final String DEFAULT_SERVICE_NAME = "com.hkdfguard.integration.test.221";
 
     /** Optional second provisioned service, for the cross-service isolation test. */
     public static final String OTHER_SERVICE_VARIABLE = "HKDFGUARD_TEST_SERVICE_OTHER";
@@ -253,36 +252,41 @@ public final class NativeTestEnvironment {
      * How the macOS default test service resolves: the installed hkdfguard-v1-initialize, which
      * created the KEK and so is on its keychain item's access list, is asked whether it is present -
      * asking the library from this process could prompt. "kek: absent" skips; "kek: present", or
-     * any failure to ask, runs the tests, so a real failure is reported.
+     * any failure to ask, runs the tests, so a real failure is reported (and the first native call
+     * under it is then made by {@link #awaitNativeAccess}, with a deadline).
      */
-    static Resolution macOsResolution(String defaultService) {
+    static Resolution macOsResolution() {
         if (macOsInstalledPath() == null)
             return new Resolution(null, "The native KMS library is not installed at " + MacOsNativeLibraryLoader.systemPath() + " or ~/"
                     + MacOsNativeLibraryLoader.USER_DIRECTORY_UNDER_HOME + ".");
 
         var tool = macOsProvisioningTool();
         if (tool == null)
-            return new Resolution(defaultService, "");
+            return new Resolution(DEFAULT_SERVICE_NAME, "");
 
         ToolRun run;
         try {
-            run = runTool(tool, "status", "--service-name", defaultService);
+            run = runTool(tool, "status", "--service-name", DEFAULT_SERVICE_NAME);
         } catch (IOException | RuntimeException e) {
-            return new Resolution(defaultService, "");
+            return new Resolution(DEFAULT_SERVICE_NAME, "");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new Resolution(defaultService, "");
+            return new Resolution(DEFAULT_SERVICE_NAME, "");
         }
         if (run.exitCode() == 0 && run.output().contains("kek: absent"))
-            return new Resolution(null, "The test KEK '" + defaultService + "' is not provisioned. Run " + MACOS_PROVISIONING_TOOL
-                    + " provision --service-name " + defaultService + ", or set " + SERVICE_VARIABLE + " to a provisioned service.");
-        return new Resolution(defaultService, "");
+            return new Resolution(null, "The test KEK '" + DEFAULT_SERVICE_NAME + "' is not provisioned. Run " + MACOS_PROVISIONING_TOOL
+                    + " provision --service-name " + DEFAULT_SERVICE_NAME + ", or set " + SERVICE_VARIABLE + " to a provisioned service.");
+        return new Resolution(DEFAULT_SERVICE_NAME, "");
     }
 
-    /** The provisioned service, skipping the calling test when there is none. */
+    /**
+     * The provisioned service, skipping the calling test when there is none. On macOS the first
+     * call also makes the first native call under it, with a deadline (see {@link #awaitNativeAccess}).
+     */
     public static String assumeService() {
         var resolution = resolve();
         Assumptions.assumeTrue(resolution.service() != null, resolution.skipReason());
+        awaitNativeAccess(resolution.service());
         return resolution.service();
     }
 
@@ -304,35 +308,35 @@ public final class NativeTestEnvironment {
             return new Resolution(explicit, "");
 
         if (isMacOs())
-            return macOsResolution(DEFAULT_MACOS_SERVICE_NAME);
+            return macOsResolution();
 
         if (!isWindows())
             return new Resolution(null, "Set " + SERVICE_VARIABLE + " to a service provisioned with hkdfguard provision to run native integration tests. On a Linux TPM host, "
-                    + "sudo scripts/provision-linux-test-key.sh provisions " + DEFAULT_LINUX_SERVICE_NAME + ".");
+                    + "sudo scripts/provision-linux-test-key.sh provisions " + DEFAULT_SERVICE_NAME + ".");
 
         if (!windowsLibraryInstalled())
             return new Resolution(null, "The native KMS library is not installed at " + WindowsNativeLibraryLoader.installedPath() + ".");
 
         int[] answer;
         try {
-            answer = queryKekExists(DEFAULT_WINDOWS_SERVICE_NAME);
+            answer = queryKekExists(DEFAULT_SERVICE_NAME);
         } catch (RuntimeException e) {
             // Installed, but it couldn't even be asked (it failed verification, say): run the
             // tests so that failure is reported.
-            return new Resolution(DEFAULT_WINDOWS_SERVICE_NAME, "");
+            return new Resolution(DEFAULT_SERVICE_NAME, "");
         }
 
         var status = answer[0];
         var exists = answer[1] != 0;
         if (status == 0 && exists)
-            return new Resolution(DEFAULT_WINDOWS_SERVICE_NAME, "");
+            return new Resolution(DEFAULT_SERVICE_NAME, "");
         if (status == 0 || status == AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND)
-            return new Resolution(null, "The test KEK '" + DEFAULT_WINDOWS_SERVICE_NAME + "' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set "
+            return new Resolution(null, "The test KEK '" + DEFAULT_SERVICE_NAME + "' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set "
                     + SERVICE_VARIABLE + " to a provisioned service.");
         if (status == AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED)
-            return new Resolution(null, "The test KEK '" + DEFAULT_WINDOWS_SERVICE_NAME
+            return new Resolution(null, "The test KEK '" + DEFAULT_SERVICE_NAME
                     + "' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.");
-        return new Resolution(DEFAULT_WINDOWS_SERVICE_NAME, "");
+        return new Resolution(DEFAULT_SERVICE_NAME, "");
     }
 
     /**
@@ -358,14 +362,246 @@ public final class NativeTestEnvironment {
         }
     }
 
+    // --- macOS: a keychain dialog nobody answers ---------------------------------------------------
+
     /**
-     * A new temporary folder for key files the native library reads, by its real, long path.
-     * hkdfguard_open_file refuses an 8.3 short name or a link anywhere in a path, and Windows can
-     * hand out the temp folder in short form (for example C:\Users\RUNNER~1\... on GitHub-hosted
-     * runners); toRealPath expands every short component and resolves any link.
+     * How long the first native call that could raise a macOS keychain dialog may take before the
+     * test fails - the Go port's nativeCallTimeout.
+     */
+    public static final Duration NATIVE_CALL_TIMEOUT = Duration.ofSeconds(60);
+
+    private static boolean nativeAccessAwaited;
+    private static String nativeAccessFailure;
+
+    /**
+     * On macOS, makes the first native call under a provisioned service with a deadline, once per
+     * test JVM - the Go port's awaitNativeAccess. In the library's legacy keychain mode the KEK's
+     * access list names the binary that created it (the provisioning tool), so the first call from
+     * any other process - this test JVM - is answered with a keychain dialog in a logged-in session,
+     * or with KEK_ACCESS_DENIED (-18) in a session without one. A dialog nobody answers would hang
+     * the run; this fails the calling test instead, saying what to do. What the call answers is left
+     * to each test. Does nothing on other platforms.
+     */
+    public static void awaitNativeAccess(String service) {
+        if (!isMacOs())
+            return;
+        String failure;
+        synchronized (NativeTestEnvironment.class) {
+            if (!nativeAccessAwaited) {
+                nativeAccessAwaited = true;
+                nativeAccessFailure = firstNativeCallFailure(service);
+            }
+            failure = nativeAccessFailure;
+        }
+        if (failure != null)
+            Assertions.fail(failure);
+    }
+
+    private static String firstNativeCallFailure(String service) {
+        try {
+            if (completesWithin(NATIVE_CALL_TIMEOUT, () -> new NativeHkdfKeyWrapperV1Impl(service).generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]).join()))
+                return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "Interrupted while waiting for the first native call under service '" + service + "'.";
+        }
+        return keychainDialogMessage("The first native call under service '" + service + "'");
+    }
+
+    /**
+     * Runs a native call that could raise a macOS keychain dialog with {@link #NATIVE_CALL_TIMEOUT},
+     * failing the calling test - rather than hanging it - when the call has not returned by then.
+     * Whatever the call throws is rethrown.
+     *
+     * @param what names the call in the failure message
+     * @param call the native call
+     * @param <T> what the call returns
+     * @return what the call returned
+     * @throws Exception whatever the call threw
+     */
+    public static <T> T callWithKeychainTimeout(String what, Callable<T> call) throws Exception {
+        var outcome = new AtomicReference<T>();
+        var thrown = new AtomicReference<Exception>();
+        var returned = completesWithin(NATIVE_CALL_TIMEOUT, () -> {
+            try {
+                outcome.set(call.call());
+            } catch (Exception e) {
+                thrown.set(e);
+            }
+        });
+        if (!returned)
+            Assertions.fail(keychainDialogMessage(what));
+        if (thrown.get() != null)
+            throw thrown.get();
+        return outcome.get();
+    }
+
+    static String keychainDialogMessage(String what) {
+        return what + " has not returned after " + NATIVE_CALL_TIMEOUT.toSeconds() + " seconds. On macOS the KEK's keychain item is asking for access in a dialog: "
+                + "click \"Always Allow\" (each new test binary asks once). In a session with no UI the library reports KEK_ACCESS_DENIED (-18) "
+                + "instead; run the tests from a logged-in session.";
+    }
+
+    /**
+     * Runs a call on a daemon thread - one left blocked on a dialog never keeps the JVM alive - and
+     * reports whether it returned, normally or not, within the timeout.
+     */
+    static boolean completesWithin(Duration timeout, Runnable call) throws InterruptedException {
+        var thread = Thread.ofPlatform().daemon().name("hkdfguard-native-call").unstarted(() -> {
+            try {
+                call.run();
+            } catch (RuntimeException e) {
+                // What the call answers is left to the caller; only whether it returned matters here.
+            }
+        });
+        thread.start();
+        return thread.join(timeout);
+    }
+
+    // --- Directories for key files -----------------------------------------------------------------
+
+    /** On Linux, a private directory for key files is preferably made under the directory this names. */
+    public static final String RUNTIME_DIRECTORY_VARIABLE = "XDG_RUNTIME_DIR";
+
+    /** On Linux, where under the home directory private directories for key files are made otherwise. */
+    public static final String HOME_TEST_DIRECTORY = ".cache/hkdfguard-tests";
+
+    private static final String OWNER_ONLY = "rwx------";
+
+    /**
+     * A new, empty directory for key files the native library reads (hkdfguard_open_file,
+     * readKeyFileAsync) or the hkdfguard CLI writes. Delete it with {@link #deleteRecursively}.
+     * <ul>
+     * <li>Windows: a temporary folder by its real, long path. hkdfguard_open_file refuses an 8.3
+     * short name or a link anywhere in a path, and Windows can hand out the temp folder in short form
+     * (for example C:\Users\RUNNER~1\... on GitHub-hosted runners); toRealPath expands every short
+     * component and resolves any link.</li>
+     * <li>Linux: the native library refuses (HKDFGUARD_ERR_FILE_UNTRUSTED, -39) a key file below
+     * any group- or world-writable directory, sticky or not - so never under /tmp, /var/tmp or
+     * /dev/shm, where java.io.tmpdir and JUnit's TempDir point. A 0700 directory under
+     * $XDG_RUNTIME_DIR when that is trusted, else under ~/.cache/hkdfguard-tests; the calling test is
+     * skipped, saying why, when neither is (see {@link #linuxPrivateDirectory}).</li>
+     * <li>macOS: a temporary folder by its real path.</li>
+     * </ul>
+     *
+     * @param prefix the start of the new directory's name
+     * @return the new directory, by its real path
+     * @throws IOException if it can't be made
      */
     public static Path createTempDirectory(String prefix) throws IOException {
+        if (isLinux())
+            return linuxPrivateDirectory(prefix, System.getenv(RUNTIME_DIRECTORY_VARIABLE), System.getenv("HOME"), linuxEffectiveUserId());
         return Files.createTempDirectory(prefix).toRealPath();
+    }
+
+    /**
+     * A new 0700 directory, by its real path, with no directory from it up to / that the Linux
+     * native library would distrust ({@link #linuxUntrustedReason}): under {@code runtimeDirectory}
+     * if that qualifies, else under {@code home}/.cache/hkdfguard-tests (made 0700 as needed). Skips
+     * the calling test - an aborted assumption, never a pass - when neither does.
+     */
+    static Path linuxPrivateDirectory(String prefix, String runtimeDirectory, String home, long uid) {
+        var refusals = new ArrayList<String>();
+
+        if (runtimeDirectory == null || runtimeDirectory.isEmpty()) {
+            refusals.add("$" + RUNTIME_DIRECTORY_VARIABLE + " is not set");
+        } else {
+            var created = privateDirectoryUnder(Path.of(runtimeDirectory), false, prefix, uid, refusals);
+            if (created != null)
+                return created;
+        }
+
+        if (home == null || home.isEmpty()) {
+            refusals.add("$HOME is not set");
+        } else {
+            var created = privateDirectoryUnder(Path.of(home).resolve(HOME_TEST_DIRECTORY), true, prefix, uid, refusals);
+            if (created != null)
+                return created;
+        }
+
+        return Assumptions.abort("No private directory for key files: the Linux native library refuses a key file below any group- or world-writable "
+                + "directory (sticky or not, so never /tmp, /var/tmp or /dev/shm), and " + String.join("; ", refusals) + ".");
+    }
+
+    private static Path privateDirectoryUnder(Path root, boolean createRoot, String prefix, long uid, List<String> refusals) {
+        try {
+            if (!root.isAbsolute()) {
+                refusals.add(root + " is not an absolute path");
+                return null;
+            }
+            if (createRoot && !Files.isDirectory(root)) {
+                // Nothing is created below a directory that is already untrusted.
+                var existing = root.getParent();
+                while (existing != null && !Files.exists(existing))
+                    existing = existing.getParent();
+                var above = existing == null ? null : linuxUntrustedReason(existing, uid);
+                if (above != null) {
+                    refusals.add(above);
+                    return null;
+                }
+                Files.createDirectories(root, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(OWNER_ONLY)));
+            }
+            var reason = linuxUntrustedReason(root, uid);
+            if (reason != null) {
+                refusals.add(reason);
+                return null;
+            }
+            var directory = Files.createTempDirectory(root.toRealPath(), prefix).toRealPath();
+            Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString(OWNER_ONLY));
+            reason = linuxUntrustedReason(directory, uid);
+            if (reason != null) {
+                deleteRecursively(directory);
+                refusals.add(reason);
+                return null;
+            }
+            return directory;
+        } catch (IOException | UncheckedIOException | SecurityException | UnsupportedOperationException e) {
+            refusals.add(root + " is unusable (" + e + ")");
+            return null;
+        }
+    }
+
+    /**
+     * Why the Linux native library would refuse a key file in {@code directory}, or null if it
+     * wouldn't: the first directory, from {@code directory}'s real path up to /, that is owned by
+     * neither root nor {@code uid}, or is writable by group or others. The sticky bit excuses
+     * nothing.
+     */
+    static String linuxUntrustedReason(Path directory, long uid) throws IOException {
+        for (var path = directory.toRealPath(); path != null; path = path.getParent()) {
+            var owner = ((Number) Files.getAttribute(path, "unix:uid")).longValue();
+            var mode = ((Number) Files.getAttribute(path, "unix:mode")).intValue();
+            if (owner != 0 && owner != uid)
+                return path + " is owned by uid " + owner + ", neither root nor this user (uid " + uid + ")";
+            if ((mode & 0022) != 0)
+                return path + " is writable by group or others (mode " + Integer.toOctalString(mode & 07777) + ")";
+        }
+        return null;
+    }
+
+    /** This process's effective user id, from /proc/self/status (Linux only). */
+    static long linuxEffectiveUserId() throws IOException {
+        for (var line : Files.readAllLines(Path.of("/proc/self/status"))) {
+            if (line.startsWith("Uid:"))
+                return Long.parseLong(line.substring(4).trim().split("\\s+")[1]);
+        }
+        throw new IOException("/proc/self/status has no Uid line.");
+    }
+
+    /**
+     * Deletes a directory made by {@link #createTempDirectory} and everything in it; one that is
+     * already gone, or null, is fine.
+     *
+     * @param directory the directory
+     * @throws IOException if something in it can't be deleted
+     */
+    public static void deleteRecursively(Path directory) throws IOException {
+        if (directory == null || !Files.exists(directory, LinkOption.NOFOLLOW_LINKS))
+            return;
+        try (var paths = Files.walk(directory)) {
+            for (var path : paths.sorted(Comparator.reverseOrder()).toList())
+                Files.deleteIfExists(path);
+        }
     }
 
     private static String read(String variable) {
