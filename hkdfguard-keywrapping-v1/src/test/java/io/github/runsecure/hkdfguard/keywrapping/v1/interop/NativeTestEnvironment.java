@@ -46,7 +46,7 @@ public final class NativeTestEnvironment {
     public static final String DEFAULT_MACOS_SERVICE_NAME = "com.hkdfguard.integration.test.221";
 
     /**
-     * The Linux test KEK the .NET port's scripts/provision-linux-test-key.sh provisions (with
+     * The Linux test KEK scripts/provision-linux-test-key.sh provisions (with
      * {@code <name>.other} as the second service). Linux has no non-prompting way to ask whether a
      * KEK exists, so it is only used when named in {@link #SERVICE_VARIABLE}.
      */
@@ -152,7 +152,7 @@ public final class NativeTestEnvironment {
      */
     public static void assumePinnedNamesAllowlist() {
         Assumptions.assumeTrue(linuxPolicyRequiresPinnedNames(),
-                LINUX_POLICY_PATH + " does not set tpm.require_pinned_names = true (the .NET port's scripts/provision-linux-test-key.sh does).");
+                LINUX_POLICY_PATH + " does not set tpm.require_pinned_names = true (scripts/provision-linux-test-key.sh does).");
     }
 
     static boolean linuxPolicyRequiresPinnedNames() {
@@ -308,7 +308,7 @@ public final class NativeTestEnvironment {
 
         if (!isWindows())
             return new Resolution(null, "Set " + SERVICE_VARIABLE + " to a service provisioned with hkdfguard provision to run native integration tests. On a Linux TPM host, "
-                    + "the .NET port's sudo scripts/provision-linux-test-key.sh provisions " + DEFAULT_LINUX_SERVICE_NAME + ".");
+                    + "sudo scripts/provision-linux-test-key.sh provisions " + DEFAULT_LINUX_SERVICE_NAME + ".");
 
         if (!windowsLibraryInstalled())
             return new Resolution(null, "The native KMS library is not installed at " + WindowsNativeLibraryLoader.installedPath() + ".");

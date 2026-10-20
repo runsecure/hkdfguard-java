@@ -304,8 +304,8 @@ ports; every test that can't run here is reported as skipped, never as passed:
 | macOS | `MacOsNativeIntegrationTest`: the installed `libhkdfguard_v1.dylib` passes location and signature checks, the provisioning tool and unsigned or user-owned files are refused, and `hkdfguard-v1-initialize status` agrees with the test service resolution | macOS only; most tests also need the library, or `hkdfguard-v1-initialize` beside it, installed |
 | Windows | `WindowsNativeLibraryLoaderTest` (its installed-library tests), `NativeKeyFileTest`, `NativeKeyWrappingIntegrationTest`, `NativeEndToEndTest`, `NativeEndToEndCacheTest`, `NativeProcessHardeningTest` | Windows; `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` installed; a provisioned KEK for the round trips |
 
-On Linux the test KEKs come from the .NET port's `scripts/provision-linux-test-key.sh` on a TPM
-host, which provisions `com.hkdfguard.integration.test.221` and `com.hkdfguard.integration.test.221.other`
+On Linux the test KEKs come from `scripts/provision-linux-test-key.sh`, run once with `sudo` on a
+TPM host from the account that runs the tests (`--remove` removes the policy it wrote). It provisions `com.hkdfguard.integration.test.221` and `com.hkdfguard.integration.test.221.other`
 and sets the pinned-names allowlist; Linux has no non-prompting way to ask whether a KEK exists, so
 name them explicitly:
 
@@ -332,7 +332,10 @@ passed. Once a service is chosen, a missing or failing library is a test failure
 The script runs the installed `hkdfguard.exe provision`, after checking it is the signed
 tool from its fixed install location (the same publisher, pinned root and Artifact Signing profile
 the library's own loader requires). It is safe to re-run: an existing KEK is re-verified, not
-replaced. Afterwards the tests find the KEK on their own:
+replaced. It also retires the legacy per-platform test KEK `com.hkdfguard.native.windows.test`,
+which no test uses any more, after asking (`-KeepLegacyKey` keeps it). `-Remove` retires the test
+KEKs instead, each only after `hkdfguard status` confirms its fingerprint; `-WhatIf` shows what
+either would delete. Afterwards the tests find the KEK on their own:
 
 ```powershell
 .\mvnw.cmd verify
