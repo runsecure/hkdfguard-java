@@ -19,7 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The macOS loader's system-call layer against the real filesystem and Security framework, the
- * installed libhkdfguard_v1.dylib and the hkdfguard-v1-initialize installed beside it, where they
+ * installed libhkdfguard.dylib and the hkdfguard installed beside it, where they
  * are. Skipped off macOS; the tests that need an install are skipped without one. Test names follow
  * the Go port's TestDarwin_*. A native call that could raise a keychain dialog is made with
  * NativeTestEnvironment's deadline, so a dialog nobody answers fails the run rather than hanging it.

@@ -51,7 +51,7 @@ public final class NativeTestEnvironment {
      * scripts/provision-macos-test-key.sh.
      * Used when {@link #SERVICE_VARIABLE} is unset and the platform can confirm it is provisioned:
      * on Windows the installed library reports it exists, on macOS the installed
-     * hkdfguard-v1-initialize reports it present. Linux has no non-prompting way to ask whether a
+     * hkdfguard reports it present. Linux has no non-prompting way to ask whether a
      * KEK exists, so there it is only used when named in {@link #SERVICE_VARIABLE}.
      */
     public static final String DEFAULT_SERVICE_NAME = "com.hkdfguard.integration.test.221";
@@ -68,8 +68,8 @@ public final class NativeTestEnvironment {
     /** The Linux provisioning tool, from the hkdfguard package. */
     public static final String LINUX_CLI = "/usr/bin/hkdfguard";
 
-    /** The macOS provisioning tool's file name, installed beside libhkdfguard_v1.dylib. */
-    public static final String MACOS_PROVISIONING_TOOL = "hkdfguard-v1-initialize";
+    /** The macOS provisioning tool's file name, installed beside libhkdfguard.dylib. */
+    public static final String MACOS_PROVISIONING_TOOL = "hkdfguard";
 
     /** Which service the native tests use, or why they are skipped. */
     record Resolution(String service, String skipReason) {
@@ -201,7 +201,7 @@ public final class NativeTestEnvironment {
     }
 
     /**
-     * The hkdfguard-v1-initialize installed beside the library MacOsNativeLibraryLoader would
+     * The hkdfguard installed beside the library MacOsNativeLibraryLoader would
      * choose, or null if there is none.
      */
     public static String macOsProvisioningTool() {
@@ -254,7 +254,7 @@ public final class NativeTestEnvironment {
     }
 
     /**
-     * How the macOS default test service resolves: the installed hkdfguard-v1-initialize, which
+     * How the macOS default test service resolves: the installed hkdfguard, which
      * created the KEK and so is on its keychain item's access list, is asked whether it is present -
      * asking the library from this process could prompt. "kek: absent" skips; "kek: present", or
      * any failure to ask, runs the tests, so a real failure is reported (and the first native call

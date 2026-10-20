@@ -160,7 +160,7 @@ Installed locations:
 |----------|-------------------------------------------------------------|------------------------------------------|
 | Windows  | `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`                  | `%ProgramFiles%\HkdfGuard\v1\hkdfguard.exe` |
 | Linux    | `/usr/lib/<multiarch>/libhkdfguard.so.1` or `/usr/lib64/libhkdfguard.so.1` (the `libhkdfguard1` package; `hkdfguard-libs` on RPM distributions); x64 and arm64 | `/usr/bin/hkdfguard` |
-| macOS    | `/Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib` or `~/.hkdfguard/v1/` | `hkdfguard-v1-initialize`  |
+| macOS    | `/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib` or `~/.hkdfguard/v1/` | `hkdfguard`, beside the library |
 
 On **Linux**, `LinuxNativeLibraryLoader` uses the package's file in the Debian multiarch directory
 (`/usr/lib/x86_64-linux-gnu` or `/usr/lib/aarch64-linux-gnu`) if it is there, otherwise the one in
@@ -305,7 +305,7 @@ ports; every test that can't run here is reported as skipped, never as passed:
 |---|---|---|
 | Linux | `LinuxNativeLibraryLoaderSystemTest`: the loader against this machine's filesystem and dynamic linker | Linux only; the installed-library tests also need the libhkdfguard1 package |
 | Linux | `LinuxNativeIntegrationTest`: exact status codes, the library's own input checks, zeroing on failure, and the hkdfguard CLI deployment path | Linux, the libhkdfguard1 package and `HKDFGUARD_TEST_SERVICE`; some tests also need `HKDFGUARD_TEST_SERVICE_OTHER`, `tpm.require_pinned_names = true` in `/etc/hkdfguard/policy.toml`, or `/usr/bin/hkdfguard` |
-| macOS | `MacOsNativeIntegrationTest`: the installed `libhkdfguard_v1.dylib` passes location and signature checks, the provisioning tool and unsigned or user-owned files are refused, and `hkdfguard-v1-initialize status` agrees with the test service resolution | macOS only; most tests also need the library, or `hkdfguard-v1-initialize` beside it, installed |
+| macOS | `MacOsNativeIntegrationTest`: the installed `libhkdfguard.dylib` passes location and signature checks, the provisioning tool and unsigned or user-owned files are refused, and `hkdfguard status` agrees with the test service resolution | macOS only; most tests also need the library, or `hkdfguard` beside it, installed |
 | Windows | `WindowsNativeLibraryLoaderTest` (its installed-library tests), `NativeKeyFileTest`, `NativeKeyWrappingIntegrationTest`, `NativeEndToEndTest`, `NativeEndToEndCacheTest`, `NativeProcessHardeningTest` | Windows; `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` installed; a provisioned KEK for the round trips |
 
 On Linux the test KEKs come from `scripts/provision-linux-test-key.sh`, run once with `sudo` on a
@@ -326,7 +326,7 @@ key-file tests (saying why) when neither is (`NativeTestEnvironment.createTempDi
 hkdfguard-test-support).
 
 On macOS, with `HKDFGUARD_TEST_SERVICE` unset, the tests use `com.hkdfguard.integration.test.221` when
-the installed `hkdfguard-v1-initialize status` reports it present, and are skipped when it reports it
+the installed `hkdfguard status` reports it present, and are skipped when it reports it
 absent. The first call from the test JVM can raise a keychain dialog (click "Always Allow"); it is
 made with a 60-second deadline, so a dialog nobody answers fails the run instead of hanging it. Every
 platform's library refuses to create a KEK while wrapping or unwrapping, so these tests run only
@@ -361,7 +361,7 @@ to a second provisioned service to test cross-service isolation against a differ
 that test uses a service that is never provisioned):
 
 ```bash
-hkdfguard provision --service-name hkdfguard.integrationtest   # elevated on Windows (hkdfguard-v1-initialize on macOS)
+hkdfguard provision --service-name hkdfguard.integrationtest   # elevated on Windows
 HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest ./mvnw verify
 ```
 
