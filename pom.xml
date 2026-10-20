@@ -212,15 +212,12 @@
           <groupId>org.sonatype.central</groupId>
           <artifactId>central-publishing-maven-plugin</artifactId>
           <version>0.12.0</version>
-<<<<<<< HEAD
         </plugin>
         <!-- hkdfguard-keywrapping-v1 compiles hkdfguard-test-support's sources into its tests. -->
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>build-helper-maven-plugin</artifactId>
           <version>3.6.2</version>
-=======
->>>>>>> origin/main
         </plugin>
         <!-- The release workflow stamps the tag's version into every POM with versions:set. -->
         <plugin>
