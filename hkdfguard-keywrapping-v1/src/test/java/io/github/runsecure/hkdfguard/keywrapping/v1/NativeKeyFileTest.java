@@ -138,7 +138,8 @@ class NativeKeyFileTest {
     void aKeyFileOfTheRightSizeWithAnUnknownVersion_IsMalformed() throws Exception {
         var file = wrapToFile(NativeTestEnvironment.assumeService());
         var wrapped = file.wrapped();
-        wrapped[0] ^= (byte) 0xFF; // the version byte
+        // The version byte: first on Linux and Windows; on macOS the suite id, after the 32-byte KEK fingerprint.
+        wrapped[NativeTestEnvironment.isMacOs() ? 32 : 0] ^= (byte) 0xFF;
         Files.write(file.path(), wrapped);
 
         var failure = assertInstanceOf(InvalidKeyFileException.class, readFailure(file.path()));
