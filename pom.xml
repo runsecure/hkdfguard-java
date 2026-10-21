@@ -219,11 +219,16 @@
           <artifactId>build-helper-maven-plugin</artifactId>
           <version>3.6.2</version>
         </plugin>
-        <!-- The release workflow stamps the tag's version into every POM with versions:set. -->
+        <!-- The release workflow stamps the tag's version into every POM with versions:set. By
+             default that also resets project.build.outputTimestamp to the current time, so the
+             build and publish jobs, run minutes apart, would produce different jars: keep it fixed. -->
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>versions-maven-plugin</artifactId>
           <version>2.23.0</version>
+          <configuration>
+            <updateBuildOutputTimestampPolicy>never</updateBuildOutputTimestampPolicy>
+          </configuration>
         </plugin>
       </plugins>
     </pluginManagement>
