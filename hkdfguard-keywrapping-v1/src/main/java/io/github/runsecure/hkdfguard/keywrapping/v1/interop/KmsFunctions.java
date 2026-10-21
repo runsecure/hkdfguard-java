@@ -4,6 +4,7 @@ import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 
+import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -134,12 +135,19 @@ final class KmsFunctions {
     }
 
     // Copies the output back only on success: a failed call's partial output never reaches the
-    // caller's buffer at all.
+    // caller's buffer at all. A success claiming fewer than 0 or more than capacity bytes breaks the
+    // native contract: both buffers are erased and the call fails, rather than return a count the
+    // caller would trust.
     private static KmsResult finish(int status, MemorySegment output, MemorySegment outputLength, byte[] destination) {
         var written = outputLength.get(JAVA_INT, 0);
         if (status == AbstractHkdfGuardKmsLibrary.OK) {
-            var copied = Math.min(Math.max(written, 0), destination.length);
-            MemorySegment.copy(output, JAVA_BYTE, 0, destination, 0, copied);
+            if (written < 0 || written > destination.length) {
+                output.fill((byte) 0);
+                ArrayUtility.zeroMemory(destination);
+                throw new IllegalStateException("The native KMS call reported " + written + " bytes written into a "
+                        + destination.length + "-byte buffer.");
+            }
+            MemorySegment.copy(output, JAVA_BYTE, 0, destination, 0, written);
         }
         return new KmsResult(status, written);
     }

@@ -191,8 +191,10 @@ public final class HkdfGuardOptions {
     /**
      * Checks these options against the constraints {@link KeyRingBuilder} enforces, plus what
      * {@link #applyTo(KeyRingBuilder)} and building need: a valid service name, every key file
-     * having a path, and versions that don't collide across key files and ephemeral keys - caught
-     * here, at configuration time, with a much clearer message than a failure deep inside build.
+     * having a path, versions that don't collide across key files and ephemeral keys, and - unless
+     * rotation is disabled - no key file above every ephemeral version, which the first ephemeral
+     * key rotation would replace as current - caught here, at configuration time, with a much
+     * clearer message than a failure deep inside build.
      *
      * @return every failure, or an empty list if these options are valid
      */
@@ -247,6 +249,17 @@ public final class HkdfGuardOptions {
             if (count > 1)
                 failures.add("Version " + version + " is registered more than once across keyFiles/ephemeralKeys.");
         });
+
+        // Rotation adds at the current version + 1, so with a key file above every ephemeral version
+        // the first rotation would make an in-memory key current - as KeyRingBuilder refuses at build.
+        if (!disableEphemeralKeyRotation) {
+            var highestKeyFile = keyFiles.stream().filter(Objects::nonNull).mapToInt(KeyFileOptions::getVersion).max();
+            var highestEphemeral = ephemeralKeys.stream().filter(Objects::nonNull).mapToInt(Integer::intValue).max();
+            if (highestKeyFile.isPresent() && highestEphemeral.isPresent() && highestKeyFile.getAsInt() > highestEphemeral.getAsInt())
+                failures.add("Key file version " + highestKeyFile.getAsInt() + " is above every ephemeral version, so the first scheduled rotation "
+                        + "would replace it as the current version and new values would be encrypted under a key that does not survive a restart. "
+                        + "Register the ephemeral key at a version above every key file, or set disableEphemeralKeyRotation.");
+        }
 
         return failures;
     }

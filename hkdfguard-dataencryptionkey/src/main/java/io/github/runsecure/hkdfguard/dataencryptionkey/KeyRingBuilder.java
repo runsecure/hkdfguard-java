@@ -11,6 +11,7 @@ import io.github.runsecure.hkdfguard.dataencryptionkey.formatprovider.DefaultFor
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -36,7 +37,10 @@ import org.slf4j.LoggerFactory;
  * Key files are rotated by deployment, not here: each release brings its own freshly generated key
  * files. Ephemeral keys are rotated here: a ring with any ephemeral key adds a fresh one as its new
  * current version every {@link #getEphemeralKeyRotationInterval()} (24 hours unless configured
- * otherwise).
+ * otherwise). Rotation adds at the current version + 1, so a ring that rotates must have its
+ * highest ephemeral version above every key file - otherwise the first rotation would supersede the
+ * key file and new values would be encrypted under a key that does not survive a restart; build
+ * refuses that layout unless rotation is turned off with {@link #withoutEphemeralKeyRotation()}.
  */
 public final class KeyRingBuilder {
     /** How often a ring with ephemeral keys adds a fresh one as its current version, unless configured otherwise. */
@@ -281,7 +285,8 @@ public final class KeyRingBuilder {
     /**
      * Registers a version whose DEK is generated fresh at build time (via the factory's
      * createEphemeralAsync) and never written to or read from disk - it lives only as long as the
-     * built ring.
+     * built ring. Unless rotation is turned off, the highest ephemeral version must be above every
+     * key file's version, so rotation never replaces a key file as the current version.
      */
     public KeyRingBuilder withEphemeralKey(int version) {
         ephemeralVersions.add(version);
@@ -295,7 +300,9 @@ public final class KeyRingBuilder {
      * every provider created so far is closed and the future fails with the cause.
      *
      * @throws IllegalStateException no key wrapper, no crypto provider factory, no key refresh
-     *                               interval, or no key files/ephemeral keys were configured
+     *                               interval, or no key files/ephemeral keys were configured; or
+     *                               ephemeral key rotation is on and a key file's version is above
+     *                               every ephemeral version
      */
     public CompletableFuture<KeyRingImpl> buildAsync() {
         if (keyWrapper == null)
@@ -306,6 +313,15 @@ public final class KeyRingBuilder {
             throw new IllegalStateException("At least one key file or ephemeral key is required - call withKeyFile or withEphemeralKey first.");
         if (keyRefreshInterval == null)
             throw new IllegalStateException("A key refresh interval is required - call withKeyRefreshInterval first.");
+        if (!ephemeralVersions.isEmpty() && ephemeralKeyRotationInterval != null && !keyFiles.isEmpty()) {
+            // Rotation adds at the current version + 1: above a key file, it would make an in-memory
+            // key current and every later encrypt would be lost on restart.
+            int highestKeyFile = keyFiles.lastKey();
+            if (highestKeyFile > Collections.max(ephemeralVersions))
+                throw new IllegalStateException("Key file version " + highestKeyFile + " is above every ephemeral version, so the first scheduled "
+                        + "rotation would replace it as the current version and new values would be encrypted under a key that does not survive "
+                        + "a restart. Register the ephemeral key at a version above every key file, or call withoutEphemeralKeyRotation().");
+        }
 
         // A snapshot: changing the builder afterwards doesn't change a build in progress.
         var plan = new Plan(Map.copyOf(new TreeMap<>(keyFiles)), List.copyOf(ephemeralVersions), keyWrapper, cryptoProviderFactory,
