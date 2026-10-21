@@ -1,5 +1,8 @@
-# Builds and tests every HkdfGuard module, publishes them to Maven Central,
-# signed, and creates a GitHub Release with the same files.
+# Builds and tests every HkdfGuard module, signs them, and creates a GitHub
+# Release with the signed files. Publishing the same files to Maven Central is
+# opt-in: set the repository variable PUBLISH_TO_MAVEN_CENTRAL to "true"
+# (Settings > Secrets and variables > Actions > Variables) once the Central
+# token secrets below exist. Until then nothing is sent to Central.
 #
 # Triggered by pushing a version tag (vX.Y.Z, optionally with a pre-release
 # suffix such as v1.2.3-rc.1). Four jobs:
@@ -11,8 +14,8 @@
 #   publish  in the "release" environment, the only job that sees the signing
 #            key or the Central token: rebuilds, refuses to continue unless
 #            its jars are byte-identical to the ones build tested (the build
-#            is reproducible - see project.build.outputTimestamp), then signs
-#            and publishes to Central and attests provenance.
+#            is reproducible - see project.build.outputTimestamp), then signs,
+#            publishes to Central if enabled, and attests provenance.
 #   github   creates the GitHub Release from publish's files.
 #
 # Publishing to Maven Central is PERMANENT: a version can never be deleted or
@@ -29,9 +32,9 @@
 #   - A GPG signing key whose public half is on a public keyserver
 #     (e.g. keys.openpgp.org), so Central can check the signatures.
 #   - A "release" environment (Settings > Environments) restricted to tags
-#     matching v*, with a required reviewer, holding four secrets:
-#       CENTRAL_TOKEN_USERNAME  the Portal user token's username
-#       CENTRAL_TOKEN_PASSWORD  the Portal user token's password
+#     matching v*, with a required reviewer, holding these secrets:
+#       CENTRAL_TOKEN_USERNAME  the Portal user token's username (Central only)
+#       CENTRAL_TOKEN_PASSWORD  the Portal user token's password (Central only)
 #       MAVEN_GPG_PRIVATE_KEY   the armored private key (gpg --armor --export-secret-keys <id>)
 #       MAVEN_GPG_PASSPHRASE    its passphrase
 #     Environment secrets, not repository secrets: only a job running in the
@@ -160,15 +163,34 @@ jobs:
           exit "$status"
 
       # Signs every artifact (BouncyCastle signer: the key comes straight from
-      # the environment, no gpg install) and publishes through the Central
-      # Portal, waiting until Central reports the version as published.
-      - name: Sign and publish to Maven Central
+      # the environment, no gpg install). Signing runs in verify, so without
+      # the PUBLISH_TO_MAVEN_CENTRAL variable this stops there and the signed
+      # files go only to the GitHub Release. With it set to "true", deploy
+      # also publishes through the Central Portal, waiting until Central
+      # reports the version as published.
+      - name: Sign, and publish to Maven Central if enabled
         env:
+          PUBLISH_TO_MAVEN_CENTRAL: ${{ vars.PUBLISH_TO_MAVEN_CENTRAL }}
           CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
           MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-        run: ./mvnw -B -ntp -Pdist,release -DskipTests deploy
+        run: |
+          set -euo pipefail
+          if [[ "$MAVEN_GPG_KEY" != *"-----BEGIN PGP PRIVATE KEY BLOCK-----"* || -z "$MAVEN_GPG_PASSPHRASE" ]]; then
+            echo "::error::MAVEN_GPG_PRIVATE_KEY (an armored private key) and MAVEN_GPG_PASSPHRASE must be set in the release environment."
+            exit 1
+          fi
+          if [[ "$PUBLISH_TO_MAVEN_CENTRAL" == "true" ]]; then
+            if [[ -z "$CENTRAL_TOKEN_USERNAME" || -z "$CENTRAL_TOKEN_PASSWORD" ]]; then
+              echo "::error::Publishing to Maven Central needs CENTRAL_TOKEN_USERNAME and CENTRAL_TOKEN_PASSWORD in the release environment."
+              exit 1
+            fi
+            ./mvnw -B -ntp -Pdist,release -DskipTests deploy
+          else
+            echo "PUBLISH_TO_MAVEN_CENTRAL is not \"true\": signing only, nothing goes to Maven Central."
+            ./mvnw -B -ntp -Pdist,release -DskipTests verify
+          fi
 
       - name: Collect the release files
         run: |
