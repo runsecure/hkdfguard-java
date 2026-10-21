@@ -61,6 +61,16 @@ class Utf8UtilityTest {
     }
 
     @Test
+    void decode_IntoATooSmallDestination_ThrowsAndLeavesNoPlaintextBehind() {
+        // The decoder fills the destination before it overflows; none of that may survive the throw.
+        var bytes = "top secret".getBytes(StandardCharsets.UTF_8);
+        var result = new char[5];
+
+        assertThrows(IllegalArgumentException.class, () -> Utf8Utility.decode(bytes, bytes.length, result));
+        assertArrayEquals(new char[5], result);
+    }
+
+    @Test
     void decode_MalformedInput_BecomesUFFFD() {
         var result = new char[4];
 

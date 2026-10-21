@@ -182,6 +182,33 @@ class KeyRingBuilderTest {
     }
 
     @Test
+    void buildAsync_WithAKeyFileAboveEveryEphemeralVersion_AndRotationOn_ThrowsBeforeReadingAnyKeyFile() {
+        // The first rotation would add an ephemeral key above the key file and make it current.
+        var wrapper = new ReadingKeyWrapper();
+        var factory = new TestKeys.RecordingCryptoProviderFactory();
+        var builder = new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory).withKeyRefreshInterval(60)
+                .withKeyFile(3, directory.resolve("v3.bin")).withEphemeralKey(2);
+
+        var thrown = assertThrows(IllegalStateException.class, builder::buildAsync);
+
+        assertTrue(thrown.getMessage().startsWith("Key file version 3 is above every ephemeral version"));
+        assertTrue(wrapper.reads.isEmpty());
+        assertTrue(factory.createdProviders.isEmpty());
+    }
+
+    @Test
+    void build_WithAKeyFileAboveEveryEphemeralVersion_AndRotationOff_KeepsTheKeyFileCurrent() {
+        var factory = new TestKeys.RecordingCryptoProviderFactory();
+
+        try (var ring = await(new KeyRingBuilder().withKeyWrapper(new ReadingKeyWrapper()).withCryptoProviderFactory(factory)
+                .withKeyRefreshInterval(60).withKeyFile(3, directory.resolve("v3.bin")).withEphemeralKey(2)
+                .withoutEphemeralKeyRotation().buildAsync())) {
+            assertEquals(3, ring.getCurrentVersion());
+            assertNull(ring.getEphemeralKeyRotationInterval());
+        }
+    }
+
+    @Test
     void build_WhenAKeyFileCannotBeRead_ClosesTheProvidersAlreadyCreated() throws IOException {
         var factory = new TestKeys.RecordingCryptoProviderFactory();
 

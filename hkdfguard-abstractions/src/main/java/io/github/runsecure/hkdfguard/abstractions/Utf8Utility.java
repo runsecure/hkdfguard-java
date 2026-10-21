@@ -5,6 +5,7 @@ import java.nio.CharBuffer;
 import java.nio.charset.CoderResult;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * UTF-8 conversions that write into caller-owned arrays, so secrets never pass through a String,
@@ -62,7 +63,8 @@ public final class Utf8Utility {
      * substituting U+FFFD for malformed input.
      *
      * @return the number of chars written
-     * @throws IllegalArgumentException destination is too small
+     * @throws IllegalArgumentException destination is too small; the chars already written to it
+     *                                  are zeroed first, so no partial plaintext is left behind
      */
     public static int decode(byte[] bytes, int length, char[] destination) {
         var decoder = StandardCharsets.UTF_8.newDecoder()
@@ -72,10 +74,14 @@ public final class Utf8Utility {
         var out = CharBuffer.wrap(destination);
 
         CoderResult result = decoder.decode(in, out, true);
-        if (result.isOverflow() || (result = decoder.flush(out)).isOverflow())
+        if (result.isOverflow() || (result = decoder.flush(out)).isOverflow()) {
+            Arrays.fill(destination, 0, out.position(), '\0');
             throw new IllegalArgumentException("The destination is too small for the decoded text.");
-        if (result.isError())
+        }
+        if (result.isError()) {
+            Arrays.fill(destination, 0, out.position(), '\0');
             throw new IllegalArgumentException("The input could not be decoded as UTF-8.");
+        }
 
         return out.position();
     }

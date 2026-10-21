@@ -298,11 +298,27 @@ class HkdfGuardOptionsTest {
         }
 
         @Test
+        void aKeyFileAboveEveryEphemeralKeyWithRotationOnFails() {
+            // The first rotation would replace the key file as current with a key lost on restart.
+            var options = validOptions();
+            options.setKeyFiles(List.of(new KeyFileOptions(3, "/tmp/dek.bin")));
+            assertTrue(anyFailure(options, "Key file version 3 is above every ephemeral version"));
+        }
+
+        @Test
+        void aKeyFileAboveEveryEphemeralKeyWithRotationDisabledSucceeds() {
+            var options = validOptions();
+            options.setKeyFiles(List.of(new KeyFileOptions(3, "/tmp/dek.bin")));
+            options.setDisableEphemeralKeyRotation(true);
+            assertEquals(List.of(), options.validate());
+        }
+
+        @Test
         void aNullKeyFileOrEphemeralKeyEntryFails() {
             // A binder can leave a gap in a list; applying it would otherwise fail deep in the builder.
             var options = validOptions();
             options.setKeyFiles(Arrays.asList(new KeyFileOptions(2, "a.bin"), null));
-            options.setEphemeralKeys(Arrays.asList(1, null));
+            options.setEphemeralKeys(Arrays.asList(3, null));
 
             assertEquals(List.of("keyFiles[1] is missing.", "ephemeralKeys[1] is missing."), options.validate());
         }
