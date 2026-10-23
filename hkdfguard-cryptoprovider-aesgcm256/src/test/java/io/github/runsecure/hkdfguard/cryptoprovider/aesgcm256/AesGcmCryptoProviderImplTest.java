@@ -744,6 +744,55 @@ class AesGcmCryptoProviderImplTest {
         assertArrayEquals(plaintext, decrypted);
     }
 
+    @Test
+    void failClosed_WhenTheKeyWrapperHangs_CountsEachTimedOutRefresh_WithoutPilingUpCalls() {
+        var wrapper = new FakeKeyWrapper(FakeKeyWrapper.randomKey());
+        var logger = new RecordingLogger();
+        try (var provider = await(AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 1, 2, logger))) {
+            var plaintext = utf8("survives");
+            var ciphertext = new byte[provider.getEncryptedAllocationLength(plaintext.length)];
+            provider.encrypt(plaintext.clone(), ciphertext);
+            var gate = new CountDownLatch(1);
+            wrapper.blockUnwrap = gate;
+            var callsBefore = wrapper.unwrapCallCount();
+
+            // Tick ~1 s starts a reveal that never returns; it times out at ~2 s (failure 1), and the
+            // next tick finds it still running (failure 2) instead of starting another call.
+            sleep(3500);
+
+            assertTrue(provider.isKeyAccessSuspended());
+            assertEquals(callsBefore + 1, wrapper.unwrapCallCount());
+
+            // The key wrapper recovers: the abandoned call returns (its key is discarded), and the
+            // next refresh resumes service with the same DEK.
+            wrapper.blockUnwrap = null;
+            gate.countDown();
+            sleep(1500);
+
+            assertFalse(provider.isKeyAccessSuspended());
+            var decrypted = new byte[plaintext.length];
+            provider.decrypt(ciphertext, decrypted);
+            assertArrayEquals(plaintext, decrypted);
+        }
+    }
+
+    @Test
+    void close_WhileTheKeyWrapperHangs_ReturnsWithoutWaitingForIt() {
+        var wrapper = new FakeKeyWrapper();
+        var provider = create(wrapper, 1);
+        var gate = new CountDownLatch(1);
+        wrapper.blockUnwrap = gate;
+        sleep(1300); // a refresh is now stuck in the key wrapper
+
+        var started = System.nanoTime();
+        provider.close();
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+        gate.countDown();
+
+        assertTrue(elapsedMillis < 500, "close took " + elapsedMillis + " ms");
+        assertThrows(IllegalStateException.class, () -> provider.encrypt(utf8("x"), new byte[64]));
+    }
+
     // A key wrapper whose unwrap waits until released - standing in for a network-backed KMS - so
     // a test can observe the creating call returning before the key is revealed.
     static final class GatedKeyWrapper implements KeyWrapper {
@@ -758,6 +807,11 @@ class AesGcmCryptoProviderImplTest {
         @Override
         public CompletableFuture<Integer> wrapAsync(byte[] plaintext, byte[] result) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException("this test never reads key files"));
         }
 
         @Override
@@ -787,6 +841,11 @@ class AesGcmCryptoProviderImplTest {
         @Override
         public CompletableFuture<Integer> wrapAsync(byte[] plaintext, byte[] result) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException("this test never reads key files"));
         }
 
         @Override

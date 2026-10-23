@@ -200,8 +200,9 @@ reparse point, an 8.3 short name, a UNC, mapped or SUBST drive, or a file or fol
 could write or replace. Each refusal is an `IOException` naming the path and the native status:
 `NoSuchFileException` (-32), `AccessDeniedException` (-33 access denied, -39 untrusted location),
 `InvalidKeyFileException` (-35 too short, -36 too long, -37 plaintext key, -38 malformed), or a
-plain `IOException` (-34 and anything else). Other key wrappers read with ordinary file I/O
-(`WrappedKeyFile.read`), refusing only an empty file or one over `WrappedKeyLimits.MAX_BYTES`.
+plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has no default, so
+any other key wrapper must read key files itself, and must refuse one another account could have
+written or replaced.
 
 **Status codes.** The Windows, Linux and macOS native libraries share one `HKDFGUARD_ERR_*` table,
 number for number, and every failure message names the status and what it means:

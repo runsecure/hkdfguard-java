@@ -1,6 +1,5 @@
 package io.github.runsecure.hkdfguard.abstractions;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 
@@ -49,11 +48,14 @@ public interface KeyWrapper {
 
     /**
      * Reads a key file holding a key this instance wrapped, returning its bytes still wrapped -
-     * ready for {@link #unwrapAsync}. KeyRingBuilder reads every key file through its key wrapper,
-     * so a wrapper backed by a native KMS can read through that KMS's own checks (the native library
-     * refuses a file another account could have replaced, or one holding what looks like an
-     * unwrapped key). The default reads it with ordinary file I/O ({@link WrappedKeyFile#read}),
-     * on the calling thread, and returns an already completed future.
+     * ready for {@link #unwrapAsync}. KeyRingBuilder reads every key file through its key wrapper.
+     * <p>
+     * Anyone who can replace a key file chooses the key new data is encrypted under, so an
+     * implementation must refuse a file that another account could have written or replaced - the
+     * file itself, a link to it, or a folder above it. The native key wrapper does this through the
+     * native library's {@code hkdfguard_open_file}, which also refuses a file holding what looks like
+     * an unwrapped key. There is deliberately no default: a key wrapper that can't make these checks
+     * has to decide, in its own code, how it trusts a key file.
      *
      * @param path the key file's path
      * @return completes with the wrapped key the file holds; fails with an
@@ -62,11 +64,5 @@ public interface KeyWrapper {
      *         {@link java.nio.file.AccessDeniedException} when this account may not read it or the
      *         key wrapper doesn't trust where it lives)
      */
-    default CompletableFuture<byte[]> readKeyFileAsync(Path path) {
-        try {
-            return CompletableFuture.completedFuture(WrappedKeyFile.read(path));
-        } catch (IOException | RuntimeException e) {
-            return CompletableFuture.failedFuture(e);
-        }
-    }
+    CompletableFuture<byte[]> readKeyFileAsync(Path path);
 }

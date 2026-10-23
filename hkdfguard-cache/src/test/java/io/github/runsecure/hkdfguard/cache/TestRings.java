@@ -76,6 +76,17 @@ final class TestRings {
             return CompletableFuture.completedFuture(key.length);
         }
 
+        // Test double: plain file I/O. A real key wrapper must refuse a key file another account could
+        // have written or replaced (the native one reads through hkdfguard_open_file).
+        @Override
+        public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+            try {
+                return CompletableFuture.completedFuture(java.nio.file.Files.readAllBytes(path));
+            } catch (java.io.IOException | RuntimeException e) {
+                return CompletableFuture.failedFuture(e);
+            }
+        }
+
         @Override
         public CompletableFuture<Integer> generateAndWrapAsync(byte[] result) {
             throw new UnsupportedOperationException();

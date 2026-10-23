@@ -33,6 +33,12 @@ class FakeKeyWrapper implements KeyWrapper {
      */
     volatile Integer unwrapBytesWrittenOverride;
 
+    /**
+     * When set, unwrapAsync blocks the calling thread, ignoring interruption, until this latch is
+     * released - models a native key wrapper that hangs rather than failing.
+     */
+    volatile java.util.concurrent.CountDownLatch blockUnwrap;
+
     FakeKeyWrapper() {
         this(null);
     }
@@ -68,6 +74,20 @@ class FakeKeyWrapper implements KeyWrapper {
     @Override
     public CompletableFuture<Integer> unwrapAsync(byte[] wrapped, byte[] result) {
         unwrapCallCount.incrementAndGet();
+        var block = blockUnwrap;
+        if (block != null) {
+            var interrupted = false;
+            while (true) {
+                try {
+                    block.await();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted)
+                Thread.currentThread().interrupt();
+        }
         var failure = throwOnUnwrap;
         if (failure != null)
             throw failure;
@@ -86,6 +106,11 @@ class FakeKeyWrapper implements KeyWrapper {
             System.arraycopy(fixedKey, 0, result, 0, filled);
         }
         return CompletableFuture.completedFuture(written);
+    }
+
+    @Override
+    public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("this test never reads key files"));
     }
 
     @Override
