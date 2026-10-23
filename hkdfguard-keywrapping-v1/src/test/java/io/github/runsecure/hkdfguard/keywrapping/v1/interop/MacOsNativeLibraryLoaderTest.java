@@ -389,7 +389,20 @@ class MacOsNativeLibraryLoaderTest {
     @ParameterizedTest
     @CsvSource(nullValues = "NULL", value = {"NULL", "''", "/opt/lib:/usr/local/lib"})
     void refuseShadowing_AllowsLoading_WhenNothingOnDyldLibraryPathHasTheLibrarysName(String searchPath) {
-        assertDoesNotThrow(() -> MacOsNativeLibraryLoader.refuseShadowing(name -> searchPath, path -> false));
+        assertDoesNotThrow(() -> MacOsNativeLibraryLoader.refuseShadowing(name -> name.equals("DYLD_LIBRARY_PATH") ? searchPath : null, path -> false));
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "DYLD_INSERT_LIBRARIES", "DYLD_FRAMEWORK_PATH", "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH", "DYLD_IMAGE_SUFFIX"})
+    void refuseShadowing_Refuses_WhenADyldVariableThatInjectsOrSubstitutesCodeIsSet(String variable) {
+        var ex = assertThrows(SecurityException.class, () ->
+                MacOsNativeLibraryLoader.refuseShadowing(name -> name.equals(variable) ? "/tmp/inject.dylib" : null, path -> false));
+
+        assertTrue(ex.getMessage().contains(variable));
+        assertTrue(MacOsNativeLibraryLoader.REFUSED_DYLD_VARIABLES.contains(variable));
+        // Set but empty is the same as unset.
+        assertDoesNotThrow(() -> MacOsNativeLibraryLoader.refuseShadowing(name -> name.equals(variable) ? "" : null, path -> false));
     }
 
     @ParameterizedTest
@@ -399,14 +412,14 @@ class MacOsNativeLibraryLoaderTest {
     })
     void refuseShadowing_Refuses_WhenADyldLibraryPathDirectoryHoldsALibraryOfTheSameName(String searchPath, String decoy) {
         var ex = assertThrows(SecurityException.class, () ->
-                MacOsNativeLibraryLoader.refuseShadowing(name -> searchPath, decoy::equals));
+                MacOsNativeLibraryLoader.refuseShadowing(name -> name.equals("DYLD_LIBRARY_PATH") ? searchPath : null, decoy::equals));
 
         assertTrue(ex.getMessage().contains(decoy));
         assertTrue(ex.getMessage().contains("DYLD_LIBRARY_PATH"));
     }
 
     @Test
-    void refuseShadowing_OnlyConsultsDyldLibraryPath() {
+    void refuseShadowing_ConsultsOnlyTheDyldVariablesItChecks() {
         var asked = new ArrayList<String>();
 
         MacOsNativeLibraryLoader.refuseShadowing(name -> {
@@ -414,7 +427,9 @@ class MacOsNativeLibraryLoaderTest {
             return null;
         }, path -> true);
 
-        assertEquals(List.of("DYLD_LIBRARY_PATH"), asked);
+        var expected = new ArrayList<>(MacOsNativeLibraryLoader.REFUSED_DYLD_VARIABLES);
+        expected.add("DYLD_LIBRARY_PATH");
+        assertEquals(expected, asked);
     }
 
     @Test

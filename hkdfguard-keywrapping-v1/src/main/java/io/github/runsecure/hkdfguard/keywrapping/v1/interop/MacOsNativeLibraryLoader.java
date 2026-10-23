@@ -213,14 +213,34 @@ final class MacOsNativeLibraryLoader {
     }
 
     /**
-     * Refuses, before anything is loaded, if a DYLD_LIBRARY_PATH directory contains a file named
-     * {@link #FILE_NAME}: dyld would load that in place of the verified path.
+     * The dyld variables whose presence alone refuses the load: each makes dyld inject code into
+     * this process, or load another file in place of a library it names - including the frameworks
+     * the HkdfGuard native library calls with every DEK. None is set on a production host.
+     */
+    static final java.util.List<String> REFUSED_DYLD_VARIABLES = java.util.List.of(
+            "DYLD_INSERT_LIBRARIES", "DYLD_FRAMEWORK_PATH", "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH", "DYLD_IMAGE_SUFFIX");
+
+    /**
+     * Refuses, before anything is loaded, if one of {@link #REFUSED_DYLD_VARIABLES} is set, or a
+     * DYLD_LIBRARY_PATH directory contains a file named {@link #FILE_NAME}: dyld would load that in
+     * place of the verified path.
+     * <p>
+     * A guard against a misconfigured environment, not against whoever controls it: dyld acts on
+     * these variables when the process starts, so code they injected has already run - and can hide
+     * - by the time this looks. Running the host with the Hardened Runtime, which makes dyld ignore
+     * them, is what keeps that code out.
      *
      * @param getEnvironmentVariable reads an environment variable; null if unset
      * @param exists                 whether a path exists
-     * @throws SecurityException a shadowing library was found
+     * @throws SecurityException a refused variable is set, or a shadowing library was found
      */
     static void refuseShadowing(Function<String, String> getEnvironmentVariable, Predicate<String> exists) {
+        for (var name : REFUSED_DYLD_VARIABLES) {
+            var value = getEnvironmentVariable.apply(name);
+            if (value != null && !value.isEmpty())
+                throw new SecurityException(name + " is set, so dyld may inject code into this process or substitute a library the HkdfGuard native library uses; refusing to load it. Unset " + name + ".");
+        }
+
         var searchPath = getEnvironmentVariable.apply("DYLD_LIBRARY_PATH");
         if (searchPath == null || searchPath.isEmpty())
             return;
