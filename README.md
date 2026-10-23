@@ -69,7 +69,10 @@ int length = protector.decrypt(encrypted, result);
   their names.
 - **Memory hygiene**: the JVM has no pinned or stack allocation for arrays, so zeroing erases the
   live copy of a secret but not copies a compacting GC may have left. Native KMS buffers are
-  off-heap and zeroed before release.
+  off-heap and zeroed before release. BouncyCastle's AES cipher also keeps an expanded key schedule,
+  from which the key can be recovered; closing a session releases it rather than overwriting it, so
+  it stays in the heap until the collector reuses that memory. Process hardening, which blocks core
+  dumps and debugger attachment, is what keeps such copies out of reach.
 - **Logging**: a null logger means the class's own SLF4J logger. .NET's Critical level is ERROR
   with the `CRITICAL` marker; the event id travels as the `hkdfguard.event_id` key-value.
 - **Telemetry** goes to `GlobalOpenTelemetry` (read without latching a no-op), or to the instance

@@ -39,8 +39,10 @@ import org.slf4j.Logger;
  * <p>
  * Key hygiene: the raw key is copied into BouncyCastle only for that one keying, and the copy is
  * zeroed straight after; what each cipher keeps is the expanded AES key schedule and GHASH tables.
- * On close every pooled cipher is re-keyed with an all-zero key, overwriting those tables, and the
- * session's own key array is zeroed.
+ * On close every pooled cipher is re-keyed with an all-zero key, and the session's own key array is
+ * zeroed. Re-keying overwrites the GHASH tables in place, but BouncyCastle builds a new AES key
+ * schedule array on every keying, so the old schedule is released, not overwritten: it stays in
+ * the heap until the garbage collector reuses that memory, and the key can be recovered from it.
  */
 final class AesGcmCryptoSession implements AutoCloseable {
     static final int TAG_SIZE = 16;
@@ -355,8 +357,9 @@ final class AesGcmCryptoSession implements AutoCloseable {
         return cipher;
     }
 
-    // Re-keys a cipher with an all-zero key, overwriting the AES key schedule and GHASH tables it
-    // derived from the real one, before it is dropped.
+    // Re-keys a cipher with an all-zero key before it is dropped. That overwrites the GHASH tables
+    // in place; the AES key schedule is replaced by a new array, and the old one is left for the
+    // garbage collector (see the class description).
     private static void scrub(GCMModeCipher cipher) {
         try {
             cipher.init(false, new AEADParameters(new KeyParameter(new byte[KEY_LENGTH]), TAG_SIZE * 8, new byte[NONCE_SIZE]));
