@@ -28,7 +28,7 @@ import org.bouncycastle.util.encoders.Hex;
  * Loads the Windows native KMS library from its one installed location and nowhere else. This
  * library receives every plaintext DEK on unwrap and chooses every "random" DEK on
  * generate-and-wrap, so loading an impostor would hand over every key. A plain library load would
- * search the application directory and then PATH; this loader replaces that with five checks, all
+ * search the application directory and then PATH; this loader replaces that with six checks, all
  * of which must pass before the file is mapped:
  * <ol>
  * <li>The file exists at {@code %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll}. The Program Files
@@ -45,6 +45,9 @@ import org.bouncycastle.util.encoders.Hex;
  * <li>Its PE header - covered by that signature - marks it a DLL for this process's architecture,
  * which refuses the profile's other binaries, such as hkdfguard.exe renamed into
  * place.</li>
+ * <li>No certificate in the signer's chain has been revoked. Checked last, network allowed, and
+ * refused only when Windows definitively reports a revocation ({@link WindowsRevocationPolicy}): a
+ * host that can't reach the revocation servers still loads the library.</li>
  * </ol>
  * The library's own dependencies are then resolved from System32 only. Any failed check throws;
  * there is deliberately no fallback and no override of the path.
@@ -140,6 +143,9 @@ final class WindowsNativeLibraryLoader {
         verifyLocation(path);
         verifySignature(path, expectedPublisher);
         verifyImageKind(path);
+        // Last, once everything else has passed: refused only if a certificate in the chain is
+        // definitively revoked; unreachable revocation servers let the load continue.
+        WindowsRevocationPolicy.verify(path, Win32.checkRevocation(path));
 
         // Absolute path, so no probing for the library itself; its own imports (kernel32,
         // advapi32, ncrypt) come from System32 only.

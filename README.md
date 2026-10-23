@@ -186,6 +186,32 @@ Installed locations:
 | Linux    | `/usr/lib/<multiarch>/libhkdfguard.so.1` or `/usr/lib64/libhkdfguard.so.1` (the `libhkdfguard1` package; `hkdfguard-libs` on RPM distributions); x64 and arm64 | `/usr/bin/hkdfguard` |
 | macOS    | `/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib` or `~/.hkdfguard/v1/` | `hkdfguard`, beside the library |
 
+On **Windows**, after the location, ACL, signer and PE checks have all passed, a second
+Authenticode verification checks every certificate in the signer's chain for revocation, once per
+process, and may fetch revocation information over the network. Only a definite "revoked" refuses
+the load; if revocation servers can't be reached, or give no answer, the library loads, so a host
+with no network still starts. On a host whose network silently drops traffic rather than refusing
+it, the first load can stall once until the revocation lookup times out.
+
+On **macOS**, `MacOsNativeLibraryLoader` uses the system install whenever it exists, and the
+per-user install only when there is none. `~` is the effective user's home from the account
+database (`getpwuid_r`), never the `user.home` property, which `-Duser.home` on the command line
+could point anywhere; with no usable entry, only the system install is considered. Besides the
+location, ownership and Developer ID signature checks, the library's own version - its
+`LC_ID_DYLIB` current version, in the Mach-O header the signature covers - must be at least
+`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused.
+
+Certificate revocation is not checked on macOS. Apple's code-signing check can be told to require
+it, but then a host that can't reach Apple's servers couldn't load the library, turning a network
+outage into a service outage. What stands in for it: the signature must come from HkdfGuard's
+Developer ID and team, the system install can only be written by an administrator, and the minimum
+version refuses older genuine releases. The accepted risk is a stolen HkdfGuard signing
+certificate: whoever holds it, and can also write an install location (an administrator for the
+system install, the same user for a per-user one), could sign and plant a library of their own,
+whatever version it claims. The answer to such a compromise is Apple revoking the certificate and a
+new release; until consumers update, the system install's admin-only location is the barrier, so
+prefer it to a per-user install in production.
+
 On **Linux**, `LinuxNativeLibraryLoader` uses the package's file in the Debian multiarch directory
 (`/usr/lib/x86_64-linux-gnu` or `/usr/lib/aarch64-linux-gnu`) if it is there, otherwise the one in
 `/usr/lib64`. Only "nothing is there" moves on; a location that can't be examined is refused.

@@ -185,14 +185,167 @@ class MacOsNativeLibraryLoaderTest {
         assertTrue(ex.getMessage().contains(MacOsNativeLibraryLoader.userPath(HOME)));
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {HOME, "", "relative/home"}) // no home known; a relative home is never used
-    void choosePath_WithNeitherInstallUsable_ThrowsNamingBothLocations(String home) {
+    @Test
+    void choosePath_WithNeitherInstallUsable_ThrowsNamingBothLocations() {
         var ex = assertThrows(NativeLibraryNotFoundException.class, () ->
-                MacOsNativeLibraryLoader.choosePath(path -> !path.startsWith("/") && path.endsWith(".dylib") ? PRESENT : ENOENT, home));
+                MacOsNativeLibraryLoader.choosePath(path -> ENOENT, HOME));
 
         assertTrue(ex.getMessage().contains(MacOsNativeLibraryLoader.systemPath()));
-        assertTrue(ex.getMessage().contains(".hkdfguard/v1/libhkdfguard.dylib"));
+        assertTrue(ex.getMessage().contains(MacOsNativeLibraryLoader.userPath(HOME)));
+    }
+
+    @ParameterizedTest
+    @CsvSource(nullValues = "NULL", value = {"NULL", "''", "relative/home"}) // no account entry; no home; a relative home
+    void choosePath_WithNoUsableAccountHome_ConsidersOnlyTheSystemInstall(String home) {
+        var probed = new ArrayList<String>();
+
+        var ex = assertThrows(NativeLibraryNotFoundException.class, () ->
+                MacOsNativeLibraryLoader.choosePath(path -> { probed.add(path); return !path.startsWith("/") && path.endsWith(".dylib") ? PRESENT : ENOENT; }, home));
+
+        assertEquals(List.of(MacOsNativeLibraryLoader.systemPath()), probed);
+        assertTrue(ex.getMessage().contains(MacOsNativeLibraryLoader.systemPath()));
+        assertFalse(ex.getMessage().contains(".hkdfguard"));
+    }
+
+    @Test
+    void choosePath_WithNoUsableAccountHome_StillUsesTheSystemInstall() {
+        var choice = MacOsNativeLibraryLoader.choosePath(path -> PRESENT, null);
+
+        assertEquals(MacOsNativeLibraryLoader.systemPath(), choice.path());
+        assertTrue(choice.isSystem());
+    }
+
+    // --- The library's version ------------------------------------------------------------------
+
+    private static final int ARM64 = 0x0100000C;
+    private static final int X86_64 = 0x01000007;
+
+    private record Command(int cmd, int size, Integer version) {
+    }
+
+    // A thin Mach-O 64 header followed by the given load commands.
+    private static byte[] machO(int cpuType, Command... commands) {
+        var bodySize = 0;
+        for (var c : commands)
+            bodySize += c.size();
+        var buffer = java.nio.ByteBuffer.allocate(32 + bodySize).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(0, 0xFEEDFACF).putInt(4, cpuType).putInt(16, commands.length).putInt(20, bodySize);
+        var at = 32;
+        for (var c : commands) {
+            buffer.putInt(at, c.cmd()).putInt(at + 4, c.size());
+            if (c.version() != null && c.size() >= 24)
+                buffer.putInt(at + 16, c.version());
+            at += c.size();
+        }
+        return buffer.array();
+    }
+
+    private static byte[] dylib(int version, int cpuType) {
+        return machO(cpuType, new Command(0x19, 72, null), new Command(0xD, 48, version), new Command(0x32, 32, null));
+    }
+
+    private static byte[] dylib(int version) {
+        return dylib(version, ARM64);
+    }
+
+    // A universal file: a FAT_MAGIC header with one 20-byte entry per slice, slices at 4 KiB boundaries.
+    private static byte[] fat(int[] cpuTypes, byte[]... slices) {
+        var align = 4096;
+        var buffer = java.nio.ByteBuffer.allocate(align * (slices.length + 1)).order(java.nio.ByteOrder.BIG_ENDIAN);
+        buffer.putInt(0, 0xCAFEBABE).putInt(4, slices.length);
+        for (var i = 0; i < slices.length; i++) {
+            var offset = align * (i + 1);
+            buffer.putInt(8 + i * 20, cpuTypes[i]).putInt(8 + i * 20 + 8, offset).putInt(8 + i * 20 + 12, slices[i].length);
+            buffer.put(offset, slices[i]);
+        }
+        return buffer.array();
+    }
+
+    private static byte[] patch(byte[] data, int at, int value, java.nio.ByteOrder order) {
+        var copy = data.clone();
+        java.nio.ByteBuffer.wrap(copy).order(order).putInt(at, value);
+        return copy;
+    }
+
+    private static byte[] patch(byte[] data, int at, int value) {
+        return patch(data, at, value, java.nio.ByteOrder.LITTLE_ENDIAN);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0x0000_0900, 0x0000_0901, 0x0001_0000}) // the minimum (0.9.0), 0.9.1, 1.0.0
+    void verifyVersion_AcceptsTheMinimumAndNewer(int version) {
+        assertEquals(version, MacOsNativeLibraryLoader.readLibraryVersion(dylib(version)));
+        assertDoesNotThrow(() -> MacOsNativeLibraryLoader.verifyVersion("/x.dylib", dylib(version)));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0x0800,0.8.0", "0x08FF,0.8.255", "0x0000,0.0.0"})
+    void verifyVersion_RefusesAnOlderRelease_NamingBothVersions(String hex, String shown) {
+        var version = Integer.decode(hex);
+        var ex = assertThrows(SecurityException.class, () -> MacOsNativeLibraryLoader.verifyVersion("/x.dylib", dylib(version)));
+
+        assertTrue(ex.getMessage().contains("version " + shown), ex.getMessage());
+        assertTrue(ex.getMessage().contains("(0.9.0)"), ex.getMessage());
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> unreadableLibraries() {
+        var good = dylib(0x0900);
+        return java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of("empty", new byte[0]),
+                org.junit.jupiter.params.provider.Arguments.of("truncated header", java.util.Arrays.copyOf(good, 20)),
+                org.junit.jupiter.params.provider.Arguments.of("wrong magic", patch(good, 0, 0x464C457F)),
+                org.junit.jupiter.params.provider.Arguments.of("x86_64 only", dylib(0x0900, X86_64)),
+                org.junit.jupiter.params.provider.Arguments.of("no LC_ID_DYLIB", machO(ARM64, new Command(0x19, 72, null), new Command(0x32, 32, null))),
+                org.junit.jupiter.params.provider.Arguments.of("LC_ID_DYLIB too short", machO(ARM64, new Command(0xD, 16, null))),
+                org.junit.jupiter.params.provider.Arguments.of("cmdsize zero", patch(good, 36, 0)),
+                org.junit.jupiter.params.provider.Arguments.of("cmdsize not a multiple of 8", patch(good, 36, 70)),
+                org.junit.jupiter.params.provider.Arguments.of("cmdsize past the commands", patch(good, 36, 0x7FFF_FFF8)),
+                org.junit.jupiter.params.provider.Arguments.of("sizeofcmds past the data", patch(good, 20, 0x7FFF_FFF8)),
+                org.junit.jupiter.params.provider.Arguments.of("ncmds larger than sizeofcmds allows", patch(good, 16, 1000)),
+                org.junit.jupiter.params.provider.Arguments.of("fat without an arm64 slice", fat(new int[] {X86_64}, dylib(0x0900, X86_64))),
+                org.junit.jupiter.params.provider.Arguments.of("fat with an arm64 slice outside the data",
+                        patch(fat(new int[] {ARM64}, good), 16, 0x0100_0000, java.nio.ByteOrder.BIG_ENDIAN)),
+                org.junit.jupiter.params.provider.Arguments.of("fat claiming more slices than fit",
+                        patch(fat(new int[] {ARM64}, good), 4, 1000, java.nio.ByteOrder.BIG_ENDIAN)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.MethodSource("unreadableLibraries")
+    void verifyVersion_RefusesAFileWhoseVersionCannotBeRead(String why, byte[] data) {
+        assertEquals(null, MacOsNativeLibraryLoader.readLibraryVersion(data), why);
+        var ex = assertThrows(SecurityException.class, () -> MacOsNativeLibraryLoader.verifyVersion("/x.dylib", data));
+        assertTrue(ex.getMessage().contains("version can be read"), ex.getMessage());
+    }
+
+    @Test
+    void readLibraryVersion_ReadsTheArm64SliceOfAUniversalFile() {
+        var universal = fat(new int[] {X86_64, ARM64}, dylib(0x0800, X86_64), dylib(0x0902));
+
+        assertEquals(0x0902, MacOsNativeLibraryLoader.readLibraryVersion(universal));
+    }
+
+    @Test
+    void theInstalledLibrary_WhenPresent_PassesTheVersionCheck() throws Exception {
+        var path = java.nio.file.Path.of(MacOsNativeLibraryLoader.systemPath());
+        org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.Files.exists(path), "the native library is not installed on this host");
+        byte[] head;
+        try (var stream = java.nio.file.Files.newInputStream(path)) {
+            head = stream.readNBytes(MacOsNativeLibraryLoader.VERSION_READ_LIMIT);
+        }
+
+        var version = MacOsNativeLibraryLoader.readLibraryVersion(head);
+        assertTrue(version != null && Integer.compareUnsigned(version, MacOsNativeLibraryLoader.MINIMUM_LIBRARY_VERSION) >= 0,
+                "installed version " + (version == null ? "unreadable" : MacOsNativeLibraryLoader.formatVersion(version)));
+        assertDoesNotThrow(() -> MacOsNativeLibraryLoader.verifyVersion(path.toString(), head));
+    }
+
+    @Test
+    void accountHomeDirectory_OnMacOs_IsAnExistingAbsoluteFolder() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("os.name", "").startsWith("Mac"), "macOS only");
+
+        var home = MacOsNative.accountHomeDirectory();
+
+        assertTrue(home != null && home.startsWith("/") && java.nio.file.Files.isDirectory(java.nio.file.Path.of(home)), String.valueOf(home));
     }
 
     @ParameterizedTest

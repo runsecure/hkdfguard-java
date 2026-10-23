@@ -20,7 +20,9 @@ import java.util.function.ToIntFunction;
  * generate-and-wrap, so loading an impostor would hand over every key.
  * <ol>
  * <li><b>Location.</b> The system install, {@link #SYSTEM_DIRECTORY}, is used whenever it exists;
- * the per-user install, {@code ~/.hkdfguard/v1}, only when there is no system install. Anything
+ * the per-user install, {@code ~/.hkdfguard/v1}, only when there is no system install. "~" is the
+ * effective user's home from the account database (getpwuid_r), never the user.home property,
+ * which {@code -Duser.home} on the command line could point anywhere. Anything
  * running as the user can write to the user's home, so a per-user file must never be able to
  * override a root-owned system one. If the system install exists but fails a check, loading fails -
  * it never falls back to the user install. Nor does it fall back when the system install merely
@@ -33,6 +35,9 @@ import java.util.function.ToIntFunction;
  * install, by root or the current user.</li>
  * <li><b>Code signature.</b> The file's signature must be valid and satisfy {@link #CODE_REQUIREMENT}
  * - signed through Apple's CA by the HkdfGuard team.</li>
+ * <li><b>Version.</b> The library's own version - LC_ID_DYLIB's current version, in the Mach-O header
+ * the signature covers - must be at least {@link #MINIMUM_LIBRARY_VERSION}, so an older release,
+ * though genuinely signed, can't be put in place of a current one.</li>
  * <li><b>What dyld loaded.</b> dlopen of an absolute path first looks for the path's leaf name in
  * every DYLD_LIBRARY_PATH directory. So the loader refuses before dlopen if a DYLD_LIBRARY_PATH
  * directory holds a {@link #FILE_NAME}, and after dlopen asks dyld (dladdr) which file it mapped;
@@ -62,6 +67,15 @@ final class MacOsNativeLibraryLoader {
                     + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"    // Developer ID CA
                     + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists" // Developer ID Application leaf
                     + " and certificate leaf[subject.OU] = \"" + TEAM_ID + "\"";
+
+    /**
+     * The oldest library release this package loads, as Mach-O packs a version: major &lt;&lt; 16 |
+     * minor &lt;&lt; 8 | patch (0.9.0). Raise it when a release fixes a security issue in an older one.
+     */
+    static final int MINIMUM_LIBRARY_VERSION = 0x0000_0900;
+
+    /** How much of the file is read to find its version: the header and load commands. */
+    static final int VERSION_READ_LIMIT = 64 * 1024;
 
     /** The library's own minimum macOS major version. */
     static final int MINIMUM_MAC_OS_MAJOR_VERSION = 13;
@@ -107,10 +121,11 @@ final class MacOsNativeLibraryLoader {
 
         requireSupportedPlatform(CpuArchitecture.current(), System.getProperty("os.version", ""));
 
-        var choice = choosePath(MacOsNative::probe, System.getProperty("user.home", ""));
+        var choice = choosePath(MacOsNative::probe, MacOsNative.accountHomeDirectory());
         List<Long> trustedOwners = choice.isSystem() ? List.of(0L) : List.of(0L, MacOsNative.effectiveUserId());
         verifyLocation(choice.path(), MacOsNative::status, trustedOwners);
         verifySignature(choice.path(), MacOsNative::checkCodeSignature);
+        verifyVersion(choice.path(), readHead(choice.path()));
         refuseShadowing(System::getenv, candidate -> Files.exists(Path.of(candidate)));
 
         // dyld may still map a different file than the path asks for, so the loaded image is
@@ -189,13 +204,113 @@ final class MacOsNativeLibraryLoader {
         if (isPresent(systemPath(), probe, "system-wide"))
             return new PathChoice(systemPath(), true);
 
+        // No account-database home, or a relative one (which would resolve against the working
+        // directory): only the system install is considered.
+        if (homeDirectory == null || !homeDirectory.startsWith("/"))
+            throw new NativeLibraryNotFoundException("The HkdfGuard native KMS library is not installed. Install it at '" + systemPath()
+                    + "' (system-wide); it is never loaded from anywhere else.");
+
         var user = userPath(homeDirectory);
-        // Only an absolute home: a relative one would resolve against the working directory.
-        if (homeDirectory.startsWith("/") && isPresent(user, probe, "per-user"))
+        if (isPresent(user, probe, "per-user"))
             return new PathChoice(user, false);
 
         throw new NativeLibraryNotFoundException("The HkdfGuard native KMS library is not installed. Install it at '" + systemPath()
                 + "' (system-wide) or '" + user + "' (this user); it is never loaded from anywhere else.");
+    }
+
+    /**
+     * Refuses a library older than {@link #MINIMUM_LIBRARY_VERSION}, or one whose version can't be
+     * read. {@code head} is the start of the verified file (see {@link #readHead}).
+     *
+     * @throws SecurityException the version is missing, unreadable or too old
+     */
+    static void verifyVersion(String path, byte[] head) {
+        var version = readLibraryVersion(head);
+        if (version == null)
+            throw new SecurityException("'" + path + "' is not an arm64 Mach-O library whose version can be read; refusing to load it.");
+        if (Integer.compareUnsigned(version, MINIMUM_LIBRARY_VERSION) < 0)
+            throw new SecurityException("'" + path + "' is HkdfGuard native library version " + formatVersion(version)
+                    + ", older than the minimum this package accepts (" + formatVersion(MINIMUM_LIBRARY_VERSION) + "); install a current release.");
+    }
+
+    /** Major.minor.patch of a Mach-O packed version. */
+    static String formatVersion(int packed) {
+        return (packed >>> 16) + "." + ((packed >>> 8) & 0xFF) + "." + (packed & 0xFF);
+    }
+
+    /** The first {@link #VERSION_READ_LIMIT} bytes of the file (fewer if it's shorter). */
+    private static byte[] readHead(String path) {
+        try (var stream = Files.newInputStream(Path.of(path))) {
+            return stream.readNBytes(VERSION_READ_LIMIT);
+        } catch (java.io.IOException e) {
+            throw new SecurityException("Could not read '" + path + "' to check its version; refusing to load it.", e);
+        }
+    }
+
+    private static final int MACH_MAGIC_64 = 0xFEEDFACF;  // MH_MAGIC_64, little-endian on arm64
+    private static final int FAT_MAGIC = 0xCAFEBABE;      // FAT_MAGIC, big-endian
+    private static final int FAT_MAGIC_64 = 0xCAFEBABF;   // FAT_MAGIC_64, big-endian
+    private static final int CPU_TYPE_ARM64 = 0x0100000C; // CPU_TYPE_ARM64
+    private static final int LC_ID_DYLIB = 0xD;
+    private static final int MACH_HEADER_64_SIZE = 32;
+    private static final int DYLIB_COMMAND_SIZE = 24;     // current_version is at offset 16
+
+    /**
+     * The current version in an arm64 Mach-O library's LC_ID_DYLIB, from {@code data}, the start of
+     * the file; null if it is malformed, not arm64, has no LC_ID_DYLIB, or its header and load
+     * commands don't fit in {@code data}. A universal (fat) file is read through its arm64 slice.
+     * Every length is checked before it is used.
+     */
+    static Integer readLibraryVersion(byte[] data) {
+        if (data.length < 8)
+            return null;
+        var big = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.BIG_ENDIAN);
+        var magic = big.getInt(0);
+        if (magic == FAT_MAGIC || magic == FAT_MAGIC_64) {
+            var entrySize = magic == FAT_MAGIC ? 20 : 32;
+            var count = Integer.toUnsignedLong(big.getInt(4));
+            if (count > (data.length - 8L) / entrySize)
+                return null;
+            for (var i = 0; i < count; i++) {
+                var entry = 8 + i * entrySize;
+                if (big.getInt(entry) != CPU_TYPE_ARM64)
+                    continue;
+                var offset = magic == FAT_MAGIC ? Integer.toUnsignedLong(big.getInt(entry + 8)) : big.getLong(entry + 8);
+                if (offset < 0 || offset >= data.length)
+                    return null;
+                return readThinLibraryVersion(java.util.Arrays.copyOfRange(data, (int) offset, data.length));
+            }
+            return null;
+        }
+        return readThinLibraryVersion(data);
+    }
+
+    private static Integer readThinLibraryVersion(byte[] data) {
+        if (data.length < MACH_HEADER_64_SIZE)
+            return null;
+        var le = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        if (le.getInt(0) != MACH_MAGIC_64 || le.getInt(4) != CPU_TYPE_ARM64)
+            return null;
+
+        var commandCount = Integer.toUnsignedLong(le.getInt(16));
+        var commandsSize = Integer.toUnsignedLong(le.getInt(20));
+        if (commandsSize > data.length - MACH_HEADER_64_SIZE || commandCount > commandsSize / 8)
+            return null;
+
+        long at = MACH_HEADER_64_SIZE;
+        var end = MACH_HEADER_64_SIZE + commandsSize;
+        for (long i = 0; i < commandCount; i++) {
+            if (end - at < 8)
+                return null;
+            var command = le.getInt((int) at);
+            var size = Integer.toUnsignedLong(le.getInt((int) at + 4));
+            if (size < 8 || size % 8 != 0 || size > end - at)
+                return null;
+            if (command == LC_ID_DYLIB)
+                return size < DYLIB_COMMAND_SIZE ? null : le.getInt((int) at + 16);
+            at += size;
+        }
+        return null;
     }
 
     // ENOENT and ENOTDIR: nothing is installed there. Anything else (EACCES, ELOOP, EIO, ...) means
