@@ -86,6 +86,8 @@ class KeyRingBuilderTest {
         assertEquals(2, builder.getMaxRefreshFailures());
 
         assertThrows(IllegalArgumentException.class, () -> new KeyRingBuilder().withMaxRefreshFailures(0));
+        assertThrows(IllegalArgumentException.class, () -> new KeyRingBuilder().withMaxRefreshFailures(101));
+        assertEquals(100, new KeyRingBuilder().withMaxRefreshFailures(100).getMaxRefreshFailures());
     }
 
     @Test

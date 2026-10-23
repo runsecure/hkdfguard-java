@@ -99,10 +99,18 @@ class AesGcmCryptoProviderImplTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {0, -1})
-    void createAsync_WithMaxRefreshFailuresBelowOne_Throws(int maxRefreshFailures) {
+    @ValueSource(ints = {0, -1, 101, Integer.MAX_VALUE})
+    void createAsync_WithMaxRefreshFailuresOutsideOneToOneHundred_Throws(int maxRefreshFailures) {
         assertThrows(IllegalArgumentException.class,
                 () -> AesGcmCryptoProviderImpl.createAsync(new FakeKeyWrapper(), wrapped(), 60, maxRefreshFailures));
+    }
+
+    @Test
+    void createAsync_WithTheLargestAllowedMaxRefreshFailures_Succeeds() {
+        assertEquals(100, io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES);
+        try (var provider = await(AesGcmCryptoProviderImpl.createAsync(new FakeKeyWrapper(), wrapped(), 60, 100))) {
+            assertEquals(100, provider.getMaxRefreshFailures());
+        }
     }
 
     @ParameterizedTest

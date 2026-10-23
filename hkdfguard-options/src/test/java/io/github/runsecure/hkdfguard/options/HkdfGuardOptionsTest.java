@@ -335,16 +335,16 @@ class HkdfGuardOptionsTest {
         }
 
         @ParameterizedTest
-        @ValueSource(ints = {0, -1})
-        void maxRefreshFailuresBelowOneFails(int failures) {
+        @ValueSource(ints = {0, -1, 101, Integer.MAX_VALUE})
+        void maxRefreshFailuresOutsideOneToOneHundredFails(int failures) {
             var options = validOptions();
             options.setMaxRefreshFailures(failures);
             assertTrue(anyFailure(options, "maxRefreshFailures"));
         }
 
         @ParameterizedTest
-        @ValueSource(ints = {1, 10})
-        void maxRefreshFailuresAtLeastOneSucceeds(int failures) {
+        @ValueSource(ints = {1, 10, 100})
+        void maxRefreshFailuresFromOneToOneHundredSucceeds(int failures) {
             var options = validOptions();
             options.setMaxRefreshFailures(failures);
             assertEquals(List.of(), options.validate());

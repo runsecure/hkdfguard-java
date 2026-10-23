@@ -133,7 +133,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
      *                           resumes, and a warning when the key nears its encryption limit;
      *                           null for this class's SLF4J logger
      * @return completes with the provider once the first key is revealed, or exceptionally if that fails
-     * @throws IllegalArgumentException expirySeconds is not between 1 and 300, or maxRefreshFailures is below 1
+     * @throws IllegalArgumentException expirySeconds is not between 1 and 300, or maxRefreshFailures is not between 1 and 100
      */
     public static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds,
                                                                           Integer maxRefreshFailures, Logger logger) {
@@ -169,8 +169,9 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     static void validate(int expirySeconds, Integer maxRefreshFailures) {
         if (expirySeconds < 1 || expirySeconds > 300)
             throw new IllegalArgumentException("expirySeconds must be between 1 and 300; it is " + expirySeconds + ".");
-        if (maxRefreshFailures != null && maxRefreshFailures < 1)
-            throw new IllegalArgumentException("maxRefreshFailures must be at least 1; it is " + maxRefreshFailures + ".");
+        if (maxRefreshFailures != null && (maxRefreshFailures < 1 || maxRefreshFailures > RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES))
+            throw new IllegalArgumentException("maxRefreshFailures must be between 1 and " + RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES
+                    + "; it is " + maxRefreshFailures + ".");
     }
 
     /** The configured refresh-failure policy; null means fail open. */

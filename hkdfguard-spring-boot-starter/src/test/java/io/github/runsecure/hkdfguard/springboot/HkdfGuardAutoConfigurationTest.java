@@ -223,7 +223,18 @@ class HkdfGuardAutoConfigurationTest {
             assertThat(context.getStartupFailure()).rootCause()
                     .isInstanceOf(OptionsValidationException.class)
                     .satisfies(e -> assertThat(((OptionsValidationException) e).getFailures()).containsExactly(
-                            "keyRefreshInterval must be between 1 and 300 seconds.", "maxRefreshFailures must be at least 1."));
+                            "keyRefreshInterval must be between 1 and 300 seconds.", "maxRefreshFailures must be between 1 and 100."));
+        });
+    }
+
+    @Test
+    void aFailClosedLimitAboveOneHundredFailsStartup() {
+        configured.withPropertyValues("hkdfguard.max-refresh-failures=101").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).rootCause()
+                    .isInstanceOf(OptionsValidationException.class)
+                    .satisfies(e -> assertThat(((OptionsValidationException) e).getFailures()).containsExactly(
+                            "maxRefreshFailures must be between 1 and 100."));
         });
     }
 

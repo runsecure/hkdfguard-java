@@ -222,11 +222,12 @@ public final class KeyRingBuilder {
      * The refresh-failure policy handed to every provider build creates: after this many
      * consecutive failed attempts to re-reveal a key, that key's provider fails closed.
      *
-     * @throws IllegalArgumentException maxRefreshFailures is below 1
+     * @throws IllegalArgumentException maxRefreshFailures is not between 1 and 100 ({@link RefreshFailurePolicy#MAX_ALLOWED_REFRESH_FAILURES})
      */
     public KeyRingBuilder withMaxRefreshFailures(int maxRefreshFailures) {
-        if (maxRefreshFailures < 1)
-            throw new IllegalArgumentException("maxRefreshFailures must be at least 1; it is " + maxRefreshFailures + ".");
+        if (maxRefreshFailures < 1 || maxRefreshFailures > RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES)
+            throw new IllegalArgumentException("maxRefreshFailures must be between 1 and " + RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES
+                    + "; it is " + maxRefreshFailures + ".");
 
         this.maxRefreshFailures = maxRefreshFailures;
         return this;

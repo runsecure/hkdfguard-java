@@ -25,7 +25,7 @@
       "name": "hkdfguard.max-refresh-failures",
       "type": "java.lang.Integer",
       "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
-      "description": "Consecutive failed refreshes tolerated before a key fails closed. At least 1. Unset keeps the builder's default."
+      "description": "Consecutive failed refreshes tolerated before a key fails closed, 1 to 100. Unset keeps the builder's default."
     },
     {
       "name": "hkdfguard.fail-open-on-refresh-failure",
