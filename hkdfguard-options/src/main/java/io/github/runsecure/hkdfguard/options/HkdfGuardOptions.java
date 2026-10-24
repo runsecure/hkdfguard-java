@@ -1,5 +1,6 @@
 package io.github.runsecure.hkdfguard.options;
 
+import io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy;
 import io.github.runsecure.hkdfguard.abstractions.ServiceNames;
 import io.github.runsecure.hkdfguard.dataencryptionkey.KeyRingBuilder;
 import java.math.BigInteger;
@@ -104,7 +105,7 @@ public final class HkdfGuardOptions {
         return maxRefreshFailures;
     }
 
-    /** @param maxRefreshFailures at least 1; {@code null} keeps the builder's default */
+    /** @param maxRefreshFailures 1 to 100; {@code null} keeps the builder's default */
     public void setMaxRefreshFailures(Integer maxRefreshFailures) {
         this.maxRefreshFailures = maxRefreshFailures;
     }
@@ -208,8 +209,8 @@ public final class HkdfGuardOptions {
         if (keyRefreshInterval != null && (keyRefreshInterval < 1 || keyRefreshInterval > 300))
             failures.add("keyRefreshInterval must be between 1 and 300 seconds.");
 
-        if (maxRefreshFailures != null && maxRefreshFailures < 1)
-            failures.add("maxRefreshFailures must be at least 1.");
+        if (maxRefreshFailures != null && (maxRefreshFailures < 1 || maxRefreshFailures > RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES))
+            failures.add("maxRefreshFailures must be between 1 and " + RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES + ".");
 
         if (ephemeralKeyRotationHours != null && (ephemeralKeyRotationHours < 1 || ephemeralKeyRotationHours > MAX_EPHEMERAL_KEY_ROTATION_HOURS))
             failures.add("ephemeralKeyRotationHours must be between 1 and " + MAX_EPHEMERAL_KEY_ROTATION_HOURS + ".");

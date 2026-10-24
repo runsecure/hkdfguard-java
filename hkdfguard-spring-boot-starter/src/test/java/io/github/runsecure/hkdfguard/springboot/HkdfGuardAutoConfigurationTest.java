@@ -52,6 +52,17 @@ class HkdfGuardAutoConfigurationTest {
             return CompletableFuture.completedFuture(key.length);
         }
 
+        // Test double: plain file I/O. A real key wrapper must refuse a key file another account could
+        // have written or replaced (the native one reads through hkdfguard_open_file).
+        @Override
+        public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+            try {
+                return CompletableFuture.completedFuture(java.nio.file.Files.readAllBytes(path));
+            } catch (java.io.IOException | RuntimeException e) {
+                return CompletableFuture.failedFuture(e);
+            }
+        }
+
         @Override
         public CompletableFuture<Integer> generateAndWrapAsync(byte[] result) {
             System.arraycopy(key, 0, result, 0, key.length);
@@ -212,7 +223,18 @@ class HkdfGuardAutoConfigurationTest {
             assertThat(context.getStartupFailure()).rootCause()
                     .isInstanceOf(OptionsValidationException.class)
                     .satisfies(e -> assertThat(((OptionsValidationException) e).getFailures()).containsExactly(
-                            "keyRefreshInterval must be between 1 and 300 seconds.", "maxRefreshFailures must be at least 1."));
+                            "keyRefreshInterval must be between 1 and 300 seconds.", "maxRefreshFailures must be between 1 and 100."));
+        });
+    }
+
+    @Test
+    void aFailClosedLimitAboveOneHundredFailsStartup() {
+        configured.withPropertyValues("hkdfguard.max-refresh-failures=101").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).rootCause()
+                    .isInstanceOf(OptionsValidationException.class)
+                    .satisfies(e -> assertThat(((OptionsValidationException) e).getFailures()).containsExactly(
+                            "maxRefreshFailures must be between 1 and 100."));
         });
     }
 
@@ -240,6 +262,17 @@ class HkdfGuardAutoConfigurationTest {
     @Test
     void aKeyWrapperThatFailsFailsStartup() {
         runner.withBean(KeyWrapper.class, () -> new FixedKeyWrapper() {
+                    // Test double: plain file I/O. A real key wrapper must refuse a key file another account could
+                    // have written or replaced (the native one reads through hkdfguard_open_file).
+                    @Override
+                    public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+                        try {
+                            return CompletableFuture.completedFuture(java.nio.file.Files.readAllBytes(path));
+                        } catch (java.io.IOException | RuntimeException e) {
+                            return CompletableFuture.failedFuture(e);
+                        }
+                    }
+
                     @Override
                     public CompletableFuture<Integer> generateAndWrapAsync(byte[] result) {
                         return CompletableFuture.failedFuture(new SecurityException("The KEK is not provisioned."));

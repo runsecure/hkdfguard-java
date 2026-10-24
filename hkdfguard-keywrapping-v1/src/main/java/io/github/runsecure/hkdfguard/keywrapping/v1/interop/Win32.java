@@ -387,6 +387,9 @@ final class Win32 {
     private static final int STATE_ACTION_VERIFY = 1;          // WTD_STATEACTION_VERIFY
     private static final int STATE_ACTION_CLOSE = 2;           // WTD_STATEACTION_CLOSE
     private static final int CACHE_ONLY_URL_RETRIEVAL = 0x1000; // WTD_CACHE_ONLY_URL_RETRIEVAL
+    private static final int REVOKE_WHOLE_CHAIN = 1;            // WTD_REVOKE_WHOLECHAIN
+    private static final int STATE_ACTION_IGNORE = 0;           // WTD_STATEACTION_IGNORE
+    private static final int REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT = 0x80; // WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
     private static final int NO_SIGNER_CERT = 0x80096002;      // TRUST_E_NO_SIGNER_CERT
 
     // WINTRUST_FILE_INFO (x64): cbStruct u32 @0, pcwszFilePath @8, hFile @16, pgKnownSubject @24.
@@ -400,9 +403,9 @@ final class Win32 {
 
     /**
      * WinVerifyTrust with the generic Authenticode policy: checks that a file's embedded signature is
-     * intact and chains to a trusted root (honouring a timestamp countersignature). Revocation isn't
-     * checked and no network fetch is made, so loading the library never blocks on a CRL or OCSP
-     * endpoint. The signer's chain is read from the verification state before it is released.
+     * intact and chains to a trusted root (honouring a timestamp countersignature), with no
+     * revocation check and no network fetch. The signer's chain is read from the verification state
+     * before it is released. Revocation is a second, separate pass: {@link #checkRevocation}.
      */
     static SignatureVerification verifyEmbeddedSignature(String path) {
         try (var arena = Arena.ofConfined()) {
@@ -436,6 +439,38 @@ final class Win32 {
                 data.set(JAVA_INT, 48, STATE_ACTION_CLOSE);
                 var ignored = (int) WinTrust.WIN_VERIFY_TRUST.invokeExact(noInteractiveUser, action, data);
             }
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Verifies the signature again, this time checking every certificate in the chain below the root
+     * for revocation, fetching revocation information over the network if it isn't cached. No state
+     * is kept, so there is nothing to release. Not lifetime signing: a timestamped signature stays
+     * valid after its short-lived certificate expires.
+     *
+     * @param path the signed file, already accepted by {@link #verifyEmbeddedSignature}
+     * @return the WinVerifyTrust HRESULT; see {@link WindowsRevocationPolicy#refuses}
+     */
+    static int checkRevocation(String path) {
+        try (var arena = Arena.ofConfined()) {
+            var file = arena.allocate(FILE_INFO_SIZE, 8);
+            file.set(JAVA_INT, 0, FILE_INFO_SIZE);
+            file.set(ADDRESS, 8, arena.allocateFrom(path, UTF_16LE));
+
+            var data = arena.allocate(DATA_SIZE, 8);
+            data.set(JAVA_INT, 0, DATA_SIZE);
+            data.set(JAVA_INT, 24, UI_NONE);
+            data.set(JAVA_INT, 28, REVOKE_WHOLE_CHAIN);
+            data.set(JAVA_INT, 32, CHOICE_FILE);
+            data.set(ADDRESS, 40, file);
+            data.set(JAVA_INT, 48, STATE_ACTION_IGNORE);
+            data.set(JAVA_INT, 72, REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT);
+
+            var action = guid(arena, 0x00AAC56B, (short) 0xCD44, (short) 0x11D0, GENERIC_VERIFY_V2_TAIL);
+            var noInteractiveUser = MemorySegment.ofAddress(-1L); // INVALID_HANDLE_VALUE
+            return (int) WinTrust.WIN_VERIFY_TRUST.invokeExact(noInteractiveUser, action, data);
         } catch (Throwable t) {
             throw rethrow(t);
         }

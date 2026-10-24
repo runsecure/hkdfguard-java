@@ -4,9 +4,11 @@ import io.github.runsecure.hkdfguard.abstractions.CryptoProvider;
 import io.github.runsecure.hkdfguard.abstractions.CryptoProviderFactory;
 import io.github.runsecure.hkdfguard.abstractions.DataEncryptionKey;
 import io.github.runsecure.hkdfguard.abstractions.EncryptedFormatProvider;
+import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy;
 import io.github.runsecure.hkdfguard.abstractions.ServiceNames;
+import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.dataencryptionkey.formatprovider.DefaultFormatProviderImpl;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -220,11 +222,12 @@ public final class KeyRingBuilder {
      * The refresh-failure policy handed to every provider build creates: after this many
      * consecutive failed attempts to re-reveal a key, that key's provider fails closed.
      *
-     * @throws IllegalArgumentException maxRefreshFailures is below 1
+     * @throws IllegalArgumentException maxRefreshFailures is not between 1 and 100 ({@link RefreshFailurePolicy#MAX_ALLOWED_REFRESH_FAILURES})
      */
     public KeyRingBuilder withMaxRefreshFailures(int maxRefreshFailures) {
-        if (maxRefreshFailures < 1)
-            throw new IllegalArgumentException("maxRefreshFailures must be at least 1; it is " + maxRefreshFailures + ".");
+        if (maxRefreshFailures < 1 || maxRefreshFailures > RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES)
+            throw new IllegalArgumentException("maxRefreshFailures must be between 1 and " + RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES
+                    + "; it is " + maxRefreshFailures + ".");
 
         this.maxRefreshFailures = maxRefreshFailures;
         return this;
@@ -350,6 +353,12 @@ public final class KeyRingBuilder {
                     // Read through the key wrapper: a native KMS reads its own key files, with its
                     // own checks on who could have written them.
                     var wrapped = await(keyWrapper.readKeyFileAsync(keyFile.getValue()));
+                    // Whatever the key wrapper, a wrapped key is never empty and never over the limit.
+                    if (wrapped == null || wrapped.length == 0)
+                        throw new InvalidKeyFileException("Key file '" + keyFile.getValue() + "' is empty.");
+                    if (wrapped.length > WrappedKeyLimits.MAX_BYTES)
+                        throw new InvalidKeyFileException("Key file '" + keyFile.getValue() + "' is larger than " + WrappedKeyLimits.MAX_BYTES
+                                + " bytes (WrappedKeyLimits.MAX_BYTES); a wrapped key never is.");
                     var provider = await(factory.createAsync(keyWrapper, wrapped, keyRefreshInterval, maxRefreshFailures));
                     addOwned(ring, keyFile.getKey(), provider);
                 }

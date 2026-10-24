@@ -86,6 +86,8 @@ class KeyRingBuilderTest {
         assertEquals(2, builder.getMaxRefreshFailures());
 
         assertThrows(IllegalArgumentException.class, () -> new KeyRingBuilder().withMaxRefreshFailures(0));
+        assertThrows(IllegalArgumentException.class, () -> new KeyRingBuilder().withMaxRefreshFailures(101));
+        assertEquals(100, new KeyRingBuilder().withMaxRefreshFailures(100).getMaxRefreshFailures());
     }
 
     @Test
@@ -248,22 +250,13 @@ class KeyRingBuilderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {WrappedKeyLimits.MAX_BYTES + 1, 10 * 1024 * 1024})
-    void keyFilesOverTheLimit_AreRefused(int length) throws IOException {
-        var path = keyFile("big.bin", new byte[length]);
+    @ValueSource(ints = {0, WrappedKeyLimits.MAX_BYTES + 1})
+    void aWrappedKeyThatIsEmptyOrOverTheLimit_IsRefused_WhateverTheKeyWrapper(int length) throws IOException {
+        var path = keyFile("v1.bin", new byte[length]);
+        var factory = new TestKeys.RecordingCryptoProviderFactory();
 
-        var ex = awaitFailure(InvalidKeyFileException.class, configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).buildAsync());
-
-        assertTrue(ex.getMessage().contains("larger than " + WrappedKeyLimits.MAX_BYTES + " bytes"));
-    }
-
-    @Test
-    void anEmptyKeyFile_IsRefused() throws IOException {
-        var path = keyFile("empty.bin", new byte[0]);
-
-        var ex = awaitFailure(InvalidKeyFileException.class, configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).buildAsync());
-
-        assertTrue(ex.getMessage().contains("is empty"));
+        awaitFailure(InvalidKeyFileException.class, configured(factory).withKeyFile(1, path).buildAsync());
+        assertEquals(0, factory.createdWrapped.size());
     }
 
     // --- Key files are read through the key wrapper ---------------------------------------------
@@ -318,17 +311,5 @@ class KeyRingBuilderTest {
         assertSame(wrapper.failure, thrown);
         assertEquals(1, factory.createdProviders.size());
         assertClosed(factory.createdProviders.getFirst());
-    }
-
-    @Test
-    void build_WithAWrapperUsingTheDefaultRead_ReadsTheFileFromDisk() throws IOException {
-        // TestKeys.FakeKeyWrapper doesn't override readKeyFileAsync: the interface's default reads.
-        var content = utf8("wrapped-by-default");
-        var path = keyFile("v1.bin", content);
-        var factory = new TestKeys.RecordingCryptoProviderFactory();
-
-        try (var ignored = await(configured(factory).withKeyFile(1, path).buildAsync())) {
-            assertArrayEquals(content, factory.createdWrapped.getFirst());
-        }
     }
 }

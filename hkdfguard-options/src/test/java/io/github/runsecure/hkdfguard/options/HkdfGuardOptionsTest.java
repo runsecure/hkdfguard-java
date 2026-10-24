@@ -60,6 +60,17 @@ class HkdfGuardOptionsTest {
             return CompletableFuture.completedFuture(key.length);
         }
 
+        // Test double: plain file I/O. A real key wrapper must refuse a key file another account could
+        // have written or replaced (the native one reads through hkdfguard_open_file).
+        @Override
+        public CompletableFuture<byte[]> readKeyFileAsync(java.nio.file.Path path) {
+            try {
+                return CompletableFuture.completedFuture(java.nio.file.Files.readAllBytes(path));
+            } catch (java.io.IOException | RuntimeException e) {
+                return CompletableFuture.failedFuture(e);
+            }
+        }
+
         @Override
         public CompletableFuture<Integer> generateAndWrapAsync(byte[] result) {
             System.arraycopy(key, 0, result, 0, key.length);
@@ -324,16 +335,16 @@ class HkdfGuardOptionsTest {
         }
 
         @ParameterizedTest
-        @ValueSource(ints = {0, -1})
-        void maxRefreshFailuresBelowOneFails(int failures) {
+        @ValueSource(ints = {0, -1, 101, Integer.MAX_VALUE})
+        void maxRefreshFailuresOutsideOneToOneHundredFails(int failures) {
             var options = validOptions();
             options.setMaxRefreshFailures(failures);
             assertTrue(anyFailure(options, "maxRefreshFailures"));
         }
 
         @ParameterizedTest
-        @ValueSource(ints = {1, 10})
-        void maxRefreshFailuresAtLeastOneSucceeds(int failures) {
+        @ValueSource(ints = {1, 10, 100})
+        void maxRefreshFailuresFromOneToOneHundredSucceeds(int failures) {
             var options = validOptions();
             options.setMaxRefreshFailures(failures);
             assertEquals(List.of(), options.validate());

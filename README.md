@@ -69,11 +69,35 @@ int length = protector.decrypt(encrypted, result);
   their names.
 - **Memory hygiene**: the JVM has no pinned or stack allocation for arrays, so zeroing erases the
   live copy of a secret but not copies a compacting GC may have left. Native KMS buffers are
-  off-heap and zeroed before release.
+  off-heap and zeroed before release. BouncyCastle's AES cipher also keeps an expanded key schedule,
+  from which the key can be recovered; closing a session releases it rather than overwriting it, so
+  it stays in the heap until the collector reuses that memory. Process hardening, which blocks core
+  dumps and debugger attachment, is what keeps such copies out of reach.
 - **Logging**: a null logger means the class's own SLF4J logger. .NET's Critical level is ERROR
   with the `CRITICAL` marker; the event id travels as the `hkdfguard.event_id` key-value.
 - **Telemetry** goes to `GlobalOpenTelemetry` (read without latching a no-op), or to the instance
   given to `HkdfGuardTelemetry.setOpenTelemetry`.
+
+## Encryption budget
+
+With random 96-bit nonces, AES-GCM is safe for about 2^32 encryptions under one key (NIST
+SP 800-38D). Each crypto provider counts the encryptions under its key, warns at 2^28, and
+refuses to encrypt past 2^31 (`AesGcmCryptoProviderImpl.MAX_ENCRYPTIONS_PER_KEY`). Decryption is never limited.
+
+That count is kept per process, by design. It is exact for the key an application should encrypt
+with at runtime: an ephemeral key, generated at startup and held only in that process's memory, so
+no other process or restart ever adds to its use. Key files are different. They carry what the
+deployment pipeline encrypted and are meant to be decrypted at runtime; every process that loads a
+key file, and every restart, starts a fresh count for it.
+
+**For encrypt operations, add an ephemeral key** at a version above every key file
+(`KeyRingBuilder.withEphemeralKey(2)` beside `withKeyFile(1, ...)`). New values are then encrypted under it, while the pipeline's values still decrypt
+under their key files. A value encrypted under an ephemeral key can't be decrypted once the process
+exits, which suits caches and other in-process data; never persist it.
+
+If an application does encrypt values that must outlive the process under a key file, its
+encryptions under that file are not counted together across instances and restarts. Bound them by
+deploying a new key file at a higher version regularly.
 
 ## Configuration
 
@@ -162,6 +186,32 @@ Installed locations:
 | Linux    | `/usr/lib/<multiarch>/libhkdfguard.so.1` or `/usr/lib64/libhkdfguard.so.1` (the `libhkdfguard1` package; `hkdfguard-libs` on RPM distributions); x64 and arm64 | `/usr/bin/hkdfguard` |
 | macOS    | `/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib` or `~/.hkdfguard/v1/` | `hkdfguard`, beside the library |
 
+On **Windows**, after the location, ACL, signer and PE checks have all passed, a second
+Authenticode verification checks every certificate in the signer's chain for revocation, once per
+process, and may fetch revocation information over the network. Only a definite "revoked" refuses
+the load; if revocation servers can't be reached, or give no answer, the library loads, so a host
+with no network still starts. On a host whose network silently drops traffic rather than refusing
+it, the first load can stall once until the revocation lookup times out.
+
+On **macOS**, `MacOsNativeLibraryLoader` uses the system install whenever it exists, and the
+per-user install only when there is none. `~` is the effective user's home from the account
+database (`getpwuid_r`), never the `user.home` property, which `-Duser.home` on the command line
+could point anywhere; with no usable entry, only the system install is considered. Besides the
+location, ownership and Developer ID signature checks, the library's own version - its
+`LC_ID_DYLIB` current version, in the Mach-O header the signature covers - must be at least
+`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused.
+
+Certificate revocation is not checked on macOS. Apple's code-signing check can be told to require
+it, but then a host that can't reach Apple's servers couldn't load the library, turning a network
+outage into a service outage. What stands in for it: the signature must come from HkdfGuard's
+Developer ID and team, the system install can only be written by an administrator, and the minimum
+version refuses older genuine releases. The accepted risk is a stolen HkdfGuard signing
+certificate: whoever holds it, and can also write an install location (an administrator for the
+system install, the same user for a per-user one), could sign and plant a library of their own,
+whatever version it claims. The answer to such a compromise is Apple revoking the certificate and a
+new release; until consumers update, the system install's admin-only location is the barrier, so
+prefer it to a per-user install in production.
+
 On **Linux**, `LinuxNativeLibraryLoader` uses the package's file in the Debian multiarch directory
 (`/usr/lib/x86_64-linux-gnu` or `/usr/lib/aarch64-linux-gnu`) if it is there, otherwise the one in
 `/usr/lib64`. Only "nothing is there" moves on; a location that can't be examined is refused.
@@ -172,12 +222,22 @@ enforces. Before loading, it requires all of the following:
   and no directory or file is writable by its group or by others. Links are followed one component
   at a time and each target is checked where it lies, so `/lib -> usr/lib` passes and a link into a
   user's directory does not.
-- The dynamic linker's environment can't substitute anything. The library is loaded by its
+- The dynamic linker's environment is checked. The library is loaded by its
   verified absolute path, which is never searched for, but its dependencies are found by name - and
   `libtss2-esys` receives every ECDH shared secret. So every `LD_LIBRARY_PATH` directory, and every
   path-named `LD_PRELOAD` or `LD_AUDIT` object, must pass the same path checks, and none may be
   relative, empty (the working directory) or use `$ORIGIN`-style tokens. Both the environment the
   process started with (`/proc/self/environ`) and the current one are checked.
+  This check catches a misconfigured environment. It can't stop someone who controls the
+  service's environment: whatever `LD_PRELOAD` or `LD_AUDIT` loads runs when the process starts,
+  before the check, and can hide from it. Protect the service's environment (its unit file,
+  container spec or launch configuration) as carefully as its binaries.
+
+On macOS the loader also refuses while `DYLD_INSERT_LIBRARIES`, `DYLD_FRAMEWORK_PATH`,
+`DYLD_VERSIONED_LIBRARY_PATH`, `DYLD_VERSIONED_FRAMEWORK_PATH` or `DYLD_IMAGE_SUFFIX` is set: each
+makes dyld inject code or substitute a library the native library calls with every DEK. The same
+limit applies - dyld acts on them at process start - and the real protection is a host signed with
+the Hardened Runtime, which makes dyld ignore them.
 
 After loading, `dladdr` must place the library's export in the verified file, and every object in
 its dependency closure, read from each file's `DT_NEEDED` entries, must be bound to a file that
@@ -200,8 +260,9 @@ reparse point, an 8.3 short name, a UNC, mapped or SUBST drive, or a file or fol
 could write or replace. Each refusal is an `IOException` naming the path and the native status:
 `NoSuchFileException` (-32), `AccessDeniedException` (-33 access denied, -39 untrusted location),
 `InvalidKeyFileException` (-35 too short, -36 too long, -37 plaintext key, -38 malformed), or a
-plain `IOException` (-34 and anything else). Other key wrappers read with ordinary file I/O
-(`WrappedKeyFile.read`), refusing only an empty file or one over `WrappedKeyLimits.MAX_BYTES`.
+plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has no default, so
+any other key wrapper must read key files itself, and must refuse one another account could have
+written or replaced.
 
 **Status codes.** The Windows, Linux and macOS native libraries share one `HKDFGUARD_ERR_*` table,
 number for number, and every failure message names the status and what it means:

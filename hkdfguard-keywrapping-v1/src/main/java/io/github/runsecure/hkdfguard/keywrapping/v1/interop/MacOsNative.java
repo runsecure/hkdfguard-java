@@ -20,7 +20,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * The macOS system calls {@link MacOsNativeLibraryLoader}'s checks rely on, bound through the FFM
- * API: lstat for ownership, permissions and type; geteuid; dlopen/dlsym/dlclose, and dladdr for
+ * API: lstat for ownership, permissions and type; geteuid and getpwuid_r for the user's home; dlopen/dlsym/dlclose, and dladdr for
  * which file dyld really loaded; and the Security framework's static code signature check. Every
  * library is named by absolute path. Bound only on first use, so inert off macOS.
  */
@@ -73,6 +73,8 @@ final class MacOsNative {
         static final MethodHandle DLCLOSE = bind(LIBRARY, "dlclose", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle DLERROR = bind(LIBRARY, "dlerror", FunctionDescriptor.of(ADDRESS));
         static final MethodHandle DLADDR = bind(LIBRARY, "dladdr", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle GETPWUID_R = bind(LIBRARY, "getpwuid_r",
+                FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS));
     }
 
     private static final class Frameworks {
@@ -131,6 +133,39 @@ final class MacOsNative {
             };
             return new UnixFileStatus(Integer.toUnsignedLong(buffer.get(JAVA_INT, UID_OFFSET)),
                     Integer.toUnsignedLong(buffer.get(JAVA_INT, GID_OFFSET)), UnixFileStatus.permissionsFromMode(mode), type);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // struct passwd on arm64 (pwd.h): pw_name @0, pw_passwd @8, pw_uid @16, pw_gid @20, pw_change @24,
+    // pw_class @32, pw_gecos @40, pw_dir @48, pw_shell @56, pw_expire @64; 72 bytes.
+    private static final int PASSWD_SIZE = 72;
+    private static final int PASSWD_DIR_OFFSET = 48;
+    private static final int ERANGE = 34;
+
+    /**
+     * This process's effective user's home directory from the account database (getpwuid_r), or
+     * null if there's no entry or it can't be read. Unlike the user.home property - which a
+     * {@code -Duser.home} on the command line overrides - whoever launches the process can't
+     * redirect it.
+     */
+    static String accountHomeDirectory() {
+        try (var arena = Arena.ofConfined()) {
+            var uid = (int) LibSystem.GETEUID.invokeExact();
+            var passwd = arena.allocate(PASSWD_SIZE, 8);
+            var result = arena.allocate(ADDRESS);
+            for (long size = 4096; size <= 1 << 20; size *= 2) {
+                var buffer = arena.allocate(size, 8);
+                var rc = (int) LibSystem.GETPWUID_R.invokeExact(uid, passwd, buffer, size, result);
+                if (rc == ERANGE)
+                    continue;
+                if (rc != 0 || isNull(result.get(ADDRESS, 0)))
+                    return null;
+                var directory = passwd.get(ADDRESS, PASSWD_DIR_OFFSET);
+                return isNull(directory) ? null : directory.reinterpret(Long.MAX_VALUE).getString(0, StandardCharsets.UTF_8);
+            }
+            return null;
         } catch (Throwable t) {
             throw rethrow(t);
         }

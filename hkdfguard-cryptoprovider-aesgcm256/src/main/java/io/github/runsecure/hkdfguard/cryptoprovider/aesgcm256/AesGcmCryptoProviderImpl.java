@@ -20,6 +20,8 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
@@ -81,6 +83,9 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     // captured the old session just before a swap may still be using it; it's closed one interval
     // later, on the next swap (or on close), rather than immediately.
     private AesGcmCryptoSession retiring;
+    // A reveal a refresh stopped waiting for, while it may still be running. Touched only by the
+    // refresh thread. See refresh.
+    private CompletableFuture<AesGcmCryptoSession> abandonedReveal;
 
     // Construction always goes through createAsync, so the first key reveal is never blocked on.
     private AesGcmCryptoProviderImpl(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds, Integer maxRefreshFailures,
@@ -128,7 +133,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
      *                           resumes, and a warning when the key nears its encryption limit;
      *                           null for this class's SLF4J logger
      * @return completes with the provider once the first key is revealed, or exceptionally if that fails
-     * @throws IllegalArgumentException expirySeconds is not between 1 and 300, or maxRefreshFailures is below 1
+     * @throws IllegalArgumentException expirySeconds is not between 1 and 300, or maxRefreshFailures is not between 1 and 100
      */
     public static CompletableFuture<AesGcmCryptoProviderImpl> createAsync(KeyWrapper keyWrapper, byte[] wrapped, int expirySeconds,
                                                                           Integer maxRefreshFailures, Logger logger) {
@@ -164,8 +169,9 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     static void validate(int expirySeconds, Integer maxRefreshFailures) {
         if (expirySeconds < 1 || expirySeconds > 300)
             throw new IllegalArgumentException("expirySeconds must be between 1 and 300; it is " + expirySeconds + ".");
-        if (maxRefreshFailures != null && maxRefreshFailures < 1)
-            throw new IllegalArgumentException("maxRefreshFailures must be at least 1; it is " + maxRefreshFailures + ".");
+        if (maxRefreshFailures != null && (maxRefreshFailures < 1 || maxRefreshFailures > RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES))
+            throw new IllegalArgumentException("maxRefreshFailures must be between 1 and " + RefreshFailurePolicy.MAX_ALLOWED_REFRESH_FAILURES
+                    + "; it is " + maxRefreshFailures + ".");
     }
 
     /** The configured refresh-failure policy; null means fail open. */
@@ -302,14 +308,47 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     }
 
     // Only the single background loop refreshes once the provider exists.
-    private void refresh() throws InterruptedException, ExecutionException {
-        var pending = revealAsync(keyWrapper, wrapped, budget, logger);
+    //
+    // Each refresh waits at most one refresh interval for the key wrapper. A wrapper that hangs
+    // rather than failing (a busy TPM resource manager, a keychain prompt nobody can answer, a KMS
+    // endpoint that never replies) must still count towards the refresh-failure policy, or a revoked
+    // KEK would never suspend key access. A reveal that misses its deadline is abandoned, not
+    // cancelled - a native call can't be - and until it returns no new one starts, so a stuck key
+    // wrapper never accumulates calls; each tick in the meantime is a failed refresh.
+    private void refresh() throws InterruptedException, ExecutionException, TimeoutException {
+        if (abandonedReveal != null) {
+            if (!abandonedReveal.isDone())
+                throw new TimeoutException("The key wrapper has still not returned from a refresh that timed out; no new refresh starts until it does.");
+            abandonedReveal = null;
+        }
+
+        // On a thread of its own: a key wrapper may unwrap synchronously on the calling thread (the
+        // native one does), and neither a deadline nor close's interrupt reaches a thread stuck in a
+        // native call. A platform thread, since a virtual one would pin its carrier for as long as
+        // the call hangs.
+        var pending = new CompletableFuture<AesGcmCryptoSession>();
+        var revealThread = Thread.ofPlatform().daemon().name("hkdfguard-aesgcm-reveal").start(() -> {
+            try {
+                revealAsync(keyWrapper, wrapped, budget, logger).whenComplete((session, error) -> {
+                    if (error != null)
+                        pending.completeExceptionally(error);
+                    else
+                        pending.complete(session);
+                });
+            } catch (Throwable t) {
+                pending.completeExceptionally(t);
+            }
+        });
+
         AesGcmCryptoSession fresh;
         try {
-            fresh = pending.get();
+            fresh = pending.get(interval.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            abandon(pending, revealThread);
+            throw new TimeoutException("The key wrapper did not reveal the key within " + interval.toSeconds() + " seconds.");
         } catch (InterruptedException e) {
             // close interrupted the wait: a session the wrapper still produces is never used.
-            pending.thenAccept(AesGcmCryptoSession::close);
+            abandon(pending, revealThread);
             throw e;
         }
 
@@ -328,6 +367,15 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
             if (stale != null)
                 stale.close();
         }
+    }
+
+    // Remembers a reveal nobody waits for any more, and zeroes whatever key it eventually reveals.
+    // The reveal's thread is interrupted, so a key wrapper that honours interruption (a Java KMS
+    // client) gives up promptly; a native call ignores it and is simply left to finish.
+    private void abandon(CompletableFuture<AesGcmCryptoSession> pending, Thread revealThread) {
+        abandonedReveal = pending;
+        pending.thenAccept(AesGcmCryptoSession::close);
+        revealThread.interrupt();
     }
 
     private void runRefreshLoop() {
@@ -471,10 +519,10 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
     }
 
     /**
-     * Stops the background refresh without blocking the caller - the returned future completes
-     * once a refresh already in flight has finished - then zeroes the wrapped payload and every
-     * revealed key. Prefer this over {@link #close}: an in-flight refresh may be a network call to
-     * a KMS. Safe to call more than once.
+     * Stops the background refresh without blocking the caller, then zeroes the wrapped payload
+     * and every revealed key. A refresh still waiting on the key wrapper is abandoned rather than
+     * waited for, so a stuck wrapper can't block close; whatever key it later reveals is zeroed
+     * when it arrives. Safe to call more than once.
      */
     @Override
     public CompletableFuture<Void> closeAsync() {
@@ -494,7 +542,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
         return done;
     }
 
-    /** Synchronous {@link #closeAsync}: blocks until a refresh already in flight has finished. */
+    /** Synchronous {@link #closeAsync}. Never waits on a refresh still inside the key wrapper. */
     @Override
     public void close() {
         if (!beginClose())
