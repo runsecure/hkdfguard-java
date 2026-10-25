@@ -71,6 +71,8 @@ final class Win32 {
         static final MethodHandle GET_SYSTEM_DIRECTORY = bind(LIBRARY, "GetSystemDirectoryW", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
         static final MethodHandle LOAD_LIBRARY_EX = bind(LIBRARY, "LoadLibraryExW", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_INT), CAPTURE_LAST_ERROR);
         static final MethodHandle GET_PROC_ADDRESS = bind(LIBRARY, "GetProcAddress", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
+        static final MethodHandle GET_MODULE_FILE_NAME = bind(LIBRARY, "GetModuleFileNameW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT), CAPTURE_LAST_ERROR);
+        static final MethodHandle FREE_LIBRARY = bind(LIBRARY, "FreeLibrary", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle GET_FILE_ATTRIBUTES = bind(LIBRARY, "GetFileAttributesW", FunctionDescriptor.of(JAVA_INT, ADDRESS), CAPTURE_LAST_ERROR);
         static final MethodHandle LOCAL_FREE = bind(LIBRARY, "LocalFree", FunctionDescriptor.of(ADDRESS, ADDRESS));
         static final String SYSTEM_DIRECTORY = systemDirectory();
@@ -107,6 +109,45 @@ final class Win32 {
         static final MethodHandle PROV_DATA_FROM_STATE_DATA = bind(LIBRARY, "WTHelperProvDataFromStateData", FunctionDescriptor.of(ADDRESS, ADDRESS));
         static final MethodHandle GET_PROV_SIGNER_FROM_CHAIN = bind(LIBRARY, "WTHelperGetProvSignerFromChain",
                 FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
+    }
+
+    private static final class Version {
+        static final SymbolLookup LIBRARY = system32("version.dll");
+        static final MethodHandle GET_FILE_VERSION_INFO_SIZE = bind(LIBRARY, "GetFileVersionInfoSizeW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle GET_FILE_VERSION_INFO = bind(LIBRARY, "GetFileVersionInfoW", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS));
+        static final MethodHandle VER_QUERY_VALUE = bind(LIBRARY, "VerQueryValueW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+    }
+
+    /**
+     * The file version {major, minor, patch} from a file's version resource, read through
+     * version.dll from System32; null if it has none or it can't be read.
+     */
+    static int[] fileVersion(String path) {
+        try (var arena = Arena.ofConfined()) {
+            var name = arena.allocateFrom(path, UTF_16LE);
+            var size = (int) Version.GET_FILE_VERSION_INFO_SIZE.invokeExact(name, MemorySegment.NULL);
+            if (size <= 0)
+                return null;
+            var block = arena.allocate(size);
+            if ((int) Version.GET_FILE_VERSION_INFO.invokeExact(name, 0, size, block) == 0)
+                return null;
+            var info = arena.allocate(ADDRESS);
+            var length = arena.allocate(JAVA_INT);
+            if ((int) Version.VER_QUERY_VALUE.invokeExact(block, arena.allocateFrom("\\", UTF_16LE), info, length) == 0)
+                return null;
+            var fixedInfo = info.get(ADDRESS, 0);
+            if (isNull(fixedInfo) || length.get(JAVA_INT, 0) < 52)
+                return null;
+            // VS_FIXEDFILEINFO: signature, struct version, file version MS, file version LS, ...
+            fixedInfo = fixedInfo.reinterpret(52);
+            if (fixedInfo.get(JAVA_INT, 0) != 0xFEEF04BD)
+                return null;
+            var ms = fixedInfo.get(JAVA_INT, 8);
+            var ls = fixedInfo.get(JAVA_INT, 12);
+            return new int[] {ms >>> 16, ms & 0xFFFF, ls >>> 16};
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
     }
 
     private static RuntimeException rethrow(Throwable t) {
@@ -185,8 +226,36 @@ final class Win32 {
     }
 
     /**
+     * GetModuleFileNameW: the file Windows mapped a loaded module from.
+     *
+     * @throws IllegalStateException it can't be read
+     */
+    static String moduleFileName(MemorySegment module) {
+        try (var arena = Arena.ofConfined()) {
+            var capacity = 32768; // the longest path Windows supports, plus its terminator
+            var buffer = arena.allocate(JAVA_CHAR, capacity);
+            var capture = arena.allocate(CAPTURE_LAYOUT);
+            var length = (int) Kernel32.GET_MODULE_FILE_NAME.invokeExact(capture, module, buffer, capacity);
+            if (length <= 0 || length >= capacity)
+                throw new IllegalStateException("GetModuleFileNameW failed with error " + (int) LAST_ERROR.get(capture, 0L) + ".");
+            return buffer.getString(0, UTF_16LE);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** FreeLibrary: releases a reference {@link #loadLibrary(String)} took. */
+    static void freeLibrary(MemorySegment module) {
+        try {
+            var ignored = (int) Kernel32.FREE_LIBRARY.invokeExact(module);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
      * LoadLibraryExW of an absolute path, with the library's own dependencies resolved from
-     * System32 only - never the application directory or PATH. Never unloaded.
+     * System32 only - never the application directory or PATH. Never unloaded once verified.
      *
      * @throws IllegalStateException the load failed
      */

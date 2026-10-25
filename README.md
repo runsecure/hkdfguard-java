@@ -175,7 +175,8 @@ hkdfguard:
 `--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1` (module path) or
 `--enable-native-access=ALL-UNNAMED` (class path). The native library is installed separately and
 loaded only from its verified location, exactly as in .NET (path ACLs, Authenticode signer/root/EKU
-and PE checks on Windows; ownership, code signature and dyld checks on macOS; ownership, the
+and PE checks on Windows, and after loading, that the module Windows mapped is the verified file;
+ownership, code signature and dyld checks on macOS; ownership, the
 dynamic linker's environment and every loaded dependency on Linux).
 
 Installed locations:
@@ -199,7 +200,9 @@ database (`getpwuid_r`), never the `user.home` property, which `-Duser.home` on 
 could point anywhere; with no usable entry, only the system install is considered. Besides the
 location, ownership and Developer ID signature checks, the library's own version - its
 `LC_ID_DYLIB` current version, in the Mach-O header the signature covers - must be at least
-`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused.
+`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused. On
+Windows the same 0.9.0 floor applies to `HkdfGuard.dll`'s signed version resource; a DLL with none
+is refused.
 
 Certificate revocation is not checked on macOS. Apple's code-signing check can be told to require
 it, but then a host that can't reach Apple's servers couldn't load the library, turning a network

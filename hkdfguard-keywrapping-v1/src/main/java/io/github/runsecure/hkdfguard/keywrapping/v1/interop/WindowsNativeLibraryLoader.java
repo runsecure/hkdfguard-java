@@ -45,11 +45,16 @@ import org.bouncycastle.util.encoders.Hex;
  * <li>Its PE header - covered by that signature - marks it a DLL for this process's architecture,
  * which refuses the profile's other binaries, such as hkdfguard.exe renamed into
  * place.</li>
+ * <li>Its version resource - also covered by that signature - is at least
+ * {@link #MINIMUM_LIBRARY_VERSION}, so an older release, though genuinely signed, can't be put in
+ * place of a current one.</li>
  * <li>No certificate in the signer's chain has been revoked. Checked last, network allowed, and
  * refused only when Windows definitively reports a revocation ({@link WindowsRevocationPolicy}): a
  * host that can't reach the revocation servers still loads the library.</li>
  * </ol>
- * The library's own dependencies are then resolved from System32 only. Any failed check throws;
+ * The library's own dependencies are then resolved from System32 only. After loading, the module
+ * Windows actually mapped must be the file that was verified ({@link #verifyLoadedModule}), or it
+ * is released and refused. Any failed check throws;
  * there is deliberately no fallback and no override of the path.
  */
 final class WindowsNativeLibraryLoader {
@@ -143,13 +148,71 @@ final class WindowsNativeLibraryLoader {
         verifyLocation(path);
         verifySignature(path, expectedPublisher);
         verifyImageKind(path);
+        verifyMinimumVersion(path, Win32.fileVersion(path));
         // Last, once everything else has passed: refused only if a certificate in the chain is
         // definitively revoked; unreachable revocation servers let the load continue.
         WindowsRevocationPolicy.verify(path, Win32.checkRevocation(path));
 
         // Absolute path, so no probing for the library itself; its own imports (kernel32,
         // advapi32, ncrypt) come from System32 only.
-        return Win32.loadLibrary(Path.of(path).toAbsolutePath().toString());
+        var absolutePath = Path.of(path).toAbsolutePath().toString();
+        var library = Win32.loadLibrary(absolutePath);
+        try {
+            verifyLoadedModule(absolutePath, Win32.moduleFileName(library));
+            return library;
+        } catch (RuntimeException e) {
+            Win32.freeLibrary(library);
+            throw e;
+        }
+    }
+
+    /**
+     * The oldest Windows native library release this package loads, {major, minor, patch}: 0.9.0,
+     * the first to carry a version resource. Raise it when a release fixes a security issue.
+     */
+    static final int[] MINIMUM_LIBRARY_VERSION = {0, 9, 0};
+
+    /**
+     * Refuses a library whose file version - {major, minor, patch} from its signed version
+     * resource, or null if it has none or it can't be read - is below
+     * {@link #MINIMUM_LIBRARY_VERSION}. The fourth (revision) field is not compared. Run after
+     * {@link #verifySignature}, whose hash covers the resource.
+     *
+     * @throws SecurityException no version, or an older one
+     */
+    static void verifyMinimumVersion(String path, int[] version) {
+        var minimum = formatVersion(MINIMUM_LIBRARY_VERSION);
+        if (version == null)
+            throw new SecurityException("'" + path + "' carries no readable version resource, so it predates " + minimum
+                    + ", the oldest HkdfGuard native library this package accepts; install a current release.");
+        if (java.util.Arrays.compare(version, MINIMUM_LIBRARY_VERSION) < 0)
+            throw new SecurityException("'" + path + "' is HkdfGuard native library version " + formatVersion(version)
+                    + ", older than the minimum this package accepts (" + minimum + "); install a current release.");
+    }
+
+    private static String formatVersion(int[] version) {
+        return version[0] + "." + version[1] + "." + version[2];
+    }
+
+    /**
+     * Requires the file Windows mapped the loaded module from to be the verified path.
+     * LoadLibraryExW returns an already-loaded module of the same name, and honours loader
+     * redirection (.local, manifests), without mapping the path it was given; this is the Windows
+     * counterpart of the dladdr check on Linux and macOS. The comparison is case-insensitive, as
+     * NTFS names are, and ignores a {@code \\?\} prefix.
+     *
+     * @throws SecurityException Windows loaded some other file
+     */
+    static void verifyLoadedModule(String verified, String loaded) {
+        if (!stripLongPathPrefix(loaded).equalsIgnoreCase(stripLongPathPrefix(verified)))
+            throw new SecurityException("'" + verified + "' passed verification, but Windows loaded '" + loaded
+                    + "' instead (a module of the same name was already loaded, or the load was redirected); refusing to use it.");
+    }
+
+    private static String stripLongPathPrefix(String path) {
+        if (path.regionMatches(true, 0, "\\\\?\\UNC\\", 0, 8))
+            return "\\\\" + path.substring(8);
+        return path.startsWith("\\\\?\\") ? path.substring(4) : path;
     }
 
     /**
