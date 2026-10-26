@@ -21,7 +21,7 @@ import java.util.Objects;
  * old versions stay readable.
  */
 final class DataProtectorImpl implements DataProtector {
-    private static final AttributeKey<String> NAME = AttributeKey.stringKey(AttributeNames.NAME);
+    private static final AttributeKey<String> NAME_ATTRIBUTE = AttributeKey.stringKey(AttributeNames.NAME);
     private static final AttributeKey<Long> PLAINTEXT_LENGTH = AttributeKey.longKey(AttributeNames.PLAINTEXT_LENGTH);
     private static final AttributeKey<Long> ENCRYPTED_LENGTH = AttributeKey.longKey(AttributeNames.ENCRYPTED_LENGTH);
 
@@ -48,7 +48,7 @@ final class DataProtectorImpl implements DataProtector {
         try (var op = telemetry.startSpan(SpanNames.DataProtection.PROTECTOR_ENCRYPT)) {
             if (telemetry.isSensitiveLoggingEnabled())
                 telemetry.logSensitiveOperation(op.span(), SpanNames.DataProtection.PROTECTOR_ENCRYPT,
-                        Attributes.of(NAME, name, PLAINTEXT_LENGTH, (long) plaintext.length()));
+                        Attributes.of(NAME_ATTRIBUTE, name, PLAINTEXT_LENGTH, (long) plaintext.length()));
 
             try {
                 var current = keyRing.getCurrent();
@@ -76,7 +76,7 @@ final class DataProtectorImpl implements DataProtector {
         try (var op = telemetry.startSpan(SpanNames.DataProtection.PROTECTOR_DECRYPT)) {
             if (telemetry.isSensitiveLoggingEnabled())
                 telemetry.logSensitiveOperation(op.span(), SpanNames.DataProtection.PROTECTOR_DECRYPT,
-                        Attributes.of(NAME, name, ENCRYPTED_LENGTH, (long) encrypted.length()));
+                        Attributes.of(NAME_ATTRIBUTE, name, ENCRYPTED_LENGTH, (long) encrypted.length()));
 
             try {
                 var value = formatProvider.parse(encrypted);

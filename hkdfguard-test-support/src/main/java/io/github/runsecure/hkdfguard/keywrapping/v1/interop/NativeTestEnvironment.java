@@ -6,6 +6,7 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeHkdfKeyWrapperV1Impl;
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.testsupport.PrivateTempFiles;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.foreign.Arena;
@@ -236,7 +237,7 @@ public final class NativeTestEnvironment {
         var command = new ArrayList<String>();
         command.add(tool);
         command.addAll(List.of(arguments));
-        var output = Files.createTempFile("hkdfguard-tool-", ".out");
+        var output = PrivateTempFiles.createFile("hkdfguard-tool-", ".out");
         try {
             var process = new ProcessBuilder(command)
                     .redirectErrorStream(true)
@@ -387,6 +388,9 @@ public final class NativeTestEnvironment {
      * the run; this fails the calling test instead, saying what to do. What the call answers is left
      * to each test. Does nothing on other platforms.
      */
+    // This module is test code that lives in src/main only so other modules' tests can share it:
+    // failing the calling test is this helper's purpose (S5960 assumes production code).
+    @SuppressWarnings("java:S5960")
     public static void awaitNativeAccess(String service) {
         if (!isMacOs())
             return;
@@ -486,7 +490,7 @@ public final class NativeTestEnvironment {
      * /dev/shm, where java.io.tmpdir and JUnit's TempDir point. A 0700 directory under
      * $XDG_RUNTIME_DIR when that is trusted, else under ~/.cache/hkdfguard-tests; the calling test is
      * skipped, saying why, when neither is (see {@link #linuxPrivateDirectory}).</li>
-     * <li>macOS: a temporary folder by its real path.</li>
+     * <li>macOS: a temporary folder only this account can use (rwx------), by its real path.</li>
      * </ul>
      *
      * @param prefix the start of the new directory's name
@@ -496,7 +500,7 @@ public final class NativeTestEnvironment {
     public static Path createTempDirectory(String prefix) throws IOException {
         if (isLinux())
             return linuxPrivateDirectory(prefix, System.getenv(RUNTIME_DIRECTORY_VARIABLE), System.getenv("HOME"), linuxEffectiveUserId());
-        return Files.createTempDirectory(prefix).toRealPath();
+        return PrivateTempFiles.createDirectory(prefix).toRealPath();
     }
 
     /**
@@ -578,8 +582,8 @@ public final class NativeTestEnvironment {
             var mode = ((Number) Files.getAttribute(path, "unix:mode")).intValue();
             if (owner != 0 && owner != uid)
                 return path + " is owned by uid " + owner + ", neither root nor this user (uid " + uid + ")";
-            if ((mode & 0022) != 0)
-                return path + " is writable by group or others (mode " + Integer.toOctalString(mode & 07777) + ")";
+            if ((mode & 0_022) != 0) // octal: S_IWGRP | S_IWOTH
+                return path + " is writable by group or others (mode " + Integer.toOctalString(mode & 0_7777) + ")";
         }
         return null;
     }

@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -43,8 +44,8 @@ class WindowsNativeLibraryLoaderTest {
     private static final List<String> GENUINE_EKUS =
             List.of(ARTIFACT_SIGNING_EKU, WindowsNativeLibraryLoader.CODE_SIGNING_EKU, WindowsNativeLibraryLoader.EXPECTED_PROFILE_EKU);
 
-    private static Win32.SecurityDescriptorInfo sddl(String sddl) {
-        return Win32.securityDescriptorFromSddl(sddl);
+    private static WindowsSecurity.SecurityDescriptorInfo sddl(String sddl) {
+        return WindowsSecurity.securityDescriptorFromSddl(sddl);
     }
 
     // --- Location -------------------------------------------------------------------------------

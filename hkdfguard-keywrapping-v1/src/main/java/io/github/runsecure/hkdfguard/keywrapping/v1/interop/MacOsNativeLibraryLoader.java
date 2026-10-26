@@ -1,10 +1,11 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -414,10 +415,10 @@ final class MacOsNativeLibraryLoader {
             throw new SecurityException("'" + path + "' is owned by uid " + status.ownerId() + "; the HkdfGuard native library is only loaded from a location owned by "
                     + (trustedOwners.size() == 1 ? "root" : "root or the current user") + ".");
 
-        if (status.permissions().contains(PosixFilePermission.OTHERS_WRITE))
+        if (status.otherWritable())
             throw new SecurityException("'" + path + "' is writable by every user; the HkdfGuard native library is only loaded from a location only its owner can modify.");
 
-        if (status.permissions().contains(PosixFilePermission.GROUP_WRITE)
+        if (status.groupWritable()
                 && !(status.ownerId() == 0 && ADMINISTRATIVE_GROUPS.contains(status.groupId()) && SHARED_SYSTEM_DIRECTORIES.contains(path)))
             throw new SecurityException("'" + path + "' is writable by group " + status.groupId()
                     + "; the HkdfGuard native library is only loaded from a location only its owner can modify (administrators may also write only to the system directories above an install: "

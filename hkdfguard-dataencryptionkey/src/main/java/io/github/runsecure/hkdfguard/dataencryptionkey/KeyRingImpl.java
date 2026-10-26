@@ -115,7 +115,9 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
      */
     void startEphemeralKeyRotation(Duration interval, Supplier<CompletableFuture<DataEncryptionKey>> createKey, Logger logger) {
         ephemeralKeyRotationInterval = interval;
-        rotationThread = Thread.ofVirtual().name("hkdfguard-key-ring-rotation").start(() -> runRotationLoop(interval, createKey, logger));
+        // A platform thread: rotation calls the key wrapper, which may block in native code or under
+        // a monitor - either pins a virtual thread's carrier on Java 21.
+        rotationThread = Thread.ofPlatform().daemon().name("hkdfguard-key-ring-rotation").start(() -> runRotationLoop(interval, createKey, logger));
     }
 
     private void runRotationLoop(Duration interval, Supplier<CompletableFuture<DataEncryptionKey>> createKey, Logger logger) {
@@ -127,6 +129,7 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
                     if (wait > 0)
                         Thread.sleep(Duration.ofNanos(wait));
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     return;
                 }
                 if (rotationStopping)
@@ -139,6 +142,7 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
                 try {
                     rotateEphemeralKey(createKey, logger, () -> rotationStopping);
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     return;
                 } catch (Throwable t) {
                     // A failure on the way out of a shutdown (rotate rethrows those): nothing to report.
@@ -269,6 +273,9 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
 
     // Stops the rotation loop and waits for a rotation in flight, before any key is closed - so a
     // key can't be added to a ring that is being torn down.
+    // An uninterruptible wait: an interrupt is remembered and restored once the join returns.
+    // Restoring it inside the catch, as S2142 asks, would make the next join throw at once and spin.
+    @SuppressWarnings("java:S2142")
     private void stopEphemeralKeyRotation() {
         var thread = rotationThread;
         if (thread == null)
@@ -416,14 +423,14 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
 
     /**
      * Closes the ring without blocking the caller: stops rotation, then closes every registered key
-     * on a virtual thread. Safe to call more than once.
+     * on a background thread. Safe to call more than once.
      */
     public CompletableFuture<Void> closeAsync() {
         if (closed.get())
             return CompletableFuture.completedFuture(null);
 
         var done = new CompletableFuture<Void>();
-        Thread.ofVirtual().name("hkdfguard-key-ring-close").start(() -> {
+        Thread.ofPlatform().daemon().name("hkdfguard-key-ring-close").start(() -> {
             try {
                 close();
                 done.complete(null);

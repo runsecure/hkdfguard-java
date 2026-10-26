@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.dataencryptionkey;
 
 import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.await;
-import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.assertFailsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -69,7 +69,7 @@ class NativeKeyFileRingTest {
         var path = Files.write(directory.resolve("plaintext.bin"), dek);
 
         // Any valid service name: the file is refused before any KEK is involved.
-        var thrown = awaitFailure(InvalidKeyFileException.class, ringBuilder("hkdfguard.keyfile.reader").withKeyFile(1, path).buildAsync());
+        var thrown = assertFailsWith(InvalidKeyFileException.class, ringBuilder("hkdfguard.keyfile.reader").withKeyFile(1, path).buildAsync());
 
         assertTrue(thrown.getMessage().contains("status -37"), thrown.getMessage());
     }

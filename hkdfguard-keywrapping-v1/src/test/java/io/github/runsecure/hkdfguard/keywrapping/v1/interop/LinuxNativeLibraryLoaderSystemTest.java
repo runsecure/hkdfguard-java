@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import java.io.IOException;
 import java.lang.foreign.Linker;
 import java.nio.file.Files;
@@ -73,7 +74,7 @@ class LinuxNativeLibraryLoaderSystemTest {
             var status = LinuxNative.statusOrNull(file.toString());
             assertEquals(UnixFileType.REGULAR_FILE, status.type());
             assertEquals(uid, status.ownerId());
-            assertEquals(PosixFilePermissions.fromString("rw-r-----"), status.permissions());
+            assertEquals(0640, status.mode());
 
             var linkStatus = LinuxNative.statusOrNull(link.toString());
             assertEquals(UnixFileType.SYMBOLIC_LINK, linkStatus.type());

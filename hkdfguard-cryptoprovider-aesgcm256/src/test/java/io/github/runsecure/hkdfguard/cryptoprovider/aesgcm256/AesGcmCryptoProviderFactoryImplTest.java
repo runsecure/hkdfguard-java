@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256;
 
 import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.await;
-import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.assertFailsWith;
 import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.sleep;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -141,7 +141,7 @@ class AesGcmCryptoProviderFactoryImplTest {
         var wrapper = new FakeKeyWrapper();
         wrapper.throwOnUnwrap = new CryptographicException("KEK unavailable");
 
-        awaitFailure(CryptographicException.class, FACTORY.createAsync(wrapper, wrapped(), 60));
+        assertFailsWith(CryptographicException.class, FACTORY.createAsync(wrapper, wrapped(), 60));
     }
 
     @Test
@@ -149,7 +149,7 @@ class AesGcmCryptoProviderFactoryImplTest {
         var wrapper = new FakeKeyWrapper();
         wrapper.unwrapBytesWrittenOverride = 16;
 
-        var failure = awaitFailure(CryptographicException.class, FACTORY.createAsync(wrapper, wrapped(), 60));
+        var failure = assertFailsWith(CryptographicException.class, FACTORY.createAsync(wrapper, wrapped(), 60));
         assertTrue(failure.getMessage().contains("revealed 16 bytes"));
     }
 
@@ -162,7 +162,7 @@ class AesGcmCryptoProviderFactoryImplTest {
             }
         };
 
-        awaitFailure(CryptographicException.class, FACTORY.createEphemeralAsync(wrapper, 60));
+        assertFailsWith(CryptographicException.class, FACTORY.createEphemeralAsync(wrapper, 60));
         assertEquals(0, wrapper.unwrapCallCount());
     }
 }

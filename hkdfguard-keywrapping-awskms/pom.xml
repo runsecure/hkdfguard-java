@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-keywrapping-awskms</artifactId>
+  <name>HkdfGuard KeyWrapping AWS KMS</name>
+  <description>
+    Wraps DEKs under one symmetric AWS KMS key through the AWS SDK for Java 2.x, pinning the key on
+    every Decrypt, and reads key files only from where no untrusted account could have replaced them.
+  </description>
+
+  <properties>
+    <!-- Java 25, like hkdfguard-securefile, which reads its key files through the FFM API. The
+         securefile and platform modules call the operating system, so they need native access in
+         this module's tests too. -->
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-securefile</artifactId>
+    </dependency>
+
+    <!-- The application builds, configures and closes the KmsAsyncClient, and with it chooses the
+         HTTP client it runs on (netty-nio-client, aws-crt-client, ...). The SDK's service modules
+         declare netty-nio-client and apache5-client as runtime dependencies so that a bare
+         KmsAsyncClient.create() works; they are excluded here, so depending on this module doesn't
+         put either - and their transitive dependencies, Netty's in particular - on every consumer's
+         class path. An application adds the one it builds its client with. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>kms</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>apache5-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- AwsKmsIntegrationTest builds a real KmsAsyncClient, which needs an asynchronous HTTP client.
+         The other tests use a stub client and make no HTTP calls. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>netty-nio-client</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- End-to-end tests only: a crypto provider revealing its DEK through the KMS wrapper. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory, for the Windows real-file tests. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

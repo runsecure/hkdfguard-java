@@ -24,7 +24,7 @@ final class Futures {
     }
 
     /** Asserts the future fails with {@code type}, and returns that failure. */
-    static <E extends Throwable> E awaitFailure(Class<E> type, CompletableFuture<?> future) {
+    static <E extends Throwable> E assertFailsWith(Class<E> type, CompletableFuture<?> future) {
         try {
             future.get(10, TimeUnit.SECONDS);
         } catch (ExecutionException e) {

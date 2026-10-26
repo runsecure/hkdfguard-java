@@ -25,8 +25,11 @@
                ~/.hkdfguard/v1/libhkdfguard.dylib               (MacOsNativeLibraryLoader)
       Linux:   /usr/lib/<multiarch>/libhkdfguard.so.1, or /usr/lib64/libhkdfguard.so.1
                (the libhkdfguard1 package)                         (LinuxNativeLibraryLoader)
-    Applications must grant this module native access with the JVM's enable-native-access option,
-    naming io.github.runsecure.hkdfguard.keywrapping.v1 (or ALL-UNNAMED on the class path).
+    Applications must grant this module and hkdfguard-platform native access with the JVM's
+    enable-native-access option, naming io.github.runsecure.hkdfguard.keywrapping.v1 and
+    io.github.runsecure.hkdfguard.platform (or ALL-UNNAMED on the class path). hkdfguard-platform
+    makes the location checks' security-descriptor, SID, file-status and path-walk calls, which the
+    key-file checks in hkdfguard-securefile share.
   -->
 
   <properties>
@@ -36,13 +39,17 @@
          own native library to a temporary directory - both would weaken how the KMS library is
          verified before it is trusted with every DEK. -->
     <maven.compiler.release>25</maven.compiler.release>
-    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1,ALL-UNNAMED</hkdfguard.test.argLine>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
   </properties>
 
   <dependencies>
     <dependency>
       <groupId>io.github.runsecure</groupId>
       <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-platform</artifactId>
     </dependency>
     <dependency>
       <groupId>org.bouncycastle</groupId>

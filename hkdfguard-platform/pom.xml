@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-platform</artifactId>
+  <name>HkdfGuard Platform</name>
+  <description>
+    Internal to HkdfGuard: the operating-system calls and path checks shared by
+    hkdfguard-keywrapping-v1's native library loader and hkdfguard-securefile's key-file checks.
+    Not an API for applications.
+  </description>
+
+  <!--
+    One copy of the code that decides whether a path can be trusted, so a fix lands once for both
+    the native library loader and the key-file reader: Windows security descriptors, SIDs and file
+    attributes; Linux and macOS lstat-style status and readlink; the symbolic-link-following path
+    walk; and the rules for which Windows access rights let a principal change a path. Each caller
+    keeps its own policy - whom it trusts, and what it reports - so a change for key files can't
+    loosen what the native library is loaded from.
+
+    The module exports its packages only to those two modules. Applications must grant it native
+    access with the JVM's enable-native-access option, naming io.github.runsecure.hkdfguard.platform
+    (or ALL-UNNAMED on the class path): its calls are made through the FFM API.
+  -->
+
+  <properties>
+    <!-- Java 25, like the modules that use it: the Foreign Function & Memory API is final only from Java 22. -->
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
+    <!-- Internal, exported only to two modules of this build: its public members are commented
+         like the package-private code they came from, not tag by tag like an application API.
+         Every other doclint check stays on. -->
+    <doclint>all,-missing</doclint>
+  </properties>
+</project>

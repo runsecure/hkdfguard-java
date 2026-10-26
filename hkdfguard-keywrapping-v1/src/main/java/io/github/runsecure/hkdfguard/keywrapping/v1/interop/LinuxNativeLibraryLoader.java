@@ -1,6 +1,10 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
+import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
+import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver.Resolution;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -13,7 +17,6 @@ import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -99,9 +102,6 @@ final class LinuxNativeLibraryLoader {
 
     /** Bounds the dynamic linker's list run, in seconds: it only maps files and reads headers. */
     static final long LISTING_TIMEOUT_SECONDS = 30;
-
-    /** The kernel's own limit on symbolic links followed in one lookup. */
-    static final int MAX_SYMBOLIC_LINKS = 40;
 
     private static final int ENOENT = 2;
     private static final int ENOTDIR = 20;
@@ -216,10 +216,11 @@ final class LinuxNativeLibraryLoader {
     }
 
     /**
-     * Resolves {@code path} the way the kernel would, checking everything it passes through: every
-     * directory and the final object must be owned by root and writable by neither group nor
-     * others, and every symbolic link must be owned by root (its target is then resolved and checked
-     * in turn). Returns the resolved path, which contains no symbolic links.
+     * Resolves {@code path} the way the kernel would, with {@link UnixPathResolver}, checking
+     * everything it passes through: every directory and the final object must be owned by root and
+     * writable by neither group nor others, and every symbolic link must be owned by root (its
+     * target is then resolved and checked in turn). Returns the resolved path, which contains no
+     * symbolic links.
      *
      * @param getStatus    lstat-style status of a path, or null if nothing is there
      * @param readLink     a symbolic link's stored target, or null if it can't be read as one
@@ -233,85 +234,46 @@ final class LinuxNativeLibraryLoader {
         if (!path.startsWith("/"))
             throw new SecurityException("'" + path + "' is not an absolute path; the HkdfGuard native library and its dependencies are only trusted at absolute paths.");
 
-        var root = getStatus.apply("/");
-        if (root == null)
-            throw new SecurityException("'/' could not be examined.");
-        requireRootControlled("/", root);
-
-        Deque<String> pending = new ArrayDeque<>();
-        pushComponents(pending, path);
-        var resolved = "/";
-        var resolvedType = UnixFileType.DIRECTORY;
-        var linksFollowed = 0;
-
-        while (!pending.isEmpty()) {
-            var name = pending.pop();
-            if (name.isEmpty() || name.equals("."))
-                continue;
-
-            if (resolvedType != UnixFileType.DIRECTORY)
-                throw new SecurityException("'" + path + "' runs through '" + resolved + "', which is not a directory.");
-
-            if (name.equals("..")) {
-                // resolved never contains a symbolic link, so its parent is its lexical parent.
-                resolved = parentOf(resolved);
-                continue;
-            }
-
-            var candidate = resolved.equals("/") ? "/" + name : resolved + "/" + name;
-            var status = getStatus.apply(candidate);
-            if (status == null) {
-                if (allowMissing)
-                    return null;
-                throw new SecurityException("'" + candidate + "' does not exist (resolving '" + path + "').");
-            }
-
-            if (status.type() == UnixFileType.SYMBOLIC_LINK) {
-                if (status.ownerId() != 0)
-                    throw new SecurityException("'" + candidate + "' is a symbolic link owned by uid " + status.ownerId()
-                            + "; only links owned by root are followed (resolving '" + path + "').");
-                if (++linksFollowed > MAX_SYMBOLIC_LINKS)
-                    throw new SecurityException("'" + path + "' follows more than " + MAX_SYMBOLIC_LINKS + " symbolic links.");
-
-                var target = readLink.apply(candidate);
-                if (target == null)
-                    throw new SecurityException("'" + candidate + "' could not be read as a symbolic link.");
-                if (target.startsWith("/"))
-                    resolved = "/";
-                pushComponents(pending, target);
-                continue;
-            }
-
-            requireRootControlled(candidate, status);
-            resolved = candidate;
-            resolvedType = status.type();
+        Resolution resolution;
+        try {
+            resolution = UnixPathResolver.resolve(path, getStatus::apply, readLink::apply, status -> whyUntrusted(status) == null, uid -> uid == 0);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
 
-        if (resolvedType != expectedType)
-            throw new SecurityException("'" + path + "' resolves to '" + resolved + "', which is a " + describe(resolvedType) + ", not a " + describe(expectedType) + ".");
-
-        return resolved;
+        return switch (resolution) {
+            case Resolution.Resolved(var resolved, var type) -> {
+                if (type != expectedType)
+                    throw new SecurityException("'" + path + "' resolves to '" + resolved + "', which is a " + describe(type) + ", not a "
+                            + describe(expectedType) + ".");
+                yield resolved;
+            }
+            case Resolution.RootUnreadable() -> throw new SecurityException("'/' could not be examined.");
+            case Resolution.Missing(var component) -> {
+                if (allowMissing)
+                    yield null;
+                throw new SecurityException("'" + component + "' does not exist (resolving '" + path + "').");
+            }
+            case Resolution.NotADirectory(var component) ->
+                    throw new SecurityException("'" + path + "' runs through '" + component + "', which is not a directory.");
+            case Resolution.UntrustedComponent(var component, var status) -> throw new SecurityException("'" + component + "' " + whyUntrusted(status));
+            case Resolution.UntrustedLink(var component, var status) -> throw new SecurityException("'" + component + "' is a symbolic link owned by uid "
+                    + status.ownerId() + "; only links owned by root are followed (resolving '" + path + "').");
+            case Resolution.TooManyLinks() ->
+                    throw new SecurityException("'" + path + "' follows more than " + UnixPathResolver.MAX_SYMBOLIC_LINKS + " symbolic links.");
+            case Resolution.UnreadableLink(var component) -> throw new SecurityException("'" + component + "' could not be read as a symbolic link.");
+        };
     }
 
-    private static void requireRootControlled(String path, UnixFileStatus status) {
+    // Why a directory or file may not be on the library's path, or null if it may: only root may change it.
+    private static String whyUntrusted(UnixFileStatus status) {
         if (status.ownerId() != 0)
-            throw new SecurityException("'" + path + "' is owned by uid " + status.ownerId()
-                    + "; the HkdfGuard native library and its dependencies are only trusted in locations owned by root.");
+            return "is owned by uid " + status.ownerId() + "; the HkdfGuard native library and its dependencies are only trusted in locations owned by root.";
 
-        if (status.permissions().contains(PosixFilePermission.GROUP_WRITE) || status.permissions().contains(PosixFilePermission.OTHERS_WRITE))
-            throw new SecurityException("'" + path
-                    + "' is writable by its group or by every user; the HkdfGuard native library and its dependencies are only trusted in locations only root can modify.");
-    }
+        if (status.groupWritable() || status.otherWritable())
+            return "is writable by its group or by every user; the HkdfGuard native library and its dependencies are only trusted in locations only root can modify.";
 
-    private static void pushComponents(Deque<String> pending, String path) {
-        var components = path.split("/", -1);
-        for (var i = components.length - 1; i >= 0; i--)
-            pending.push(components[i]);
-    }
-
-    static String parentOf(String path) {
-        var slash = path.lastIndexOf('/');
-        return slash <= 0 ? "/" : path.substring(0, slash);
+        return null;
     }
 
     /**
