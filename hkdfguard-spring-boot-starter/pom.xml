@@ -15,7 +15,7 @@
   <description>Spring Boot auto-configuration: binds hkdfguard.* properties, builds and closes the key ring, reveals protected configuration values on demand, and reports the ring's health through Actuator.</description>
 
   <properties>
-    <spring-boot.version>4.1.1</spring-boot.version>
+    <spring-boot.version>4.1.2</spring-boot.version>
     <assertj.version>3.27.7</assertj.version>
   </properties>
 
