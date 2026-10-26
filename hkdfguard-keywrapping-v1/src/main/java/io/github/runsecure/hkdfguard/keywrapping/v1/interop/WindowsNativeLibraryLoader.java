@@ -1,6 +1,9 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsAccessRules;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsAccessRules.Violation;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
@@ -13,7 +16,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.function.Function;
 import org.bouncycastle.asn1.ASN1String;
 import org.bouncycastle.asn1.x500.AttributeTypeAndValue;
@@ -82,32 +84,9 @@ final class WindowsNativeLibraryLoader {
     /** The Code Signing EKU (id-kp-codeSigning), required of the leaf. */
     static final String CODE_SIGNING_EKU = "1.3.6.1.5.5.7.3.3";
 
-    // SYSTEM, BUILTIN\Administrators, and NT SERVICE\TrustedInstaller's fixed service SID.
-    private static final Set<String> TRUSTED_PRINCIPALS = Set.of(
-            "S-1-5-18",
-            "S-1-5-32-544",
-            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
-
-    // Any right that lets a principal change what this path loads: write or append data, delete
-    // or rename (DELETE on the item, FILE_DELETE_CHILD on its parent), write extended attributes,
-    // or take over the ACL. Generic bits are listed too, since an ACE can carry them unmapped.
-    private static final int FILE_WRITE_DATA = 0x0002;
-    private static final int FILE_APPEND_DATA = 0x0004;
-    private static final int FILE_WRITE_EA = 0x0010;
-    private static final int FILE_DELETE_CHILD = 0x0040;
-    private static final int DELETE = 0x00010000;
-    private static final int WRITE_DAC = 0x00040000;
-    private static final int WRITE_OWNER = 0x00080000;
-    private static final int GENERIC_ALL = 0x10000000;
-    private static final int GENERIC_WRITE = 0x40000000;
-
-    static final int GUARDED_RIGHTS = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_DELETE_CHILD | DELETE
-            | WRITE_DAC | WRITE_OWNER | GENERIC_ALL | GENERIC_WRITE;
-
-    // On the drive root, only what lets a principal rename or delete an entry directly beneath it -
-    // delete-child, or taking over the ACL to grant it. Creating new entries there (Authenticated
-    // Users may, on a default C:\) can't affect this path, and GENERIC_WRITE includes none of these.
-    static final int GUARDED_ROOT_RIGHTS = FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_ALL;
+    // Only SYSTEM, Administrators and TrustedInstaller: the native library is never loaded from
+    // anywhere a deployer, or anyone else, could change.
+    private static final List<String> TRUSTED_PRINCIPALS = WindowsAccessRules.ALWAYS_TRUSTED;
 
     // PE/COFF header values.
     static final int IMAGE_FILE_EXECUTABLE_IMAGE = 0x0002;
@@ -242,85 +221,70 @@ final class WindowsNativeLibraryLoader {
         while (item != null) {
             var parent = item.getParent();
             if (parent == null) {
-                verifyDriveRoot(Win32.securityDescriptorOf(item.toString()), item.toString());
+                verifyDriveRoot(securityDescriptorOf(item.toString()), item.toString());
                 break;
             }
 
             verifyNotReparsePoint(item.toString());
-            verifyTrustedOnly(Win32.securityDescriptorOf(item.toString()), item.toString());
+            verifyTrustedOnly(securityDescriptorOf(item.toString()), item.toString());
             item = parent;
+        }
+    }
+
+    // An item whose owner and DACL can't be read is never trusted.
+    private static WindowsSecurity.SecurityDescriptorInfo securityDescriptorOf(String path) {
+        try {
+            return WindowsSecurity.securityDescriptorOf(path);
+        } catch (IOException e) {
+            throw new SecurityException(e.getMessage() + " Refusing to load from it.", e);
         }
     }
 
     /** @throws SecurityException the item is a symbolic link or junction, or can't be examined */
     static void verifyNotReparsePoint(String path) {
-        var attributes = Win32.fileAttributes(path);
-        if (attributes == Win32.INVALID_FILE_ATTRIBUTES)
+        var attributes = WindowsSecurity.fileAttributes(path);
+        if (attributes == WindowsSecurity.INVALID_FILE_ATTRIBUTES)
             throw new SecurityException("'" + path + "' could not be examined; the HkdfGuard native library is only loaded through a path that can be verified.");
-        if ((attributes & Win32.FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        if ((attributes & WindowsSecurity.FILE_ATTRIBUTE_REPARSE_POINT) != 0)
             throw new SecurityException("'" + path + "' is a symbolic link or junction; the HkdfGuard native library is only loaded through a real path.");
     }
 
     /**
-     * Requires a trusted owner and no Allow entry granting any write right to anyone else.
-     * Inherit-only entries don't apply to this item, and Deny entries can only remove access, so
-     * both are ignored. A missing DACL grants everyone everything, and is refused.
+     * Requires a trusted owner and no Allow entry granting any write right to anyone else, by
+     * {@link WindowsAccessRules#findViolation}'s rules: inherit-only entries don't apply to this
+     * item, and Deny entries can only remove access, so both are ignored; a missing DACL grants
+     * everyone everything, and is refused.
      *
      * @throws SecurityException the owner is untrusted, or an untrusted principal can write
      */
-    static void verifyTrustedOnly(Win32.SecurityDescriptorInfo security, String displayPath) {
-        verifyTrustedOnly(security, displayPath, GUARDED_RIGHTS, Win32::accountName);
+    static void verifyTrustedOnly(WindowsSecurity.SecurityDescriptorInfo security, String displayPath) {
+        verifyTrustedOnly(security, displayPath, WindowsAccessRules.GUARDED_RIGHTS, WindowsSecurity::accountName);
     }
 
     /** The drive root's form of {@link #verifyTrustedOnly}: only rights that could rename or delete an entry beneath it are refused. */
-    static void verifyDriveRoot(Win32.SecurityDescriptorInfo security, String displayPath) {
-        verifyTrustedOnly(security, displayPath, GUARDED_ROOT_RIGHTS, Win32::accountName);
+    static void verifyDriveRoot(WindowsSecurity.SecurityDescriptorInfo security, String displayPath) {
+        verifyTrustedOnly(security, displayPath, WindowsAccessRules.GUARDED_ROOT_RIGHTS, WindowsSecurity::accountName);
     }
 
     /**
      * @param accountName the account a SID string maps to, or null - for describing principals
      */
-    static void verifyTrustedOnly(Win32.SecurityDescriptorInfo security, String displayPath, int guardedRights,
+    static void verifyTrustedOnly(WindowsSecurity.SecurityDescriptorInfo security, String displayPath, int guardedRights,
                                   Function<String, String> accountName) {
-        var owner = security.ownerSid();
-        if (owner == null || !TRUSTED_PRINCIPALS.contains(owner))
-            throw new SecurityException("'" + displayPath + "' is owned by " + describe(owner, accountName)
-                    + "; the HkdfGuard native library is only loaded from a location owned by SYSTEM, Administrators, or TrustedInstaller.");
+        var violation = WindowsAccessRules.findViolation(security, guardedRights, TRUSTED_PRINCIPALS);
+        if (violation == null)
+            return;
 
-        if (security.grantsEveryoneFull())
-            throw new SecurityException("'" + displayPath + "' has no DACL, which grants every user full control; the HkdfGuard native library is only loaded from a location that only SYSTEM, Administrators, or TrustedInstaller can modify.");
-
-        for (var ace : security.aces()) {
-            switch (ace.type()) {
-                case Win32.ACCESS_DENIED_ACE_TYPE, Win32.ACCESS_DENIED_OBJECT_ACE_TYPE,
-                     Win32.ACCESS_DENIED_CALLBACK_ACE_TYPE, Win32.ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE -> {
-                    continue;
-                }
-                case Win32.ACCESS_ALLOWED_ACE_TYPE, Win32.ACCESS_ALLOWED_CALLBACK_ACE_TYPE -> {
-                    if ((ace.flags() & Win32.INHERIT_ONLY_ACE) != 0)
-                        continue;
-
-                    if ((ace.mask() & guardedRights) != 0 && !TRUSTED_PRINCIPALS.contains(ace.sid()))
-                        throw new SecurityException(String.format("'%s' grants 0x%08X to %s; the HkdfGuard native library is only loaded from a location that only SYSTEM, Administrators, or TrustedInstaller can modify.",
-                                displayPath, ace.mask(), describe(ace.sid(), accountName)));
-                }
-                default -> {
-                    // An allow-object ACE, or a type a DACL shouldn't hold: its trustee can't be
-                    // read the plain way, so fail closed rather than guess what it grants.
-                    if ((ace.flags() & Win32.INHERIT_ONLY_ACE) == 0)
-                        throw new SecurityException(String.format("'%s' has an access control entry of type 0x%02X, which this check can't evaluate; refusing to load from it.",
-                                displayPath, ace.type()));
-                }
-            }
-        }
-    }
-
-    private static String describe(String sid, Function<String, String> accountName) {
-        if (sid == null)
-            return "an unknown principal";
-
-        var name = accountName.apply(sid);
-        return name == null ? sid : name + " (" + sid + ")";
+        throw new SecurityException(switch (violation) {
+            case Violation.UntrustedOwner(var sid) -> "'" + displayPath + "' is owned by " + WindowsAccessRules.describePrincipal(sid, accountName)
+                    + "; the HkdfGuard native library is only loaded from a location owned by SYSTEM, Administrators, or TrustedInstaller.";
+            case Violation.NoDacl() -> "'" + displayPath + "' has no DACL, which grants every user full control; the HkdfGuard native library is only loaded from a location that only SYSTEM, Administrators, or TrustedInstaller can modify.";
+            case Violation.UntrustedGrant(var sid, var mask) -> String.format(
+                    "'%s' grants 0x%08X to %s; the HkdfGuard native library is only loaded from a location that only SYSTEM, Administrators, or TrustedInstaller can modify.",
+                    displayPath, mask, WindowsAccessRules.describePrincipal(sid, accountName));
+            case Violation.UnevaluableAce(var type) -> String.format(
+                    "'%s' has an access control entry of type 0x%02X, which this check can't evaluate; refusing to load from it.", displayPath, type);
+        });
     }
 
     // --- Signature ------------------------------------------------------------------------------

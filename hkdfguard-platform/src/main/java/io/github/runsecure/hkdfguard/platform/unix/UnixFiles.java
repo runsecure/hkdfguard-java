@@ -1,4 +1,4 @@
-package io.github.runsecure.hkdfguard.securefile;
+package io.github.runsecure.hkdfguard.platform.unix;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
@@ -19,8 +19,8 @@ import java.nio.file.AccessDeniedException;
 import java.util.Locale;
 
 /**
- * The system calls {@link UnixKeyFileChecks} needs that Java doesn't expose as such: the owner,
- * group, permissions and type of a path itself, never what a symbolic link points to, and a
+ * The system calls the Linux and macOS path checks need that Java doesn't expose as such: the
+ * owner, group, permissions and type of a path itself, never what a symbolic link points to, and a
  * symbolic link's stored target. Linux uses statx and readlink from the C library this JVM already
  * runs on, found through the linker's default lookup - matched by name before anything is
  * searched, so LD_LIBRARY_PATH cannot substitute it - and statx (glibc 2.28 or later) has one struct
@@ -28,7 +28,7 @@ import java.util.Locale;
  * path, on arm64 only, whose struct stat this reads. Bound only on first use, so inert elsewhere.
  */
 @SuppressWarnings("restricted") // Native access is this class's purpose; the module requires --enable-native-access.
-final class UnixNative {
+public final class UnixFiles {
     private static final String MAC_OS_LIB_SYSTEM = "/usr/lib/libSystem.B.dylib";
 
     private static final int AT_FDCWD = -100;
@@ -65,7 +65,7 @@ final class UnixNative {
     private static final MemoryLayout CAPTURE_LAYOUT = Linker.Option.captureStateLayout();
     private static final VarHandle ERRNO = CAPTURE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("errno"));
 
-    private UnixNative() {
+    private UnixFiles() {
     }
 
     private static MethodHandle bind(SymbolLookup library, String name, FunctionDescriptor descriptor) {
@@ -94,7 +94,7 @@ final class UnixNative {
     private static void requireAppleSilicon() {
         var arch = System.getProperty("os.arch", "");
         if (!arch.equals("aarch64") && !arch.equals("arm64"))
-            throw new UnsupportedOperationException("Key files are read on Apple silicon Macs only; this process is " + arch + ".");
+            throw new UnsupportedOperationException("Only Apple silicon Macs are supported; this process is " + arch + ".");
     }
 
     private static RuntimeException rethrow(Throwable t) {
@@ -113,9 +113,9 @@ final class UnixNative {
      * @throws IOException                   the call failed for any other reason
      * @throws UnsupportedOperationException macOS on an Intel processor
      */
-    static UnixFileStatus statusOrNull(String path) throws IOException {
+    public static UnixFileStatus statusOrNull(String path) throws IOException {
         var status = new UnixFileStatus[1];
-        var errno = isLinux() ? linuxStatus(path, status) : macOsStatus(path, status);
+        var errno = status(path, status);
         return switch (errno) {
             case 0 -> status[0];
             case ENOENT, ENOTDIR -> null;
@@ -125,13 +125,24 @@ final class UnixNative {
     }
 
     /**
+     * Whether something is at a path whose existence is only being probed.
+     *
+     * @return 0 if it exists, else the errno the status call failed with
+     * @throws IOException                   statx succeeded without reporting what is asked of it
+     * @throws UnsupportedOperationException macOS on an Intel processor
+     */
+    public static int probe(String path) throws IOException {
+        return status(path, new UnixFileStatus[1]);
+    }
+
+    /**
      * readlink: a symbolic link's target, exactly as stored (possibly relative).
      *
      * @return the target, or null if the path isn't a symbolic link (or isn't there)
      * @throws AccessDeniedException this account may not read it (EACCES)
      * @throws IOException           readlink failed for any other reason
      */
-    static String readLink(String path) throws IOException {
+    public static String readLink(String path) throws IOException {
         MethodHandle readlink;
         if (isLinux()) {
             readlink = Linux.READLINK;
@@ -164,6 +175,11 @@ final class UnixNative {
             throw new IOException("readlink('" + path + "') returned a target longer than PATH_MAX.");
 
         return new String(target, StandardCharsets.UTF_8);
+    }
+
+    // 0 with the status in result[0], or the errno.
+    private static int status(String path, UnixFileStatus[] result) throws IOException {
+        return isLinux() ? linuxStatus(path, result) : macOsStatus(path, result);
     }
 
     private static int linuxStatus(String path, UnixFileStatus[] result) throws IOException {
@@ -209,7 +225,8 @@ final class UnixNative {
         }
     }
 
-    private static UnixFileStatus decode(int mode, int uid, int gid) {
+    /** A status from {@code st_mode} and the raw (unsigned) uid and gid. */
+    static UnixFileStatus decode(int mode, int uid, int gid) {
         var type = switch (mode & FILE_TYPE_MASK) {
             case REGULAR_FILE -> UnixFileType.REGULAR_FILE;
             case DIRECTORY -> UnixFileType.DIRECTORY;

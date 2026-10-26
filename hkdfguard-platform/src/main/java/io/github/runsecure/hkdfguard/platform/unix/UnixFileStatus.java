@@ -1,4 +1,4 @@
-package io.github.runsecure.hkdfguard.securefile;
+package io.github.runsecure.hkdfguard.platform.unix;
 
 /**
  * What lstat reports about one path: who owns it, its permissions, and its type.
@@ -9,10 +9,20 @@ package io.github.runsecure.hkdfguard.securefile;
  *                read, write and execute for owner, group and others)
  * @param type    what kind of file it is - a symbolic link is reported as such, never followed
  */
-record UnixFileStatus(long ownerId, long groupId, int mode, UnixFileType type) {
+public record UnixFileStatus(long ownerId, long groupId, int mode, UnixFileType type) {
     /** S_IWGRP: writable by the file's group. */
-    static final int GROUP_WRITE = 0020;
+    public static final int GROUP_WRITE = 0020;
 
     /** S_IWOTH: writable by every other user. */
-    static final int OTHER_WRITE = 0002;
+    public static final int OTHER_WRITE = 0002;
+
+    /** Whether the file's group may write it. */
+    public boolean groupWritable() {
+        return (mode & GROUP_WRITE) != 0;
+    }
+
+    /** Whether every other user may write it. */
+    public boolean otherWritable() {
+        return (mode & OTHER_WRITE) != 0;
+    }
 }

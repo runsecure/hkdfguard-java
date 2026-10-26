@@ -24,6 +24,11 @@
     whatever the scope), so its build compiles this module's sources into its own tests instead (see
     its build-helper-maven-plugin execution) - one copy of the source either way.
 
+    WindowsTempDirectory: a temp folder, by its long path, for the Windows real-file tests of
+    hkdfguard-securefile and hkdfguard-keywrapping-awskms, which depend on this module with test
+    scope. It returns the test account's SID rather than a KeyFileTrust, so this module needn't
+    depend on hkdfguard-securefile, whose own tests depend on this module.
+
     The helper stays in the key wrapper's interop package so it can reach that package's
     package-private loaders, adding no public API to the shipped library. That is a split package
     only on the class path, where it is harmless: no module descriptor requires this module, so it

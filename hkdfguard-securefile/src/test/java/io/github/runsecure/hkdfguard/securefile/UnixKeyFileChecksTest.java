@@ -4,14 +4,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
+import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
 import java.io.IOException;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.NoSuchFileException;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * The Linux and macOS key-file location rules, checked against simulated filesystems so they run
@@ -211,7 +212,7 @@ class UnixKeyFileChecksTest {
         var fs = new FileSystem().dir("/").link("/a", "/b").link("/b", "/a");
 
         var ex = assertThrows(AccessDeniedException.class, () -> fs.resolve("/a"));
-        assertTrue(ex.getMessage().contains("more than " + UnixKeyFileChecks.MAX_SYMBOLIC_LINKS + " symbolic links"));
+        assertTrue(ex.getMessage().contains("more than " + UnixPathResolver.MAX_SYMBOLIC_LINKS + " symbolic links"));
     }
 
     @Test
@@ -262,15 +263,5 @@ class UnixKeyFileChecksTest {
     @Test
     void relativePath_IsAnArgumentError() {
         assertThrows(IllegalArgumentException.class, () -> standard().resolve("keys/v1.key"));
-    }
-
-    @ParameterizedTest
-    @CsvSource({
-            "/etc/hkdfguard, /etc",
-            "/etc, /",
-            "/, /",
-    })
-    void parentOf_IsTheLexicalParent(String path, String parent) {
-        assertEquals(parent, UnixKeyFileChecks.parentOf(path));
     }
 }

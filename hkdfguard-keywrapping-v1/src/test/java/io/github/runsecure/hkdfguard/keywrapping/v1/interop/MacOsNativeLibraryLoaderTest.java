@@ -1,14 +1,5 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
-import static java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE;
-import static java.nio.file.attribute.PosixFilePermission.GROUP_READ;
-import static java.nio.file.attribute.PosixFilePermission.GROUP_WRITE;
-import static java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE;
-import static java.nio.file.attribute.PosixFilePermission.OTHERS_READ;
-import static java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE;
-import static java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE;
-import static java.nio.file.attribute.PosixFilePermission.OWNER_READ;
-import static java.nio.file.attribute.PosixFilePermission.OWNER_WRITE;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -16,9 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
-import java.nio.file.attribute.PosixFilePermission;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,25 +34,19 @@ class MacOsNativeLibraryLoaderTest {
     private static final long STAFF = 20;
     private static final String HOME = "/Users/dev";
 
-    private static final Set<PosixFilePermission> MODE_755 = EnumSet.of(OWNER_READ, OWNER_WRITE, OWNER_EXECUTE, GROUP_READ, GROUP_EXECUTE, OTHERS_READ, OTHERS_EXECUTE);
-    private static final Set<PosixFilePermission> MODE_775 = with(MODE_755, GROUP_WRITE);
-    private static final Set<PosixFilePermission> MODE_644 = EnumSet.of(OWNER_READ, OWNER_WRITE, GROUP_READ, OTHERS_READ);
-    private static final Set<PosixFilePermission> MODE_700 = EnumSet.of(OWNER_READ, OWNER_WRITE, OWNER_EXECUTE);
+    private static final int MODE_755 = 0755;
+    private static final int MODE_775 = 0775;
+    private static final int MODE_644 = 0644;
+    private static final int MODE_700 = 0700;
 
     private static final List<Long> SYSTEM_OWNERS = List.of(ROOT);
     private static final List<Long> USER_OWNERS = List.of(ROOT, USER);
 
-    private static Set<PosixFilePermission> with(Set<PosixFilePermission> mode, PosixFilePermission extra) {
-        var result = EnumSet.copyOf(mode);
-        result.add(extra);
-        return result;
-    }
-
-    private static UnixFileStatus dir(long owner, long group, Set<PosixFilePermission> mode) {
+    private static UnixFileStatus dir(long owner, long group, int mode) {
         return new UnixFileStatus(owner, group, mode, UnixFileType.DIRECTORY);
     }
 
-    private static UnixFileStatus file(long owner, long group, Set<PosixFilePermission> mode) {
+    private static UnixFileStatus file(long owner, long group, int mode) {
         return new UnixFileStatus(owner, group, mode, UnixFileType.REGULAR_FILE);
     }
 
@@ -391,7 +376,7 @@ class MacOsNativeLibraryLoaderTest {
     @Test
     void anyWorldWritableComponent_IsRefused() {
         var fs = userInstall();
-        fs.put(HOME + "/.hkdfguard", dir(USER, STAFF, with(MODE_700, OTHERS_WRITE)));
+        fs.put(HOME + "/.hkdfguard", dir(USER, STAFF, MODE_700 | UnixFileStatus.OTHER_WRITE));
 
         var ex = assertThrows(SecurityException.class, () -> verify(fs, MacOsNativeLibraryLoader.userPath(HOME), USER_OWNERS));
 
@@ -452,7 +437,7 @@ class MacOsNativeLibraryLoaderTest {
     @Test
     void theLibraryFile_IsNeverAdminWritable_EvenWhenRootOwned() {
         var fs = systemInstall();
-        fs.put(MacOsNativeLibraryLoader.systemPath(), file(ROOT, ADMIN, with(MODE_644, GROUP_WRITE)));
+        fs.put(MacOsNativeLibraryLoader.systemPath(), file(ROOT, ADMIN, MODE_644 | UnixFileStatus.GROUP_WRITE));
 
         assertThrows(SecurityException.class, () -> verify(fs, MacOsNativeLibraryLoader.systemPath(), SYSTEM_OWNERS));
     }
@@ -495,13 +480,6 @@ class MacOsNativeLibraryLoaderTest {
         var ex = assertThrows(SecurityException.class, () -> verify(fs, MacOsNativeLibraryLoader.systemPath(), SYSTEM_OWNERS));
 
         assertTrue(ex.getMessage().contains("(it is a regular file)"));
-    }
-
-    @Test
-    void permissionsFromMode_DecodesEveryBit() {
-        assertEquals(MODE_755, UnixFileStatus.permissionsFromMode(0755));
-        assertEquals(MODE_644, UnixFileStatus.permissionsFromMode(0100644));
-        assertEquals(Set.of(), UnixFileStatus.permissionsFromMode(0));
     }
 
     // --- Code signature ---------------------------------------------------------------------------

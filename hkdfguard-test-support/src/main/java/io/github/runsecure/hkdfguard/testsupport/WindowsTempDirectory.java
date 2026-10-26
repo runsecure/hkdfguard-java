@@ -1,4 +1,4 @@
-package io.github.runsecure.hkdfguard.securefile;
+package io.github.runsecure.hkdfguard.testsupport;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_CHAR;
@@ -18,34 +18,30 @@ import java.nio.file.Path;
 import java.util.Comparator;
 
 /**
- * A fresh folder under the user's temp folder, named by its long path: Windows may report the temp
- * folder by an 8.3 short name ({@code C:\Users\RUNNER~1\...} on hosted runners), which key files
- * are never read through.
+ * A fresh folder under the user's temp folder for the Windows key-file tests of
+ * hkdfguard-securefile and hkdfguard-keywrapping-awskms, named by its long path: Windows may report
+ * the temp folder by an 8.3 short name ({@code C:\Users\RUNNER~1\...} on hosted runners), which key
+ * files are never read through. The account running the tests owns, and may modify, its own temp
+ * folder, so a test reading key files from here trusts {@link #currentUserSid()} as a deployer.
  */
 @SuppressWarnings("restricted") // GetShortPathNameW, for the short-name test.
-final class WindowsTempDirectory implements AutoCloseable {
+public final class WindowsTempDirectory implements AutoCloseable {
     private static String currentUserSid;
 
     private final Path path;
 
-    WindowsTempDirectory() throws IOException {
+    public WindowsTempDirectory() throws IOException {
         // toRealPath: every component's real (long) name.
         path = Files.createTempDirectory("hkdfguard-keys-").toRealPath();
     }
 
-    /** Trusts the account running the tests, which owns, and may modify, its own temp folder. */
-    static KeyFileTrust trustCurrentUser() {
-        return KeyFileTrust.ADMINISTRATORS_ONLY.withWindowsPrincipals(currentUserSid());
-    }
-
-    Path path() {
+    public Path path() {
         return path;
     }
 
-    Path write(String name, byte[] contents) throws IOException {
-        var file = path.resolve(name);
-        Files.write(file, contents);
-        return file;
+    /** Writes {@code contents} to a new file {@code name} in this folder. */
+    public Path write(String name, byte[] contents) throws IOException {
+        return Files.write(path.resolve(name), contents);
     }
 
     @Override
@@ -57,7 +53,7 @@ final class WindowsTempDirectory implements AutoCloseable {
     }
 
     /** The SID of the account running the tests, as {@code whoami /user} reports it. */
-    static synchronized String currentUserSid() {
+    public static synchronized String currentUserSid() {
         if (currentUserSid != null)
             return currentUserSid;
 
@@ -80,7 +76,7 @@ final class WindowsTempDirectory implements AutoCloseable {
     }
 
     /** The path with each component's 8.3 short name, where the volume keeps them. */
-    static String shortPath(String longPath) {
+    public static String shortPath(String longPath) {
         try (var arena = Arena.ofConfined()) {
             var linker = Linker.nativeLinker();
             var kernel32 = SymbolLookup.libraryLookup("kernel32.dll", arena);

@@ -49,6 +49,8 @@
     <module>hkdfguard-diagnostics</module>
     <module>hkdfguard-abstractions</module>
     <module>hkdfguard-cryptoprovider-aesgcm256</module>
+    <!-- Internal: the OS calls and path checks shared by the two modules after it. -->
+    <module>hkdfguard-platform</module>
     <module>hkdfguard-keywrapping-v1</module>
     <module>hkdfguard-securefile</module>
     <module>hkdfguard-keywrapping-awskms</module>
@@ -64,9 +66,9 @@
     <!-- The bytecode level every module targets unless it says otherwise: Java 21, the previous
          Long Term Support release, so applications still on 21 can use the cryptographic core
          (diagnostics, abstractions, the AES-GCM provider, key rings and caches). Only
-         hkdfguard-keywrapping-v1 and hkdfguard-securefile (with hkdfguard-keywrapping-awskms, which
-         reads key files through it) need Java 25 and override this: their native calls use the
-         Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
+         hkdfguard-platform, hkdfguard-keywrapping-v1 and hkdfguard-securefile (with
+         hkdfguard-keywrapping-awskms, which reads key files through it) need Java 25 and override
+         this: their native calls use the Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
          enforcer's requireJavaVersion) because those modules are part of every build. -->
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -101,6 +103,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-platform</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

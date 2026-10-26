@@ -148,8 +148,10 @@ BOM keeps the HTTP client at the SDK version the wrapper was built against:
 > **TODO (maintainer):** confirm the version once the artifact is published.
 
 Key files are read through `hkdfguard-securefile`, which checks them with system calls made through
-the FFM API: run with `--enable-native-access=ALL-UNNAMED` on the class path, or
-`--enable-native-access=io.github.runsecure.hkdfguard.securefile` on the module path.
+the FFM API, some of them by `hkdfguard-platform`, which it depends on: run with
+`--enable-native-access=ALL-UNNAMED` on the class path, or
+`--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform`
+on the module path.
 
 ```java
 import io.github.runsecure.hkdfguard.keywrapping.awskms.AwsKmsKeyWrapperImpl;
@@ -406,4 +408,4 @@ Reading a key file fails before KMS is called:
 | `NoSuchFileException` | The file, or a folder on its path, doesn't exist | Check the path |
 | `IOException` | Another process has the file open for writing, or it can't be read | Let the deployment finish writing it |
 | `IllegalArgumentException` naming `KeyFileTrust` | A listed SID isn't valid, or is a group everyone is in | List the deployer's own account or group |
-| `IllegalCallerException` or a native-access warning | The JVM wasn't given native access for `hkdfguard-securefile` | Step 4: `--enable-native-access` |
+| `IllegalCallerException` or a native-access warning | The JVM wasn't given native access for `hkdfguard-securefile` or `hkdfguard-platform` | Step 4: `--enable-native-access`, naming both on the module path |

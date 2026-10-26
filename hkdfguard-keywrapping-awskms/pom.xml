@@ -19,10 +19,10 @@
 
   <properties>
     <!-- Java 25, like hkdfguard-securefile, which reads its key files through the FFM API. The
-         securefile module calls the operating system, so it needs native access in this module's
-         tests too. -->
+         securefile and platform modules call the operating system, so they need native access in
+         this module's tests too. -->
     <maven.compiler.release>25</maven.compiler.release>
-    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,ALL-UNNAMED</hkdfguard.test.argLine>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
   </properties>
 
   <dependencies>
@@ -67,6 +67,12 @@
     <dependency>
       <groupId>io.github.runsecure</groupId>
       <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory, for the Windows real-file tests. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

@@ -11,6 +11,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFiles;
+import io.github.runsecure.hkdfguard.testsupport.WindowsTempDirectory;
 import java.io.ByteArrayInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -225,7 +227,7 @@ class TrustedKeyFileTest {
             var wrapped = wrapped();
             var path = dir.write("v1.key", wrapped);
 
-            assertArrayEquals(wrapped, await(TrustedKeyFile.readAsync(path, WindowsTempDirectory.trustCurrentUser())));
+            assertArrayEquals(wrapped, await(TrustedKeyFile.readAsync(path, trustCurrentWindowsUser())));
         }
     }
 
@@ -240,7 +242,7 @@ class TrustedKeyFileTest {
             Assumptions.assumeTrue(workingDirectory.getRoot().equals(path.getRoot()), "The temp folder is on another drive than the working directory.");
             var relative = workingDirectory.relativize(path);
             assertFalse(relative.isAbsolute());
-            assertArrayEquals(wrapped, await(TrustedKeyFile.readAsync(relative, WindowsTempDirectory.trustCurrentUser())));
+            assertArrayEquals(wrapped, await(TrustedKeyFile.readAsync(relative, trustCurrentWindowsUser())));
         }
     }
 
@@ -252,7 +254,7 @@ class TrustedKeyFileTest {
             // Users: Write.
             icacls(path.toString(), "/grant", "*S-1-5-32-545:(W)");
 
-            var ex = failure(AccessDeniedException.class, TrustedKeyFile.readAsync(path, WindowsTempDirectory.trustCurrentUser()));
+            var ex = failure(AccessDeniedException.class, TrustedKeyFile.readAsync(path, trustCurrentWindowsUser()));
             assertTrue(ex.getMessage().contains("grants"));
         }
     }
@@ -266,7 +268,7 @@ class TrustedKeyFileTest {
             var shortPath = Path.of(WindowsTempDirectory.shortPath(path.toString()));
 
             // The full path expands 8.3 names, so the folders checked are the real ones.
-            assertArrayEquals(wrapped, await(TrustedKeyFile.readAsync(shortPath, WindowsTempDirectory.trustCurrentUser())));
+            assertArrayEquals(wrapped, await(TrustedKeyFile.readAsync(shortPath, trustCurrentWindowsUser())));
             failure(AccessDeniedException.class, TrustedKeyFile.readAsync(shortPath, KeyFileTrust.ADMINISTRATORS_ONLY));
         }
     }
@@ -275,7 +277,7 @@ class TrustedKeyFileTest {
     @EnabledOnOs(value = OS.WINDOWS, disabledReason = "Windows only.")
     void readAsync_Windows_AMissingFile_IsNotFound() throws IOException {
         try (var dir = new WindowsTempDirectory()) {
-            failure(NoSuchFileException.class, TrustedKeyFile.readAsync(dir.path().resolve("missing.key"), WindowsTempDirectory.trustCurrentUser()));
+            failure(NoSuchFileException.class, TrustedKeyFile.readAsync(dir.path().resolve("missing.key"), trustCurrentWindowsUser()));
         }
     }
 
@@ -285,7 +287,7 @@ class TrustedKeyFileTest {
         try (var dir = new WindowsTempDirectory()) {
             var path = dir.write("v1.key", wrapped());
             try (var writer = new FileOutputStream(path.toFile(), true)) {
-                var ex = failure(IOException.class, TrustedKeyFile.readAsync(path, WindowsTempDirectory.trustCurrentUser()));
+                var ex = failure(IOException.class, TrustedKeyFile.readAsync(path, trustCurrentWindowsUser()));
                 assertFalse(ex instanceof AccessDeniedException || ex instanceof NoSuchFileException);
                 assertNotNull(writer);
             }
@@ -401,12 +403,12 @@ class TrustedKeyFileTest {
     /** True if UnixKeyFileChecks would trust {@code directory} and every directory above it. */
     private static boolean isPrivatePath(Path directory, KeyFileTrust trust) throws IOException {
         for (var item = directory.toRealPath(); item != null; item = item.getParent()) {
-            var status = UnixNative.statusOrNull(item.toString());
+            var status = UnixFiles.statusOrNull(item.toString());
             if (status == null)
                 return false;
             var trustedOwner = status.ownerId() == 0 || trust.unixUserIds().contains(status.ownerId());
-            var groupWritable = (status.mode() & UnixFileStatus.GROUP_WRITE) != 0 && !trust.unixGroupIds().contains(status.groupId());
-            if (!trustedOwner || groupWritable || (status.mode() & UnixFileStatus.OTHER_WRITE) != 0)
+            var groupWritable = status.groupWritable() && !trust.unixGroupIds().contains(status.groupId());
+            if (!trustedOwner || groupWritable || status.otherWritable())
                 return false;
         }
         // A home directory reached through a link is resolved by the checks themselves.
@@ -419,7 +421,7 @@ class TrustedKeyFileTest {
         try {
             // The probe was just created by this process, so its owner and group are this
             // process's effective user and group.
-            var status = UnixNative.statusOrNull(probe.toString());
+            var status = UnixFiles.statusOrNull(probe.toString());
             assertNotNull(status);
             return KeyFileTrust.ADMINISTRATORS_ONLY.withUnixUserIds(status.ownerId()).withUnixGroupIds(status.groupId());
         } finally {
@@ -457,5 +459,10 @@ class TrustedKeyFileTest {
             position += count;
             return count;
         }
+    }
+
+    /** Trusts the account running the tests, which owns, and may modify, its own temp folder. */
+    private static KeyFileTrust trustCurrentWindowsUser() {
+        return KeyFileTrust.ADMINISTRATORS_ONLY.withWindowsPrincipals(WindowsTempDirectory.currentUserSid());
     }
 }

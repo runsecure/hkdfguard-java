@@ -1,10 +1,12 @@
 package io.github.runsecure.hkdfguard.securefile;
 
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
+import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
+import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver.Resolution;
 import java.io.IOException;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.NoSuchFileException;
-import java.util.ArrayDeque;
-import java.util.Deque;
 
 /**
  * Decides whether a key file's path on Linux or macOS can be trusted: resolves it the way the
@@ -20,35 +22,12 @@ import java.util.Deque;
  * untrusted can change what it resolves to between the check and the open.
  */
 final class UnixKeyFileChecks {
-    /** The kernel's own limit on symbolic links followed in one lookup. */
-    static final int MAX_SYMBOLIC_LINKS = 40;
-
     private UnixKeyFileChecks() {
     }
 
-    /** lstat-style status of a path: the path itself, never what a symbolic link points to. */
-    @FunctionalInterface
-    interface StatusReader {
-        /**
-         * @return the status, or null if nothing is there
-         * @throws IOException the path could not be examined
-         */
-        UnixFileStatus statusOrNull(String path) throws IOException;
-    }
-
-    /** A symbolic link's stored target. */
-    @FunctionalInterface
-    interface LinkReader {
-        /**
-         * @return the target exactly as stored (possibly relative), or null if it can't be read as a link
-         * @throws IOException the link could not be read
-         */
-        String readLink(String path) throws IOException;
-    }
-
     /**
-     * Resolves {@code path}, checking each component, and returns the resolved path, which contains
-     * no symbolic links.
+     * Resolves {@code path} with {@link UnixPathResolver}, checking each component, and returns the
+     * resolved path, which contains no symbolic links.
      *
      * @param path      an absolute path
      * @param trust     who besides root is trusted
@@ -60,76 +39,43 @@ final class UnixKeyFileChecks {
      * @throws IOException              a component could not be examined
      * @throws IllegalArgumentException the path is not absolute
      */
-    static String resolveTrusted(String path, KeyFileTrust trust, StatusReader getStatus, LinkReader readLink) throws IOException {
-        if (!path.startsWith("/"))
-            throw new IllegalArgumentException("'" + path + "' is not an absolute path.");
+    static String resolveTrusted(String path, KeyFileTrust trust, UnixPathResolver.StatusReader getStatus,
+                                 UnixPathResolver.LinkReader readLink) throws IOException {
+        var resolution = UnixPathResolver.resolve(path, getStatus, readLink, status -> whyUntrusted(status, trust) == null,
+                uid -> isTrustedUser(uid, trust));
 
-        var root = getStatus.statusOrNull("/");
-        if (root == null)
-            throw new AccessDeniedException(path, null, "'/' could not be examined.");
-        requireTrusted("/", root, trust, path);
-
-        Deque<String> pending = new ArrayDeque<>();
-        pushComponents(pending, path);
-        var resolved = "/";
-        var resolvedType = UnixFileType.DIRECTORY;
-        var linksFollowed = 0;
-
-        while (!pending.isEmpty()) {
-            var name = pending.pop();
-            if (name.isEmpty() || name.equals("."))
-                continue;
-
-            if (resolvedType != UnixFileType.DIRECTORY)
-                throw new NoSuchFileException(path, null, "Key file '" + path + "' runs through '" + resolved + "', which is not a directory.");
-
-            if (name.equals("..")) {
-                // resolved never contains a symbolic link, so its parent is its lexical parent.
-                resolved = parentOf(resolved);
-                continue;
+        return switch (resolution) {
+            case Resolution.Resolved(var resolved, var type) -> {
+                if (type != UnixFileType.REGULAR_FILE)
+                    throw untrusted(path, "it resolves to '" + resolved + "', which is not a regular file");
+                yield resolved;
             }
-
-            var candidate = resolved.equals("/") ? "/" + name : resolved + "/" + name;
-            var status = getStatus.statusOrNull(candidate);
-            if (status == null)
-                throw new NoSuchFileException(path, null, "Key file '" + path + "' was not found ('" + candidate + "' does not exist).");
-
-            if (status.type() == UnixFileType.SYMBOLIC_LINK) {
-                if (!isTrustedUser(status.ownerId(), trust))
-                    throw untrusted(path, "'" + candidate + "' is a symbolic link owned by uid " + status.ownerId()
-                            + ", and only links owned by root or a trusted user are followed");
-                if (++linksFollowed > MAX_SYMBOLIC_LINKS)
-                    throw untrusted(path, "it follows more than " + MAX_SYMBOLIC_LINKS + " symbolic links");
-
-                var target = readLink.readLink(candidate);
-                if (target == null)
-                    throw untrusted(path, "'" + candidate + "' could not be read as a symbolic link");
-                if (target.startsWith("/"))
-                    resolved = "/";
-                pushComponents(pending, target);
-                continue;
-            }
-
-            requireTrusted(candidate, status, trust, path);
-            resolved = candidate;
-            resolvedType = status.type();
-        }
-
-        if (resolvedType != UnixFileType.REGULAR_FILE)
-            throw untrusted(path, "it resolves to '" + resolved + "', which is not a regular file");
-
-        return resolved;
+            case Resolution.RootUnreadable() -> throw new AccessDeniedException(path, null, "'/' could not be examined.");
+            case Resolution.Missing(var component) ->
+                    throw new NoSuchFileException(path, null, "Key file '" + path + "' was not found ('" + component + "' does not exist).");
+            case Resolution.NotADirectory(var component) ->
+                    throw new NoSuchFileException(path, null, "Key file '" + path + "' runs through '" + component + "', which is not a directory.");
+            case Resolution.UntrustedComponent(var component, var status) ->
+                    throw untrusted(path, "'" + component + "' " + whyUntrusted(status, trust));
+            case Resolution.UntrustedLink(var component, var status) -> throw untrusted(path, "'" + component
+                    + "' is a symbolic link owned by uid " + status.ownerId() + ", and only links owned by root or a trusted user are followed");
+            case Resolution.TooManyLinks() -> throw untrusted(path, "it follows more than " + UnixPathResolver.MAX_SYMBOLIC_LINKS + " symbolic links");
+            case Resolution.UnreadableLink(var component) -> throw untrusted(path, "'" + component + "' could not be read as a symbolic link");
+        };
     }
 
-    private static void requireTrusted(String candidate, UnixFileStatus status, KeyFileTrust trust, String path) throws AccessDeniedException {
+    // Why a directory or the file may not be on a key file's path, or null if it may.
+    private static String whyUntrusted(UnixFileStatus status, KeyFileTrust trust) {
         if (!isTrustedUser(status.ownerId(), trust))
-            throw untrusted(path, "'" + candidate + "' is owned by uid " + status.ownerId() + ", not root or a trusted user");
+            return "is owned by uid " + status.ownerId() + ", not root or a trusted user";
 
-        if ((status.mode() & UnixFileStatus.OTHER_WRITE) != 0)
-            throw untrusted(path, "'" + candidate + "' is writable by every user");
+        if (status.otherWritable())
+            return "is writable by every user";
 
-        if ((status.mode() & UnixFileStatus.GROUP_WRITE) != 0 && !trust.unixGroupIds().contains(status.groupId()))
-            throw untrusted(path, "'" + candidate + "' is writable by group " + status.groupId() + ", which is not a trusted group");
+        if (status.groupWritable() && !trust.unixGroupIds().contains(status.groupId()))
+            return "is writable by group " + status.groupId() + ", which is not a trusted group";
+
+        return null;
     }
 
     private static boolean isTrustedUser(long uid, KeyFileTrust trust) {
@@ -139,18 +85,5 @@ final class UnixKeyFileChecks {
     private static AccessDeniedException untrusted(String path, String why) {
         return new AccessDeniedException(path, null, "Key file '" + path + "' is not trusted: " + why
                 + ". Keep key files where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.");
-    }
-
-    private static void pushComponents(Deque<String> pending, String path) {
-        // -1: keep trailing empty components, as .NET's Split does; they are skipped like ".".
-        var components = path.split("/", -1);
-        for (var i = components.length - 1; i >= 0; i--)
-            pending.push(components[i]);
-    }
-
-    /** The lexical parent of an absolute path with no symbolic links; "/" is its own parent. */
-    static String parentOf(String path) {
-        var slash = path.lastIndexOf('/');
-        return slash <= 0 ? "/" : path.substring(0, slash);
     }
 }

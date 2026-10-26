@@ -5,9 +5,9 @@ HkdfGuard Key Wrapping and Secret Protection library for Java - the Java port of
 library decrypt with the other: the wire format, AAD rules, AES-GCM layout, span/metric names and
 log event ids are identical.
 
-Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-keywrapping-v1`,
-`hkdfguard-securefile` and `hkdfguard-keywrapping-awskms`, which require **Java 25** (the current
-LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
+Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-platform`,
+`hkdfguard-keywrapping-v1`, `hkdfguard-securefile` and `hkdfguard-keywrapping-awskms`, which require
+**Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
 calls and the key-file checks use the Java FFM API, which is final only from Java 22 - hence those
 modules' higher minimum. On Java 21, use the library with a `KeyWrapper` of your own in place of the
 native one. Building the library needs JDK 25; CI also
@@ -20,6 +20,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-diagnostics`               | HkdfGuard.Diagnostics                | `HkdfGuardTelemetry`, span/attribute/event/metric names, `HkdfGuardLog` |
 | `hkdfguard-abstractions`              | HkdfGuard.Abstractions               | `CryptoProvider`, `KeyWrapper`, `KeyRing`, `DataProtector`, ... ; `ProtectedCacheBase`, `ServiceNames`, `ProtectedConfigurationPurpose` |
 | `hkdfguard-cryptoprovider-aesgcm256`  | HkdfGuard.CryptoProvider.AesGcm256   | `AesGcmCryptoProviderImpl`, `AesGcmCryptoProviderFactoryImpl`, `AesGcmPipelineDataProtectorImpl` |
+| `hkdfguard-platform`                  | -                                    | Internal: the OS calls and path checks `hkdfguard-keywrapping-v1` and `hkdfguard-securefile` share - Windows security descriptors and SIDs, Linux and macOS file status, the symbolic-link-following path walk (Java 25+). Not an API for applications |
 | `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
 | `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java (Java 25+) |
 | `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
@@ -30,9 +31,11 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 
 The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
 native integration tests of several modules share (which provisioned service they use, and where key
-files may be written). It is test code only - a test-scope dependency of hkdfguard-dataencryptionkey
-and hkdfguard-cache, compiled straight into hkdfguard-keywrapping-v1's tests (which it depends on) -
-and is never published, signed or shipped in a release.
+files may be written), and `WindowsTempDirectory`, the folder the Windows key-file tests of
+hkdfguard-securefile and hkdfguard-keywrapping-awskms write to. It is test code only - a test-scope
+dependency of hkdfguard-dataencryptionkey, hkdfguard-cache, hkdfguard-securefile and
+hkdfguard-keywrapping-awskms, compiled straight into hkdfguard-keywrapping-v1's tests (which it
+depends on) - and is never published, signed or shipped in a release.
 
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
 implementing them end in `Impl` (.NET's `AwsKmsKeyWrapper` is `AwsKmsKeyWrapperImpl`).
@@ -177,12 +180,18 @@ hkdfguard:
 
 ## Native access
 
-`hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API. Run with
-`--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1` (module path) or
-`--enable-native-access=ALL-UNNAMED` (class path). `hkdfguard-securefile`, which
-`hkdfguard-keywrapping-awskms` reads key files through, makes its owner and permission checks through
-FFM too: on the module path, grant it as well
-(`--enable-native-access=io.github.runsecure.hkdfguard.securefile`). The native library is installed separately and
+`hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API, and
+`hkdfguard-securefile` (which `hkdfguard-keywrapping-awskms` reads key files through) makes its
+owner and permission checks through FFM too. The checks both share - security descriptors and SIDs
+on Windows, file status and the path walk on Linux and macOS - are made by `hkdfguard-platform`,
+which both depend on. On the class path, run with `--enable-native-access=ALL-UNNAMED`. On the module
+path, grant each of these modules you use and `hkdfguard-platform`:
+
+```text
+--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1,io.github.runsecure.hkdfguard.platform
+--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform
+```
+ The native library is installed separately and
 loaded only from its verified location, exactly as in .NET (path ACLs, Authenticode signer/root/EKU
 and PE checks on Windows, and after loading, that the module Windows mapped is the verified file;
 ownership, code signature and dyld checks on macOS; ownership, the

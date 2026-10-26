@@ -4,6 +4,9 @@ import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFiles;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsAccessRules;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -84,7 +87,7 @@ public final class TrustedKeyFile {
 
     // Wires the WindowsKeyFileChecks policy to real files; exercised by the Windows-only real-file tests.
     private static byte[] readWindows(Path path, KeyFileTrust trust) throws IOException {
-        var trusted = WindowsKeyFileChecks.trustedPrincipals(trust, WindowsNative::canonicalSid);
+        var trusted = WindowsKeyFileChecks.trustedPrincipals(trust, WindowsSecurity::canonicalSid);
         // A relative path is resolved against the working directory (user.dir), as every Java file
         // API resolves one, and then put in the form .NET's Path.GetFullPath gives it.
         var fullPath = WindowsNative.fullPath(path.toAbsolutePath().toString());
@@ -98,19 +101,19 @@ public final class TrustedKeyFile {
 
             // The file through its own handle; the folders by path, which the final-path check ties
             // to the folders it was opened through, and which no untrusted principal can then change.
-            WindowsKeyFileChecks.verifyTrustedOnly(file.securityDescriptor(), fullPath, fullPath, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted,
-                    WindowsNative::accountName);
+            WindowsKeyFileChecks.verifyTrustedOnly(file.securityDescriptor(), fullPath, fullPath, WindowsAccessRules.GUARDED_RIGHTS, trusted,
+                    WindowsSecurity::accountName);
             for (var folder = Path.of(fullPath).getParent(); folder != null; folder = folder.getParent()) {
                 var name = folder.toString();
-                var security = WindowsNative.securityDescriptorOf(name);
+                var security = WindowsSecurity.securityDescriptorOf(name);
                 if (folder.getParent() == null) {
-                    WindowsKeyFileChecks.verifyTrustedOnly(security, fullPath, name, WindowsKeyFileChecks.GUARDED_ROOT_RIGHTS, trusted,
-                            WindowsNative::accountName);
+                    WindowsKeyFileChecks.verifyTrustedOnly(security, fullPath, name, WindowsAccessRules.GUARDED_ROOT_RIGHTS, trusted,
+                            WindowsSecurity::accountName);
                     break;
                 }
 
-                WindowsKeyFileChecks.verifyNotReparsePoint(WindowsNative.fileAttributes(name), fullPath, name);
-                WindowsKeyFileChecks.verifyTrustedOnly(security, fullPath, name, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted, WindowsNative::accountName);
+                WindowsKeyFileChecks.verifyNotReparsePoint(WindowsSecurity.fileAttributes(name), fullPath, name);
+                WindowsKeyFileChecks.verifyTrustedOnly(security, fullPath, name, WindowsAccessRules.GUARDED_RIGHTS, trusted, WindowsSecurity::accountName);
             }
 
             return readContents(new InputStream() {
@@ -140,7 +143,7 @@ public final class TrustedKeyFile {
             var workingDirectory = System.getProperty("user.dir");
             absolute = workingDirectory.endsWith("/") ? workingDirectory + text : workingDirectory + "/" + text;
         }
-        var resolved = UnixKeyFileChecks.resolveTrusted(absolute, trust, UnixNative::statusOrNull, UnixNative::readLink);
+        var resolved = UnixKeyFileChecks.resolveTrusted(absolute, trust, UnixFiles::statusOrNull, UnixFiles::readLink);
 
         try (var stream = Files.newInputStream(Path.of(resolved))) {
             return readContents(stream, text);

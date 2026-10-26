@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.runsecure.hkdfguard.platform.windows.WindowsAccessRules;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.nio.file.AccessDeniedException;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -37,15 +39,15 @@ class WindowsKeyFileChecksTest {
     private static final int READ_AND_EXECUTE_SYNCHRONIZE = 0x1200A9;
 
     private static List<String> trusted(String... extra) {
-        return WindowsKeyFileChecks.trustedPrincipals(KeyFileTrust.ADMINISTRATORS_ONLY.withWindowsPrincipals(extra), WindowsNative::canonicalSid);
+        return WindowsKeyFileChecks.trustedPrincipals(KeyFileTrust.ADMINISTRATORS_ONLY.withWindowsPrincipals(extra), WindowsSecurity::canonicalSid);
     }
 
     private static String allow(String who, int rights) {
         return String.format("(A;;0x%X;;;%s)", rights, who);
     }
 
-    private static WindowsNative.SecurityDescriptorInfo security(String owner, String... aces) {
-        return WindowsNative.securityDescriptorFromSddl("O:" + owner + "D:" + String.join("", aces));
+    private static WindowsSecurity.SecurityDescriptorInfo security(String owner, String... aces) {
+        return WindowsSecurity.securityDescriptorFromSddl("O:" + owner + "D:" + String.join("", aces));
     }
 
     private static String[] lockedAces(String... extra) {
@@ -58,13 +60,13 @@ class WindowsKeyFileChecksTest {
         return aces;
     }
 
-    private static WindowsNative.SecurityDescriptorInfo locked(String owner, String... extra) {
+    private static WindowsSecurity.SecurityDescriptorInfo locked(String owner, String... extra) {
         return security(owner, lockedAces(extra));
     }
 
-    private static void verify(WindowsNative.SecurityDescriptorInfo security, String item, int guardedRights, List<String> trusted)
+    private static void verify(WindowsSecurity.SecurityDescriptorInfo security, String item, int guardedRights, List<String> trusted)
             throws AccessDeniedException {
-        WindowsKeyFileChecks.verifyTrustedOnly(security, KEY_FILE, item, guardedRights, trusted, WindowsNative::accountName);
+        WindowsKeyFileChecks.verifyTrustedOnly(security, KEY_FILE, item, guardedRights, trusted, WindowsSecurity::accountName);
     }
 
     @Test
@@ -156,76 +158,76 @@ class WindowsKeyFileChecksTest {
     @Test
     void verifyNotReparsePoint_JunctionOrLink_IsRefused() {
         assertThrows(AccessDeniedException.class, () ->
-                WindowsKeyFileChecks.verifyNotReparsePoint(0x10 | WindowsNative.FILE_ATTRIBUTE_REPARSE_POINT, KEY_FILE, "C:\\HkdfGuardKeys"));
+                WindowsKeyFileChecks.verifyNotReparsePoint(0x10 | WindowsSecurity.FILE_ATTRIBUTE_REPARSE_POINT, KEY_FILE, "C:\\HkdfGuardKeys"));
     }
 
     @Test
     void verifyNotReparsePoint_AFolderThatCanNotBeExamined_IsRefused() {
         assertThrows(AccessDeniedException.class, () ->
-                WindowsKeyFileChecks.verifyNotReparsePoint(WindowsNative.INVALID_FILE_ATTRIBUTES, KEY_FILE, "C:\\HkdfGuardKeys"));
+                WindowsKeyFileChecks.verifyNotReparsePoint(WindowsSecurity.INVALID_FILE_ATTRIBUTES, KEY_FILE, "C:\\HkdfGuardKeys"));
     }
 
     @Test
     void verifyTrustedOnly_TrustedOwnerAndReadOnlyForEveryoneElse_Passes() {
-        assertDoesNotThrow(() -> verify(locked(ADMINISTRATORS), KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        assertDoesNotThrow(() -> verify(locked(ADMINISTRATORS), KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
     }
 
     @Test
     void verifyTrustedOnly_UntrustedOwner_IsRefused() {
-        var ex = assertThrows(AccessDeniedException.class, () -> verify(locked(USERS), KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        var ex = assertThrows(AccessDeniedException.class, () -> verify(locked(USERS), KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
         assertTrue(ex.getMessage().contains("is owned by"));
     }
 
     @Test
     void verifyTrustedOnly_NoOwner_IsRefused() {
-        var noOwner = WindowsNative.securityDescriptorFromSddl("D:" + allow(SYSTEM, FULL_CONTROL));
+        var noOwner = WindowsSecurity.securityDescriptorFromSddl("D:" + allow(SYSTEM, FULL_CONTROL));
 
-        var ex = assertThrows(AccessDeniedException.class, () -> verify(noOwner, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        var ex = assertThrows(AccessDeniedException.class, () -> verify(noOwner, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
         assertTrue(ex.getMessage().contains("an unknown principal"));
     }
 
     @Test
     void verifyTrustedOnly_NoDacl_IsRefused() {
         // A NULL DACL grants everyone everything.
-        var noDacl = WindowsNative.securityDescriptorFromSddl("O:BAD:NO_ACCESS_CONTROL");
+        var noDacl = WindowsSecurity.securityDescriptorFromSddl("O:BAD:NO_ACCESS_CONTROL");
 
-        var ex = assertThrows(AccessDeniedException.class, () -> verify(noDacl, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        var ex = assertThrows(AccessDeniedException.class, () -> verify(noDacl, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
         assertTrue(ex.getMessage().contains("no DACL"));
     }
 
     @ParameterizedTest
     @ValueSource(ints = {
-            WindowsKeyFileChecks.WRITE_DATA,
-            WindowsKeyFileChecks.APPEND_DATA,
-            WindowsKeyFileChecks.WRITE_EXTENDED_ATTRIBUTES,
-            WindowsKeyFileChecks.DELETE_SUBDIRECTORIES_AND_FILES,
-            WindowsKeyFileChecks.DELETE,
-            WindowsKeyFileChecks.CHANGE_PERMISSIONS,
-            WindowsKeyFileChecks.TAKE_OWNERSHIP,
+            WindowsAccessRules.WRITE_DATA,
+            WindowsAccessRules.APPEND_DATA,
+            WindowsAccessRules.WRITE_EXTENDED_ATTRIBUTES,
+            WindowsAccessRules.DELETE_SUBDIRECTORIES_AND_FILES,
+            WindowsAccessRules.DELETE,
+            WindowsAccessRules.CHANGE_PERMISSIONS,
+            WindowsAccessRules.TAKE_OWNERSHIP,
             MODIFY,
             FULL_CONTROL,
     })
     void verifyTrustedOnly_AnyWriteRightForAnUntrustedPrincipal_IsRefused(int rights) {
         var security = locked(ADMINISTRATORS, allow(USERS, rights));
 
-        assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"GA", "GW"}) // GENERIC_ALL, GENERIC_WRITE
     void verifyTrustedOnly_UnmappedGenericRights_AreRefused(String right) {
         // A real ACE can carry generic bits unmapped.
-        var security = WindowsNative.securityDescriptorFromSddl("O:BAD:(A;;FA;;;SY)(A;;" + right + ";;;BU)");
+        var security = WindowsSecurity.securityDescriptorFromSddl("O:BAD:(A;;FA;;;SY)(A;;" + right + ";;;BU)");
 
-        assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
     }
 
     @Test
     void verifyTrustedOnly_ATrustedDeployerMayOwnAndModify() {
         var security = locked(DEPLOYERS, allow(DEPLOYERS, MODIFY));
 
-        assertDoesNotThrow(() -> verify(security, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted(DEPLOYERS)));
-        assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        assertDoesNotThrow(() -> verify(security, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted(DEPLOYERS)));
+        assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
     }
 
     @Test
@@ -234,38 +236,38 @@ class WindowsKeyFileChecksTest {
         var security = security(ADMINISTRATORS, allow(ADMINISTRATORS, FULL_CONTROL), "(D;;FA;;;" + USERS + ")",
                 String.format("(A;OICIIO;0x%X;;;%s)", MODIFY, AUTHENTICATED_USERS));
 
-        assertDoesNotThrow(() -> verify(security, "C:\\HkdfGuardKeys", WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        assertDoesNotThrow(() -> verify(security, "C:\\HkdfGuardKeys", WindowsAccessRules.GUARDED_RIGHTS, trusted()));
     }
 
     @Test
     void verifyTrustedOnly_AnEntryItCanNotEvaluate_IsRefused() {
         // An allow-object ACE (type 0x05): its trustee can't be read the plain way.
-        var security = WindowsNative.securityDescriptorFromSddl(
+        var security = WindowsSecurity.securityDescriptorFromSddl(
                 "O:BAD:(A;;FA;;;SY)(OA;;0x2;bf967aba-0de6-11d0-a285-00aa003049e2;;BU)");
 
-        var ex = assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        var ex = assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
         assertTrue(ex.getMessage().contains("can't evaluate"));
     }
 
     @Test
     void verifyTrustedOnly_DriveRoot_AllowsCreatingFoldersButNotRenamingThem() {
         // A default C:\: Authenticated Users may create folders (AppendData) in the root itself.
-        var root = locked(TRUSTED_INSTALLER, allow(AUTHENTICATED_USERS, WindowsKeyFileChecks.APPEND_DATA));
-        assertDoesNotThrow(() -> verify(root, "C:\\", WindowsKeyFileChecks.GUARDED_ROOT_RIGHTS, trusted()));
+        var root = locked(TRUSTED_INSTALLER, allow(AUTHENTICATED_USERS, WindowsAccessRules.APPEND_DATA));
+        assertDoesNotThrow(() -> verify(root, "C:\\", WindowsAccessRules.GUARDED_ROOT_RIGHTS, trusted()));
 
         // The same entry on any folder below the root is refused: they could create files there.
-        assertThrows(AccessDeniedException.class, () -> verify(root, "C:\\HkdfGuardKeys", WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        assertThrows(AccessDeniedException.class, () -> verify(root, "C:\\HkdfGuardKeys", WindowsAccessRules.GUARDED_RIGHTS, trusted()));
 
-        var renamable = locked(TRUSTED_INSTALLER, allow(AUTHENTICATED_USERS, WindowsKeyFileChecks.APPEND_DATA),
-                allow(AUTHENTICATED_USERS, WindowsKeyFileChecks.DELETE_SUBDIRECTORIES_AND_FILES));
-        assertThrows(AccessDeniedException.class, () -> verify(renamable, "C:\\", WindowsKeyFileChecks.GUARDED_ROOT_RIGHTS, trusted()));
+        var renamable = locked(TRUSTED_INSTALLER, allow(AUTHENTICATED_USERS, WindowsAccessRules.APPEND_DATA),
+                allow(AUTHENTICATED_USERS, WindowsAccessRules.DELETE_SUBDIRECTORIES_AND_FILES));
+        assertThrows(AccessDeniedException.class, () -> verify(renamable, "C:\\", WindowsAccessRules.GUARDED_ROOT_RIGHTS, trusted()));
     }
 
     @Test
     void verifyTrustedOnly_DescribesAnUnmappableSidByItsValue() {
         var security = locked(ADMINISTRATORS, allow(DEPLOYERS, WRITE));
 
-        var ex = assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsKeyFileChecks.GUARDED_RIGHTS, trusted()));
+        var ex = assertThrows(AccessDeniedException.class, () -> verify(security, KEY_FILE, WindowsAccessRules.GUARDED_RIGHTS, trusted()));
         assertTrue(ex.getMessage().contains(DEPLOYERS));
         assertTrue(ex.getMessage().contains("grants 0x00000116 (WriteData, AppendData, WriteExtendedAttributes, WriteAttributes)"));
     }

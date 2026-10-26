@@ -15,6 +15,7 @@ import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProviderFactoryImpl;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
+import io.github.runsecure.hkdfguard.testsupport.WindowsTempDirectory;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
@@ -444,7 +445,7 @@ class AwsKmsKeyWrapperImplTest {
     @EnabledOnOs(value = OS.WINDOWS, disabledReason = "Windows only.")
     void readKeyFile_WithTheWritersAccountTrusted_ReadsTheFile() throws IOException {
         var kms = new FakeKms();
-        var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN, CONTEXT, WindowsTempDirectory.trustCurrentUser());
+        var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN, CONTEXT, trustCurrentWindowsUser());
         try (var dir = new WindowsTempDirectory()) {
             var wrapped = new byte[WrappedKeyLimits.MAX_BYTES];
             int length = await(wrapper.generateAndWrapAsync(wrapped));
@@ -491,5 +492,10 @@ class AwsKmsKeyWrapperImplTest {
         var wrapper = new AwsKmsKeyWrapperImpl(new FakeKms(), KEY_ARN);
 
         assertThrows(NullPointerException.class, () -> wrapper.readKeyFileAsync((Path) null));
+    }
+
+    /** Trusts the account running the tests, which owns, and may modify, its own temp folder. */
+    private static KeyFileTrust trustCurrentWindowsUser() {
+        return KeyFileTrust.ADMINISTRATORS_ONLY.withWindowsPrincipals(WindowsTempDirectory.currentUserSid());
     }
 }

@@ -19,23 +19,36 @@
   </description>
 
   <!--
-    Applications must grant this module native access with the JVM's enable-native-access option,
-    naming io.github.runsecure.hkdfguard.securefile (or ALL-UNNAMED on the class path): the owner,
+    Applications must grant this module and hkdfguard-platform native access with the JVM's
+    enable-native-access option, naming io.github.runsecure.hkdfguard.securefile and
+    io.github.runsecure.hkdfguard.platform (or ALL-UNNAMED on the class path): the owner,
     permission and final-path checks are system calls (advapi32 and kernel32 on Windows, statx or
-    lstat and readlink on Linux and macOS) made through the FFM API.
+    lstat and readlink on Linux and macOS) made through the FFM API. The ones the native library
+    loader also makes - security descriptors, SIDs, file status and the path walk - are
+    hkdfguard-platform's.
   -->
 
   <properties>
     <!-- Java 25, like hkdfguard-keywrapping-v1: the key-file checks call the operating system
          through the Foreign Function & Memory API, final only from Java 22. -->
     <maven.compiler.release>25</maven.compiler.release>
-    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,ALL-UNNAMED</hkdfguard.test.argLine>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
   </properties>
 
   <dependencies>
     <dependency>
       <groupId>io.github.runsecure</groupId>
       <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-platform</artifactId>
+    </dependency>
+    <!-- WindowsTempDirectory, for the Windows real-file tests. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>
