@@ -166,7 +166,10 @@ hkdfguard:
 - **Health:** with Actuator, `/actuator/health` gains an `hkdfguard` component that encrypts and
   decrypts a random probe with the current key. It reports `DOWN` when that key can't protect new
   values, most often because it failed closed after its KEK was revoked or became unreachable.
-  It never calls the KMS, and its only detail is `currentVersion`. Turn it off with
+  It never calls the KMS. Its details are `currentVersion` (the key checked) and, when it is
+  `DOWN`, `error`: a fixed message when the probe doesn't decrypt to what was encrypted, or, when
+  the check throws, the exception's class and message (added by Spring's
+  `AbstractHealthIndicator`). No key material, probe or ciphertext is reported. Turn it off with
   `management.health.hkdfguard.enabled=false`.
 
 ## Native access
@@ -177,7 +180,8 @@ hkdfguard:
 loaded only from its verified location, exactly as in .NET (path ACLs, Authenticode signer/root/EKU
 and PE checks on Windows, and after loading, that the module Windows mapped is the verified file;
 ownership, code signature and dyld checks on macOS; ownership, the
-dynamic linker's environment and every loaded dependency on Linux).
+dynamic linker's environment, where it would find every dependency (asked before loading) and
+every loaded dependency on Linux).
 
 Installed locations:
 
@@ -235,6 +239,12 @@ enforces. Before loading, it requires all of the following:
   service's environment: whatever `LD_PRELOAD` or `LD_AUDIT` loads runs when the process starts,
   before the check, and can hide from it. Protect the service's environment (its unit file,
   container spec or launch configuration) as carefully as its binaries.
+- The process's own dynamic linker (its `PT_INTERP`, which must pass the same ownership checks) is
+  asked in list mode (`ld.so --list`, what `ldd` uses), under the `LD_LIBRARY_PATH` and
+  `LD_PRELOAD` the process started with and nothing else, where it would find every library
+  `libhkdfguard.so.1` pulls in. Each must pass the same ownership checks, so a dependency found
+  somewhere writable is refused before any of its code runs, and a dependency it can't find refuses
+  the load. Preloaded objects are listed too, including ones `LD_PRELOAD` names without a path.
 
 On macOS the loader also refuses while `DYLD_INSERT_LIBRARIES`, `DYLD_FRAMEWORK_PATH`,
 `DYLD_VERSIONED_LIBRARY_PATH`, `DYLD_VERSIONED_FRAMEWORK_PATH` or `DYLD_IMAGE_SUFFIX` is set: each
@@ -260,7 +270,8 @@ touches a KEK) and refuses a file that is missing, unreadable, the wrong size fo
 not a valid wrapped payload, or that holds what looks like an unwrapped key (32 raw bytes, or their
 hex or base64) - and a file whose location isn't trusted: a symbolic link, junction or other
 reparse point, an 8.3 short name, a UNC, mapped or SUBST drive, or a file or folder another account
-could write or replace. Each refusal is an `IOException` naming the path and the native status:
+could write or replace. Each refusal names the path and the native status, and is an
+`IllegalArgumentException` for -1 (invalid argument) and otherwise an `IOException`:
 `NoSuchFileException` (-32), `AccessDeniedException` (-33 access denied, -39 untrusted location),
 `InvalidKeyFileException` (-35 too short, -36 too long, -37 plaintext key, -38 malformed), or a
 plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has no default, so

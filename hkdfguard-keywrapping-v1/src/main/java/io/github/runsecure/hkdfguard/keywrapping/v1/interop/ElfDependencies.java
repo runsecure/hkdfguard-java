@@ -13,9 +13,10 @@ import java.util.List;
 
 /**
  * Reads the DT_NEEDED entries - the shared libraries an ELF object asks the dynamic linker to load
- * - from a 64-bit little-endian ELF file (x86-64 and arm64 Linux). Only the ELF header, the program
- * headers, the dynamic segment and its string table are read. Anything malformed is refused: the
- * caller is deciding whether to trust what the file pulled into the process. A port of the .NET
+ * - and the PT_INTERP path - the dynamic linker an executable names - from a 64-bit little-endian
+ * ELF file (x86-64 and arm64 Linux). Only the ELF header, the program headers, the interpreter path,
+ * the dynamic segment and its string table are read, each bounded. Anything malformed is refused:
+ * the caller is deciding whether to trust what the file pulled into the process. A port of the .NET
  * port's ElfDependencies.
  */
 final class ElfDependencies {
@@ -27,6 +28,10 @@ final class ElfDependencies {
 
     private static final int PT_LOAD = 1;
     private static final int PT_DYNAMIC = 2;
+    private static final int PT_INTERP = 3;
+
+    /** Bounds PT_INTERP, a path: PATH_MAX. */
+    static final int MAX_INTERPRETER_BYTES = 4096;
 
     private static final long DT_NULL = 0;
     private static final long DT_NEEDED = 1;
@@ -42,6 +47,16 @@ final class ElfDependencies {
     private record Load(long virtualAddress, long fileSize, long offset) {
     }
 
+    /** The program header table, little-endian, and the size and number of its entries. */
+    private record ProgramHeaders(ByteBuffer table, int entrySize, int count) {
+    }
+
+    /** Parses through a {@link RangeReader} over an open file. */
+    @FunctionalInterface
+    private interface Parser<T> {
+        T parse(RangeReader read);
+    }
+
     private ElfDependencies() {
     }
 
@@ -52,8 +67,23 @@ final class ElfDependencies {
      * @throws UncheckedIOException the file could not be read
      */
     static List<String> readNeeded(String path) {
+        return parseFile(path, read -> readNeeded(path, read));
+    }
+
+    /**
+     * The PT_INTERP path of the ELF file at {@code path} - for an executable, the dynamic linker the
+     * kernel started it with - or null if it has none.
+     *
+     * @throws SecurityException    the file is not a well-formed 64-bit little-endian ELF object
+     * @throws UncheckedIOException the file could not be read
+     */
+    static String readInterpreter(String path) {
+        return parseFile(path, read -> readInterpreter(path, read));
+    }
+
+    private static <T> T parseFile(String path, Parser<T> parser) {
         try (var file = FileChannel.open(Path.of(path), StandardOpenOption.READ)) {
-            return readNeeded(path, (offset, count) -> {
+            return parser.parse((offset, count) -> {
                 try {
                     var buffer = ByteBuffer.allocate(count);
                     while (buffer.hasRemaining()) {
@@ -75,20 +105,10 @@ final class ElfDependencies {
      * @param read reads exactly count bytes at offset, or returns null if the file is shorter
      */
     static List<String> readNeeded(String path, RangeReader read) {
-        var header = read(path, read, 0, HEADER_SIZE, "ELF header");
-        if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F')
-            throw malformed(path, "it is not an ELF file");
-        if (header[4] != 2 || header[5] != 1)
-            throw malformed(path, "it is not a 64-bit little-endian ELF file");
-
-        var h = littleEndian(header);
-        var programHeaderOffset = toOffset(path, h.getLong(32));
-        var programHeaderSize = Short.toUnsignedInt(h.getShort(54));
-        var programHeaderCount = Short.toUnsignedInt(h.getShort(56));
-        if (programHeaderSize < PROGRAM_HEADER_SIZE || programHeaderCount == 0 || programHeaderCount > MAX_PROGRAM_HEADERS)
-            throw malformed(path, "its program header table is malformed");
-
-        var programHeaders = littleEndian(read(path, read, programHeaderOffset, programHeaderSize * programHeaderCount, "program headers"));
+        var headers = readProgramHeaders(path, read);
+        var programHeaders = headers.table();
+        var programHeaderSize = headers.entrySize();
+        var programHeaderCount = headers.count();
         var loads = new ArrayList<Load>();
         long dynamicOffset = -1;
         var dynamicSize = 0;
@@ -167,6 +187,58 @@ final class ElfDependencies {
         }
 
         return List.copyOf(names);
+    }
+
+    /**
+     * @param path the file's name, for messages
+     * @param read reads exactly count bytes at offset, or returns null if the file is shorter
+     * @return the PT_INTERP path, or null if there is none
+     */
+    static String readInterpreter(String path, RangeReader read) {
+        var headers = readProgramHeaders(path, read);
+        var programHeaders = headers.table();
+        for (var i = 0; i < headers.count(); i++) {
+            var at = i * headers.entrySize();
+            if (programHeaders.getInt(at) != PT_INTERP)
+                continue;
+
+            var offset = toOffset(path, programHeaders.getLong(at + 8));
+            var fileSize = programHeaders.getLong(at + 32);
+            if (fileSize <= 0 || fileSize > MAX_INTERPRETER_BYTES) // unsigned: a negative long is huge
+                throw malformed(path, "its interpreter path is empty or implausibly long");
+
+            var raw = read(path, read, offset, (int) fileSize, "interpreter path");
+            var end = 0;
+            while (end < raw.length && raw[end] != 0)
+                end++;
+            if (end == 0 || end == raw.length)
+                throw malformed(path, "its interpreter path is not a NUL-terminated string");
+
+            return new String(raw, 0, end, StandardCharsets.UTF_8);
+        }
+
+        return null;
+    }
+
+    // Validates the ELF header and reads the program header table.
+    private static ProgramHeaders readProgramHeaders(String path, RangeReader read) {
+        var header = read(path, read, 0, HEADER_SIZE, "ELF header");
+        if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F')
+            throw malformed(path, "it is not an ELF file");
+        if (header[4] != 2 || header[5] != 1)
+            throw malformed(path, "it is not a 64-bit little-endian ELF file");
+
+        var h = littleEndian(header);
+        var programHeaderOffset = toOffset(path, h.getLong(32));
+        var programHeaderSize = Short.toUnsignedInt(h.getShort(54));
+        var programHeaderCount = Short.toUnsignedInt(h.getShort(56));
+        if (programHeaderSize < PROGRAM_HEADER_SIZE || programHeaderCount == 0 || programHeaderCount > MAX_PROGRAM_HEADERS)
+            throw malformed(path, "its program header table is malformed");
+
+        // Both fields are 16-bit, so their product can reach 256 MB; bound the table like every
+        // other region read, before anything is allocated for it.
+        var tableBytes = toSize(path, (long) programHeaderSize * programHeaderCount, "program header table");
+        return new ProgramHeaders(littleEndian(read(path, read, programHeaderOffset, tableBytes, "program headers")), programHeaderSize, programHeaderCount);
     }
 
     private static ByteBuffer littleEndian(byte[] bytes) {

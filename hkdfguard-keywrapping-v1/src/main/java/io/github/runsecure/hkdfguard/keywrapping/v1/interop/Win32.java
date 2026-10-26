@@ -22,10 +22,16 @@ import java.util.List;
 /**
  * The Win32 calls the Windows loader's checks rely on, bound through the FFM API: known-folder
  * lookup, file attributes, security descriptors and SIDs, WinVerifyTrust, and LoadLibraryExW /
- * GetProcAddress. kernel32 is a KnownDLL, always mapped from System32; every other system library
- * is loaded by its absolute System32 path, so nothing here can be planted in the application
- * directory or on PATH. Each library is bound only on first use, so this class is inert off
- * Windows. 64-bit Windows only - the only Windows the JDK still supports.
+ * GetProcAddress. kernel32 is a KnownDLL, always mapped from System32. Every other system library
+ * here (shell32, ole32, advapi32, wintrust, version) is loaded by its absolute System32 path
+ * through {@link SymbolLookup#libraryLookup(Path, Arena)}, a plain LoadLibrary of that path: the
+ * library itself can't be planted in the application directory or on PATH, but the imports it
+ * pulls in that aren't KnownDLLs (wintrust.dll's crypt32.dll and msasn1.dll, for example) are
+ * found by the default DLL search order, which starts at the application directory - the JDK's
+ * bin folder. The HkdfGuard DLL is loaded differently ({@link #loadLibrary}): LoadLibraryExW with
+ * LOAD_LIBRARY_SEARCH_SYSTEM32, so its dependencies come from System32 only. Each library is bound
+ * only on first use, so this class is inert off Windows. 64-bit Windows only - the only Windows
+ * the JDK still supports.
  */
 @SuppressWarnings("restricted") // Native access is this class's purpose; the module requires --enable-native-access.
 final class Win32 {

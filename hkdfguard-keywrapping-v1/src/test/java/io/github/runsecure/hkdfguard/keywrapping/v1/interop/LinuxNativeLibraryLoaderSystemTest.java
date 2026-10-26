@@ -172,6 +172,92 @@ class LinuxNativeLibraryLoaderSystemTest {
         assertTrue(ex.getMessage().contains("libhkdfguard1"));
     }
 
+    // The real dynamic linker in list mode, against files every Linux system has (Go's
+    // linuxpreflight_linux_test.go).
+    private static List<String> listingFor(String target, Map<String, String> environment) {
+        var interpreter = ElfDependencies.readInterpreter(LinuxNativeLibraryLoader.SELF_EXECUTABLE);
+        assertNotNull(interpreter);
+        return LinuxNativeLibraryLoader.parseListing(target, LinuxNativeLibraryLoader.listDependencies(interpreter, target, environment));
+    }
+
+    private static String libcIn(List<String> paths) {
+        var libc = paths.stream().filter(p -> Path.of(p).getFileName().toString().startsWith("libc.so")).findFirst().orElse(null);
+        Assumptions.assumeTrue(libc != null, "No libc in /bin/sh's listing.");
+        return libc;
+    }
+
+    @Test
+    void theListingOfASystemBinary_NamesLibc_AndPassesThePathChecks() {
+        var paths = listingFor("/bin/sh", Map.of());
+
+        assertTrue(paths.stream().anyMatch(p -> Path.of(p).getFileName().toString().contains("libc.so")), paths.toString());
+        LinuxNativeLibraryLoader.verifyListing("/bin/sh", paths, LinuxNativeLibraryLoaderSystemTest::resolve);
+    }
+
+    @Test
+    void aDependencyFoundInAWritableFolder_IsRefusedBeforeAnythingLoads() throws IOException {
+        // The real dynamic linker, told by LD_LIBRARY_PATH to look in a folder anyone can write,
+        // finds a copy of libc there; the check refuses it whoever owns it, since the folder is 0777.
+        var libc = libcIn(listingFor("/bin/sh", Map.of()));
+        var folder = Files.createTempDirectory("hkdfguard-listing-");
+        var planted = folder.resolve(Path.of(libc).getFileName());
+        try {
+            Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("rwxrwxrwx"));
+            Files.copy(Path.of(libc), planted);
+            Files.setPosixFilePermissions(planted, PosixFilePermissions.fromString("rwxr-xr-x"));
+
+            var paths = listingFor("/bin/sh", Map.of("LD_LIBRARY_PATH", folder.toString()));
+            assertTrue(paths.contains(planted.toString()), "the linker did not pick up the planted copy: " + paths);
+
+            var ex = assertThrows(SecurityException.class,
+                    () -> LinuxNativeLibraryLoader.verifyListing("/bin/sh", paths, LinuxNativeLibraryLoaderSystemTest::resolve));
+            assertTrue(ex.getMessage().contains(planted.toString()), ex.getMessage());
+            assertTrue(ex.getMessage().contains("nothing was loaded"), ex.getMessage());
+        } finally {
+            Files.deleteIfExists(planted);
+            Files.delete(folder);
+        }
+    }
+
+    @Test
+    void aBareNamedPreload_IsListedWithTheFileItWasFoundIn() {
+        // Java-only: the environment check skips bare-named LD_PRELOAD entries; the list run, given
+        // the startup LD_PRELOAD, reports where each was found, so the path checks still see it.
+        var libc = libcIn(listingFor("/bin/sh", Map.of()));
+        var libm = Path.of(libc).resolveSibling("libm.so.6");
+        Assumptions.assumeTrue(Files.exists(libm), "No libm.so.6 beside libc.");
+
+        var paths = listingFor("/bin/sh", Map.of("LD_PRELOAD", "libm.so.6"));
+        assertTrue(paths.stream().anyMatch(p -> Path.of(p).getFileName().toString().equals("libm.so.6")), paths.toString());
+        LinuxNativeLibraryLoader.verifyListing("/bin/sh", paths, LinuxNativeLibraryLoaderSystemTest::resolve);
+    }
+
+    @Test
+    void theListingOfAFileThatDoesNotExist_Fails() {
+        var interpreter = ElfDependencies.readInterpreter(LinuxNativeLibraryLoader.SELF_EXECUTABLE);
+
+        assertThrows(SecurityException.class, () -> LinuxNativeLibraryLoader.listDependencies(interpreter, "/nonexistent/libhkdfguard.so.1", Map.of()));
+    }
+
+    @Test
+    void theListingOfASharedLibrary_NamesTheDynamicLinker() {
+        // libhkdfguard.so.1 is a shared object, not an executable; list mode works on those too.
+        var libc = libcIn(listingFor("/bin/sh", Map.of()));
+        var paths = listingFor(libc, Map.of());
+
+        assertTrue(paths.stream().anyMatch(p -> Path.of(p).getFileName().toString().contains("ld-linux")), libc + ": " + paths);
+        LinuxNativeLibraryLoader.verifyListing(libc, paths, LinuxNativeLibraryLoaderSystemTest::resolve);
+    }
+
+    @Test
+    void thisProcesssLibc_PassesTheWholePreLoadCheck() {
+        // Java-only: verifyBeforeLoading end to end - PT_INTERP, its path checks, the list run
+        // under this process's own startup environment, and the path checks on what it lists.
+        var libc = resolve(LinuxNative.loadedPath("libc.so.6"));
+
+        LinuxNativeLibraryLoader.verifyBeforeLoading(libc, LinuxNative.readInitialEnvironment(), LinuxNativeLibraryLoaderSystemTest::resolve);
+    }
+
     @Test
     void theInstalledLibrary_IsInATrustedLocation() {
         var path = NativeTestEnvironment.assumeLinuxLibraryInstalled();

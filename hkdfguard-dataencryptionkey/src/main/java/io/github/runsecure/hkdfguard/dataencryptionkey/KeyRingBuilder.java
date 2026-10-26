@@ -207,6 +207,13 @@ public final class KeyRingBuilder {
      * available - 1-300, so a bad value fails here, not at build. A revocation check, not a limit on
      * how long the DEK stays in memory. Together with {@link #getMaxRefreshFailures()} it sets how
      * quickly a revoked KEK stops a running process.
+     * <p>
+     * It is also each refresh's deadline: a reveal that takes longer than one interval counts as a
+     * failed refresh, so a hung key wrapper can't keep a revoked KEK's key in use. A short interval
+     * is therefore a short deadline. A TPM-backed KEK can take more than a second to answer, longer
+     * while other processes share the TPM, and a locked macOS keychain stalls the call; under the
+     * default fail-closed policy, that many slow answers in a row suspend the key though the KEK is
+     * healthy. Keep it at 10 seconds or more for TPM-backed keys.
      *
      * @throws IllegalArgumentException keyRefreshInterval is not between 1 and 300
      */

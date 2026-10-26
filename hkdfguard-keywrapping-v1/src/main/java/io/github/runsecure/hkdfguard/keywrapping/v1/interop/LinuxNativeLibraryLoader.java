@@ -1,21 +1,31 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
@@ -43,12 +53,19 @@ import java.util.stream.Collectors;
  * LD_AUDIT object must pass the same path checks, and none may be relative, empty (the working
  * directory) or use $ORIGIN-style substitutions. Both the environment the process started with
  * (/proc/self/environ, what the dynamic linker read) and the current one are checked.</li>
+ * <li><b>What would be loaded.</b> Before dlopen, the process's own dynamic linker (its PT_INTERP,
+ * which must pass the path checks) is asked, in list mode (ld.so --list, the mechanism ldd uses),
+ * where it would find every object the library pulls in, under the LD_LIBRARY_PATH and LD_PRELOAD
+ * the process started with. List mode resolves exactly as dlopen would - RUNPATH, ld.so.cache and
+ * all - but runs none of the libraries' code, so every path it reports must pass the path checks
+ * before any of it can run here. A name it can't find refuses the load.</li>
  * <li><b>What was loaded.</b> After dlopen, dladdr must place the library's export in the verified
  * file, and every object in its dependency closure (read from each file's DT_NEEDED entries) must
- * be bound to a file that passes the path checks. This catches a dependency the process had already
- * loaded from somewhere else under the same name. On failure the library is unloaded - though, as on
- * macOS, any initializer an impostor had has already run; the environment check exists so that it
- * never gets that far in practice.</li>
+ * be bound to a file that passes the path checks. This catches what list mode can't see: a
+ * dependency name the process had already bound to some other object before the library was
+ * loaded. On failure the library is unloaded - though, as on macOS, any initializer an impostor had
+ * has already run; the environment check and the list run exist so that it never gets that far in
+ * practice.</li>
  * </ol>
  * The file's content is not pinned: a release's authenticity is verified with Sigstore/cosign when
  * the package is installed, so path integrity is what this loader enforces.
@@ -77,6 +94,12 @@ final class LinuxNativeLibraryLoader {
     static final String PRELOAD_VARIABLE = "LD_PRELOAD";
     static final String AUDIT_VARIABLE = "LD_AUDIT";
 
+    /** Where the kernel shows this process's executable, whose PT_INTERP names its dynamic linker. */
+    static final String SELF_EXECUTABLE = "/proc/self/exe";
+
+    /** Bounds the dynamic linker's list run, in seconds: it only maps files and reads headers. */
+    static final long LISTING_TIMEOUT_SECONDS = 30;
+
     /** The kernel's own limit on symbolic links followed in one lookup. */
     static final int MAX_SYMBOLIC_LINKS = 40;
 
@@ -103,8 +126,12 @@ final class LinuxNativeLibraryLoader {
         var candidates = candidatePaths(CpuArchitecture.current());
         var path = resolveTrusted(choosePath(candidates, LinuxNative::probe), UnixFileType.REGULAR_FILE, LinuxNative::statusOrNull, LinuxNative::readLink);
 
-        var environment = readEnvironment(System::getenv, LinuxNative.readInitialEnvironment());
+        var initialEnvironment = LinuxNative.readInitialEnvironment();
+        var environment = readEnvironment(System::getenv, initialEnvironment);
         verifyEnvironment(environment, (p, type) -> resolveTrusted(p, type, LinuxNative::statusOrNull, LinuxNative::readLink, true));
+
+        UnaryOperator<String> trusted = p -> resolveTrusted(p, UnixFileType.REGULAR_FILE, LinuxNative::statusOrNull, LinuxNative::readLink);
+        verifyBeforeLoading(path, initialEnvironment, trusted);
 
         // Loaded by the verified absolute, link-free path only - never by name. Closing the arena
         // unloads it again.
@@ -118,8 +145,6 @@ final class LinuxNativeLibraryLoader {
         }
 
         try {
-            UnaryOperator<String> trusted = p -> resolveTrusted(p, UnixFileType.REGULAR_FILE, LinuxNative::statusOrNull, LinuxNative::readLink);
-
             var image = loaded.find(PROBE_EXPORT).map(LinuxNative::imagePath).orElse(null);
             verifyLoadedImage(path, image == null ? null : trusted.apply(image));
             verifyDependencies(path, ElfDependencies::readNeeded, LinuxNative::loadedPath, trusted);
@@ -350,7 +375,11 @@ final class LinuxNativeLibraryLoader {
 
         // Objects to preload or audit: separated by spaces or colons (LD_PRELOAD), or colons
         // (LD_AUDIT). A bare name is found by the same search as any dependency, which the
-        // LD_LIBRARY_PATH check above already covers.
+        // LD_LIBRARY_PATH check above already covers. A bare-named LD_PRELOAD object is also covered
+        // by the dynamic linker's list run before loading (verifyBeforeLoading): it runs with the
+        // startup LD_PRELOAD, so it reports the file each preloaded object was found in, and each
+        // must pass the path checks. (Only a check: a preloaded object was mapped when the process
+        // started, and its initializers have already run.)
         for (var variable : List.of(PRELOAD_VARIABLE, AUDIT_VARIABLE)) {
             var separators = variable.equals(PRELOAD_VARIABLE) ? "[ :]" : ":";
             for (var value : environment.getOrDefault(variable, List.of())) {
@@ -380,6 +409,208 @@ final class LinuxNativeLibraryLoader {
     private static SecurityException untrusted(String variable, String value, String what) {
         return new SecurityException(variable + " ('" + value + "') contains " + what
                 + "; the dynamic linker could load the HkdfGuard native library's dependencies from there. Refusing to load it.");
+    }
+
+    /**
+     * Asks this process's own dynamic linker, in list mode, where it would find everything
+     * {@code library} pulls in, and requires each of those files to pass the path checks - before
+     * dlopen, so nothing that would fail them ever runs here (check 4 above).
+     *
+     * @param library            the verified library
+     * @param initialEnvironment /proc/self/environ's block, or null if it could not be read
+     * @param resolveTrusted     resolves a path, throwing unless it passes the path checks
+     * @throws SecurityException the dynamic linker isn't trusted or can't say, or it would load an untrusted file
+     */
+    static void verifyBeforeLoading(String library, byte[] initialEnvironment, UnaryOperator<String> resolveTrusted) {
+        String interpreter;
+        try {
+            interpreter = ElfDependencies.readInterpreter(SELF_EXECUTABLE);
+        } catch (SecurityException | UncheckedIOException e) {
+            throw new SecurityException("Could not read which dynamic linker this process runs under: " + messageOf(e), e);
+        }
+        if (interpreter == null)
+            throw new SecurityException("This process has no dynamic linker (a statically linked executable), so it can't be asked what '" + library
+                    + "' would load; refusing to load it.");
+
+        String trustedInterpreter;
+        try {
+            trustedInterpreter = resolveTrusted.apply(interpreter);
+        } catch (SecurityException | UncheckedIOException e) {
+            throw new SecurityException("This process's dynamic linker '" + interpreter + "' is not trusted, so it can't be asked what '" + library
+                    + "' would load: " + messageOf(e), e);
+        }
+
+        var output = listDependencies(trustedInterpreter, library, listingEnvironment(initialEnvironment));
+        verifyListing(library, parseListing(library, output), resolveTrusted);
+    }
+
+    /**
+     * The whole environment the dynamic linker's list mode runs with: the LD_LIBRARY_PATH and
+     * LD_PRELOAD the process started with - what dlopen itself uses, since the linker reads them once
+     * at startup - and nothing else. LD_AUDIT is left out: an audit module is code the list run would
+     * execute, and its locations were already checked before this runs. Should the block name a
+     * variable twice, the last value wins, as in the dynamic linker.
+     *
+     * @param initialEnvironment /proc/self/environ's NUL-separated block, or null if it could not be read
+     * @throws SecurityException a value can't be passed on to a child process byte for byte
+     */
+    static Map<String, String> listingEnvironment(byte[] initialEnvironment) {
+        var environment = new LinkedHashMap<String, String>();
+        if (initialEnvironment == null)
+            return environment;
+
+        // A child's environment is encoded in the charset the JVM uses for the platform's strings;
+        // a value that doesn't decode in it exactly would reach the list run altered, and the list
+        // would describe some other search than dlopen's.
+        var charset = childEnvironmentCharset();
+        var start = 0;
+        while (start < initialEnvironment.length) {
+            var end = start;
+            while (end < initialEnvironment.length && initialEnvironment[end] != 0)
+                end++;
+            for (var name : List.of(LIBRARY_PATH_VARIABLE, PRELOAD_VARIABLE)) {
+                var prefix = (name + "=").getBytes(StandardCharsets.US_ASCII);
+                if (end - start >= prefix.length && Arrays.equals(initialEnvironment, start, start + prefix.length, prefix, 0, prefix.length)) {
+                    try {
+                        environment.put(name, charset.newDecoder()
+                                .onMalformedInput(CodingErrorAction.REPORT)
+                                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                                .decode(ByteBuffer.wrap(initialEnvironment, start + prefix.length, end - start - prefix.length))
+                                .toString());
+                    } catch (CharacterCodingException e) {
+                        throw new SecurityException("The " + name + " this process started with is not valid " + charset
+                                + ", so the dynamic linker can't be asked what it would load under it; refusing to load the HkdfGuard native library.", e);
+                    }
+                }
+            }
+            start = end + 1;
+        }
+        return environment;
+    }
+
+    // The charset the JVM encodes a child process's environment in.
+    private static Charset childEnvironmentCharset() {
+        var name = System.getProperty("sun.jnu.encoding", System.getProperty("native.encoding"));
+        try {
+            return name == null ? Charset.defaultCharset() : Charset.forName(name);
+        } catch (IllegalArgumentException e) {
+            return Charset.defaultCharset();
+        }
+    }
+
+    /**
+     * Runs {@code interpreter --list library} with exactly {@code environment} - no shell, nothing
+     * inherited - and returns what it printed. A run that fails or times out refuses the load.
+     *
+     * @throws SecurityException it could not be run, exited with a failure, or did not finish in time
+     */
+    static String listDependencies(String interpreter, String library, Map<String, String> environment) {
+        var builder = new ProcessBuilder(interpreter, "--list", library);
+        builder.environment().clear();
+        builder.environment().putAll(environment);
+
+        Process process;
+        try {
+            process = builder.start();
+        } catch (IOException e) {
+            throw new SecurityException("The dynamic linker '" + interpreter + "' could not be run to say what '" + library + "' would load ("
+                    + e.getMessage() + "); refusing to load it.", e);
+        }
+
+        // Both pipes are drained at once, so neither can fill and stall the run.
+        var stdout = drain(process.getInputStream());
+        var stderr = drain(process.getErrorStream());
+        try {
+            process.getOutputStream().close();
+            if (!process.waitFor(LISTING_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new SecurityException("The dynamic linker did not say within " + LISTING_TIMEOUT_SECONDS + " seconds what '" + library
+                        + "' would load; refusing to load it.");
+            }
+            if (process.exitValue() != 0)
+                throw new SecurityException("The dynamic linker could not say what '" + library + "' would load (exit status " + process.exitValue()
+                        + ": " + stderr.join().strip() + "); refusing to load it.");
+            return stdout.join();
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new SecurityException("Interrupted while asking the dynamic linker what '" + library + "' would load; refusing to load it.", e);
+        } catch (IOException | CompletionException e) {
+            process.destroyForcibly();
+            throw new SecurityException("Could not read what the dynamic linker said '" + library + "' would load (" + e.getMessage() + "); refusing to load it.", e);
+        }
+    }
+
+    // Reads a child's output to the end on a thread of its own.
+    private static CompletableFuture<String> drain(InputStream stream) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (stream) {
+                return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }, task -> Thread.ofVirtual().start(task));
+    }
+
+    /**
+     * Every file path in the output of the dynamic linker's list mode, in order. Its lines are
+     * "\tname =&gt; /path (0xaddress)", "\t/path (0xaddress)" (the linker itself and preloaded
+     * objects) and "\tname (0xaddress)" (the vDSO, which has no file). A name it couldn't find
+     * ("=&gt; not found"), or any line in another form, refuses: what can't be read can't be checked.
+     *
+     * @param library the library that was listed, for messages
+     * @param output  what the list run printed
+     * @throws SecurityException a dependency can't be found, or a line can't be read
+     */
+    static List<String> parseListing(String library, String output) {
+        final String notFound = " => not found";
+        final String arrow = " => ";
+        var paths = new ArrayList<String>();
+        for (var rawLine : output.split("\n", -1)) {
+            var line = rawLine.strip();
+            if (line.isEmpty())
+                continue;
+
+            if (line.endsWith(notFound))
+                throw new SecurityException("The dynamic linker can't find '" + line.substring(0, line.length() - notFound.length()) + "', which '" + library
+                        + "' needs; refusing to load it.");
+
+            var open = line.lastIndexOf(" (0x");
+            if (open < 0 || !line.endsWith(")"))
+                throw new SecurityException("The dynamic linker's list of what '" + library + "' would load has a line this loader doesn't understand ('" + line
+                        + "'); refusing to load it.");
+
+            var entry = line.substring(0, open);
+            var at = entry.indexOf(arrow);
+            if (at >= 0)
+                entry = entry.substring(at + arrow.length());
+
+            if (!entry.startsWith("/")) {
+                if (entry.contains("/") || entry.contains(" "))
+                    throw new SecurityException("The dynamic linker would load '" + entry + "' for '" + library + "', which is not an absolute path; refusing to load it.");
+                continue; // the vDSO: in the kernel, not a file
+            }
+            paths.add(entry);
+        }
+        return List.copyOf(paths);
+    }
+
+    /**
+     * Requires every path the dynamic linker's list mode reported to pass the path checks.
+     *
+     * @param library        the library that was listed, for messages
+     * @param paths          what {@link #parseListing} returned
+     * @param resolveTrusted resolves a path, throwing unless it passes the path checks
+     * @throws SecurityException a path is not trusted; the first one is named
+     */
+    static void verifyListing(String library, List<String> paths, UnaryOperator<String> resolveTrusted) {
+        for (var path : paths) {
+            try {
+                resolveTrusted.apply(path);
+            } catch (SecurityException | UncheckedIOException e) {
+                throw new SecurityException("Loading '" + library + "' would also load '" + path + "', which is not trusted; nothing was loaded: " + messageOf(e), e);
+            }
+        }
     }
 
     /**
