@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-securefile</artifactId>
+  <name>HkdfGuard SecureFile</name>
+  <description>
+    Reads a key file only from where no untrusted account could have written or replaced it - the
+    native library's hkdfguard_open_file rules, checked in Java - for key wrappers with no native
+    library to read through, such as a network KMS's.
+  </description>
+
+  <!--
+    Applications must grant this module native access with the JVM's enable-native-access option,
+    naming io.github.runsecure.hkdfguard.securefile (or ALL-UNNAMED on the class path): the owner,
+    permission and final-path checks are system calls (advapi32 and kernel32 on Windows, statx or
+    lstat and readlink on Linux and macOS) made through the FFM API.
+  -->
+
+  <properties>
+    <!-- Java 25, like hkdfguard-keywrapping-v1: the key-file checks call the operating system
+         through the Foreign Function & Memory API, final only from Java 22. -->
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,ALL-UNNAMED</hkdfguard.test.argLine>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+  </dependencies>
+</project>

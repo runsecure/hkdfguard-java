@@ -24,6 +24,11 @@ updates:
       opentelemetry:
         patterns:
           - "io.opentelemetry:*"
+      # The AWS SDK releases almost daily, every module under one BOM version:
+      # one pull request per bump, not one per module.
+      awssdk:
+        patterns:
+          - "software.amazon.awssdk:*"
       test:
         patterns:
           - "org.junit:*"

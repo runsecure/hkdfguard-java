@@ -81,7 +81,8 @@ jobs:
       - name: Build and test
         run: ./mvnw -B -ntp -Pdist install
 
-      # Every module but hkdfguard-keywrapping-v1 targets Java 21 (see the
+      # Every module but hkdfguard-keywrapping-v1, hkdfguard-securefile and
+      # hkdfguard-keywrapping-awskms (FFM, Java 25) targets Java 21 (see the
       # POM's maven.compiler.release). Rerun their tests - compiled above,
       # unchanged - on a real Java 21 runtime, so "supports 21" is tested, not
       # assumed. The native tests - NativeEndToEndTest and NativeKeyFileRingTest
