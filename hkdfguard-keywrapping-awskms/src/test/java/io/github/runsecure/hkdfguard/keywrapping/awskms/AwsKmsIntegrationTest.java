@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.awskms;
 
 import static io.github.runsecure.hkdfguard.keywrapping.awskms.Futures.await;
-import static io.github.runsecure.hkdfguard.keywrapping.awskms.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.keywrapping.awskms.Futures.assertFailsWith;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -83,7 +83,7 @@ class AwsKmsIntegrationTest {
         var wrapped = new byte[WrappedKeyLimits.MAX_BYTES];
         int length = await(wrapper.generateAndWrapAsync(wrapped));
 
-        awaitFailure(CryptographicException.class, other.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
+        assertFailsWith(CryptographicException.class, other.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
     }
 
     @Test
@@ -94,6 +94,6 @@ class AwsKmsIntegrationTest {
         int length = await(wrapper.generateAndWrapAsync(wrapped));
         wrapped[length - 1] ^= 1;
 
-        awaitFailure(CryptographicException.class, wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
+        assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
     }
 }

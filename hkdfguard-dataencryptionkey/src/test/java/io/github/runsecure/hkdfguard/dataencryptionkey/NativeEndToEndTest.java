@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.dataencryptionkey;
 
 import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.await;
-import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.assertFailsWith;
 import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.sleep;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -136,7 +136,7 @@ class NativeEndToEndTest {
     void aKeyFile_WrappedUnderAnotherService_RefusesToBuild() throws Exception {
         var release = runPipeline("Secret", "value");
 
-        awaitFailure(CryptographicException.class, ringBuilder(UNPROVISIONED).withKeyFile(KEY_FILE_VERSION, release.keyFile()).buildAsync());
+        assertFailsWith(CryptographicException.class, ringBuilder(UNPROVISIONED).withKeyFile(KEY_FILE_VERSION, release.keyFile()).buildAsync());
     }
 
     @Test
@@ -146,7 +146,7 @@ class NativeEndToEndTest {
         bytes[bytes.length / 2] ^= 0x01;
         Files.write(release.keyFile(), bytes);
 
-        awaitFailure(CryptographicException.class, ringBuilder(service).withKeyFile(KEY_FILE_VERSION, release.keyFile()).buildAsync());
+        assertFailsWith(CryptographicException.class, ringBuilder(service).withKeyFile(KEY_FILE_VERSION, release.keyFile()).buildAsync());
     }
 
     @Test

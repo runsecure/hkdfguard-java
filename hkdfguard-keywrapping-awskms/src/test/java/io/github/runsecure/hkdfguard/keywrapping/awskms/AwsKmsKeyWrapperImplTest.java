@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.awskms;
 
 import static io.github.runsecure.hkdfguard.keywrapping.awskms.Futures.await;
-import static io.github.runsecure.hkdfguard.keywrapping.awskms.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.keywrapping.awskms.Futures.assertFailsWith;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -204,7 +204,7 @@ class AwsKmsKeyWrapperImplTest {
         int length = await(new AwsKmsKeyWrapperImpl(kms, "alias/other", CONTEXT).wrapAsync(random(32), wrapped));
 
         var result = filled(32, 0xAA);
-        var exception = awaitFailure(CryptographicException.class,
+        var exception = assertFailsWith(CryptographicException.class,
                 new AwsKmsKeyWrapperImpl(kms, KEY_ARN, CONTEXT).unwrapAsync(Arrays.copyOf(wrapped, length), result));
 
         assertInstanceOf(InvalidCiphertextException.class, exception.getCause());
@@ -219,7 +219,7 @@ class AwsKmsKeyWrapperImplTest {
         int length = await(new AwsKmsKeyWrapperImpl(kms, KEY_ARN, CONTEXT).wrapAsync(random(32), wrapped));
         var other = new AwsKmsKeyWrapperImpl(kms, KEY_ARN, Map.of("purpose", "other"));
 
-        awaitFailure(CryptographicException.class, other.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
+        assertFailsWith(CryptographicException.class, other.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
     }
 
     @Test
@@ -229,7 +229,7 @@ class AwsKmsKeyWrapperImplTest {
         int length = await(wrapper.wrapAsync(random(32), wrapped));
         wrapped[length - 1] ^= 1;
 
-        awaitFailure(CryptographicException.class, wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
+        assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), new byte[32]));
     }
 
     @ParameterizedTest
@@ -238,7 +238,7 @@ class AwsKmsKeyWrapperImplTest {
         var kms = new FakeKms();
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        awaitFailure(CryptographicException.class, wrapper.unwrapAsync(new byte[size], new byte[32]));
+        assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(new byte[size], new byte[32]));
 
         assertTrue(kms.decryptRequests.isEmpty());
     }
@@ -251,7 +251,7 @@ class AwsKmsKeyWrapperImplTest {
         int length = await(wrapper.wrapAsync(random(32), wrapped));
 
         var result = filled(16, 0xAA);
-        var exception = awaitFailure(IllegalArgumentException.class, wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), result));
+        var exception = assertFailsWith(IllegalArgumentException.class, wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), result));
 
         assertTrue(exception.getMessage().contains("result holds 16"));
         assertTrue(ArrayUtility.isNullOrEmpty(result));
@@ -264,7 +264,7 @@ class AwsKmsKeyWrapperImplTest {
         kms.onDecrypt = request -> DecryptResponse.builder().build();
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        awaitFailure(CryptographicException.class, wrapper.unwrapAsync(new byte[64], new byte[32]));
+        assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(new byte[64], new byte[32]));
     }
 
     @ParameterizedTest
@@ -283,7 +283,7 @@ class AwsKmsKeyWrapperImplTest {
     void wrapAsync_WhenResultIsTooSmall_Fails() {
         var wrapper = new AwsKmsKeyWrapperImpl(new FakeKms(), KEY_ARN);
 
-        var exception = awaitFailure(IllegalArgumentException.class, wrapper.wrapAsync(new byte[32], new byte[8]));
+        var exception = assertFailsWith(IllegalArgumentException.class, wrapper.wrapAsync(new byte[32], new byte[8]));
 
         assertTrue(exception.getMessage().contains("result holds 8"));
     }
@@ -296,7 +296,7 @@ class AwsKmsKeyWrapperImplTest {
                 .build();
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        awaitFailure(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[2 * WrappedKeyLimits.MAX_BYTES]));
+        assertFailsWith(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[2 * WrappedKeyLimits.MAX_BYTES]));
     }
 
     @Test
@@ -305,7 +305,7 @@ class AwsKmsKeyWrapperImplTest {
         kms.onGenerate = request -> GenerateDataKeyWithoutPlaintextResponse.builder().build();
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        awaitFailure(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
+        assertFailsWith(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
     }
 
     @Test
@@ -316,7 +316,7 @@ class AwsKmsKeyWrapperImplTest {
         };
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        var exception = awaitFailure(CryptographicException.class, wrapper.wrapAsync(new byte[32], new byte[WrappedKeyLimits.MAX_BYTES]));
+        var exception = assertFailsWith(CryptographicException.class, wrapper.wrapAsync(new byte[32], new byte[WrappedKeyLimits.MAX_BYTES]));
 
         assertEquals("AWS KMS wrap failed for key '" + KEY_ARN + "': AccessDeniedException (HTTP 400).", exception.getMessage());
         assertInstanceOf(KmsException.class, exception.getCause());
@@ -330,7 +330,7 @@ class AwsKmsKeyWrapperImplTest {
         };
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        var exception = awaitFailure(CryptographicException.class, wrapper.unwrapAsync(new byte[64], new byte[32]));
+        var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(new byte[64], new byte[32]));
 
         assertEquals("AWS KMS unwrap failed for key '" + KEY_ARN + "': KmsInternalException (HTTP 500).", exception.getMessage());
     }
@@ -343,7 +343,7 @@ class AwsKmsKeyWrapperImplTest {
         };
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        var exception = awaitFailure(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
+        var exception = assertFailsWith(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
 
         assertEquals("AWS KMS generate-and-wrap failed for key '" + KEY_ARN
                 + "': Unable to load credentials from any of the providers in the chain.", exception.getMessage());
@@ -361,7 +361,7 @@ class AwsKmsKeyWrapperImplTest {
         };
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        var exception = awaitFailure(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
+        var exception = assertFailsWith(CryptographicException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
 
         assertTrue(exception.getMessage().endsWith("Thrown, not returned."));
     }
@@ -374,7 +374,7 @@ class AwsKmsKeyWrapperImplTest {
         };
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
 
-        awaitFailure(CancellationException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
+        assertFailsWith(CancellationException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
     }
 
     @Test
@@ -387,7 +387,7 @@ class AwsKmsKeyWrapperImplTest {
         var wrapper = new AwsKmsKeyWrapperImpl(kms, KEY_ARN);
         var result = filled(32, 0xAA);
 
-        awaitFailure(AbortedException.class, wrapper.unwrapAsync(new byte[64], result));
+        assertFailsWith(AbortedException.class, wrapper.unwrapAsync(new byte[64], result));
 
         assertTrue(ArrayUtility.isNullOrEmpty(result));
     }
@@ -434,7 +434,7 @@ class AwsKmsKeyWrapperImplTest {
         var dir = Files.createTempDirectory("hkdfguard-keys-");
         var path = Files.write(dir.resolve("v1.key"), random(184));
         try {
-            awaitFailure(AccessDeniedException.class, wrapper.readKeyFileAsync(path));
+            assertFailsWith(AccessDeniedException.class, wrapper.readKeyFileAsync(path));
         } finally {
             Files.delete(path);
             Files.delete(dir);
@@ -464,7 +464,7 @@ class AwsKmsKeyWrapperImplTest {
         try (var dir = new WindowsTempDirectory()) {
             var path = dir.write("v1.key", random(184));
 
-            awaitFailure(IllegalArgumentException.class, wrapper.readKeyFileAsync(path));
+            assertFailsWith(IllegalArgumentException.class, wrapper.readKeyFileAsync(path));
         }
     }
 
@@ -479,7 +479,7 @@ class AwsKmsKeyWrapperImplTest {
         var dir = Files.createTempDirectory("hkdfguard-keys-");
         var path = Files.write(dir.resolve("v1.key"), random(184));
         try {
-            var exception = awaitFailure(AccessDeniedException.class, wrapper.readKeyFileAsync(path));
+            var exception = assertFailsWith(AccessDeniedException.class, wrapper.readKeyFileAsync(path));
             assertSame(AccessDeniedException.class, exception.getClass());
         } finally {
             Files.delete(path);

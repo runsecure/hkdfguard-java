@@ -11,10 +11,10 @@ package io.github.runsecure.hkdfguard.platform.unix;
  */
 public record UnixFileStatus(long ownerId, long groupId, int mode, UnixFileType type) {
     /** S_IWGRP: writable by the file's group. */
-    public static final int GROUP_WRITE = 0020;
+    public static final int GROUP_WRITE = 0_020; // octal
 
     /** S_IWOTH: writable by every other user. */
-    public static final int OTHER_WRITE = 0002;
+    public static final int OTHER_WRITE = 0_002; // octal
 
     /** Whether the file's group may write it. */
     public boolean groupWritable() {

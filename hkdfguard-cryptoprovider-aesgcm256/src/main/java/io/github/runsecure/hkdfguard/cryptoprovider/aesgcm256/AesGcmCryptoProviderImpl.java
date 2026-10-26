@@ -98,7 +98,9 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
         this.logger = logger;
         this.current = firstSession;
 
-        refreshThread = Thread.ofVirtual().name("hkdfguard-aesgcm-refresh").unstarted(this::runRefreshLoop);
+        // A platform thread: a refresh calls the key wrapper, which may block in native code, and
+        // takes the gate's monitor - either pins a virtual thread's carrier on Java 21.
+        refreshThread = Thread.ofPlatform().daemon().name("hkdfguard-aesgcm-refresh").unstarted(this::runRefreshLoop);
         refreshThread.start();
     }
 
@@ -389,6 +391,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
                     if (wait > 0)
                         Thread.sleep(Duration.ofNanos(wait));
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     return;
                 }
 
@@ -447,6 +450,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
                 quietly(() -> HkdfGuardLog.keyAccessResumed(logger, previousFailures));
             return true;
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return false;
         } catch (Throwable t) {
             // Shutdown: swallow whatever an in-flight refresh threw on the way out (e.g. a key
@@ -530,7 +534,7 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
             return CompletableFuture.completedFuture(null);
 
         var done = new CompletableFuture<Void>();
-        Thread.ofVirtual().name("hkdfguard-aesgcm-close").start(() -> {
+        Thread.ofPlatform().daemon().name("hkdfguard-aesgcm-close").start(() -> {
             try {
                 awaitRefreshThread();
                 endClose();
@@ -562,6 +566,9 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
         return true;
     }
 
+    // An uninterruptible wait: an interrupt is remembered and restored once the join returns.
+    // Restoring it inside the catch, as S2142 asks, would make the next join throw at once and spin.
+    @SuppressWarnings("java:S2142")
     private void awaitRefreshThread() {
         // Closed from inside the loop (a logger callback, say): it exits on its own.
         if (Thread.currentThread() == refreshThread)

@@ -64,7 +64,7 @@ int length = protector.decrypt(encrypted, result);
 
 - **Async** is `CompletableFuture`; there is no `CancellationToken`. Argument errors throw from the
   call itself; failures revealing a key complete the future exceptionally. Background refresh and
-  rotation run on virtual threads.
+  rotation run on daemon background threads.
 - **Disposal** is `close()` (blocking) and `closeAsync()`.
 - **Spans** (`ReadOnlySpan<char>`/`Span<byte>`) become `CharSequence` for read-only text and
   `byte[]`/`char[]` for buffers. `TryGet...(out ...)` becomes `find...` returning `Optional`/`OptionalInt`.

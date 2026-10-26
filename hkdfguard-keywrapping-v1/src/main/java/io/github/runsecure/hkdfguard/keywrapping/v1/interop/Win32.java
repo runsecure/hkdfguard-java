@@ -16,6 +16,8 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * The Win32 calls the Windows loader's checks rely on, bound through the FFM API: known-folder
@@ -246,6 +248,22 @@ final class Win32 {
      * @param rootDer the root the chain ends at (DER) when status is 0, else null
      */
     record SignatureVerification(int status, byte[] leafDer, byte[] rootDer) {
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof SignatureVerification that && status == that.status && Arrays.equals(leafDer, that.leafDer)
+                    && Arrays.equals(rootDer, that.rootDer);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(status, Arrays.hashCode(leafDer), Arrays.hashCode(rootDer));
+        }
+
+        @Override
+        public String toString() {
+            return String.format("SignatureVerification[status=0x%08X, leafDer=%s, rootDer=%s]", status,
+                    leafDer == null ? "none" : leafDer.length + " bytes", rootDer == null ? "none" : rootDer.length + " bytes");
+        }
     }
 
     // WINTRUST_ACTION_GENERIC_VERIFY_V2 {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}

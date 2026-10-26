@@ -305,7 +305,7 @@ public final class KeyRingBuilder {
 
     /**
      * Reads each registered key file's wrapped bytes, mints each registered ephemeral key, and
-     * returns a populated ring - on a virtual thread, so the caller never blocks on a key-wrapper
+     * returns a populated ring - on a background thread, so the caller never blocks on a key-wrapper
      * call. If anything fails partway (an unreadable file, an unwrap failure, a duplicate version),
      * every provider created so far is closed and the future fails with the cause.
      *
@@ -339,7 +339,9 @@ public final class KeyRingBuilder {
                 maxRefreshFailures, ephemeralKeyRotationInterval, ephemeralKeyRetention);
 
         var result = new CompletableFuture<KeyRingImpl>();
-        Thread.ofVirtual().name("hkdfguard-key-ring-build").start(() -> {
+        // A platform thread: the build calls the key wrapper, which may block in native code - that
+        // pins a virtual thread's carrier.
+        Thread.ofPlatform().daemon().name("hkdfguard-key-ring-build").start(() -> {
             try {
                 result.complete(plan.build());
             } catch (Throwable t) {

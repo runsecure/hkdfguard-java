@@ -32,7 +32,7 @@ public final class WindowsTempDirectory implements AutoCloseable {
 
     public WindowsTempDirectory() throws IOException {
         // toRealPath: every component's real (long) name.
-        path = Files.createTempDirectory("hkdfguard-keys-").toRealPath();
+        path = PrivateTempFiles.createDirectory("hkdfguard-keys-").toRealPath();
     }
 
     public Path path() {
