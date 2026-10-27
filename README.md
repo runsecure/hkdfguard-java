@@ -6,8 +6,8 @@ library decrypt with the other: the wire format, AAD rules, AES-GCM layout, span
 log event ids are identical.
 
 Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-platform`,
-`hkdfguard-keywrapping-v1`, `hkdfguard-securefile` and `hkdfguard-keywrapping-awskms`, which require
-**Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
+`hkdfguard-keywrapping-v1`, `hkdfguard-securefile`, `hkdfguard-keywrapping-awskms` and
+`hkdfguard-keywrapping-azurekeyvault`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
 calls and the key-file checks use the Java FFM API, which is final only from Java 22 - hence those
 modules' higher minimum. On Java 21, use the library with a `KeyWrapper` of your own in place of the
 native one. Building the library needs JDK 25; CI also
@@ -24,6 +24,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
 | `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java (Java 25+) |
 | `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
+| `hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault  | `AzureKeyVaultKeyWrapperImpl` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through the Azure SDK for Java (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
 | `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl` |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
@@ -32,9 +33,9 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
 native integration tests of several modules share (which provisioned service they use, and where key
 files may be written), and `WindowsTempDirectory`, the folder the Windows key-file tests of
-hkdfguard-securefile and hkdfguard-keywrapping-awskms write to. It is test code only - a test-scope
-dependency of hkdfguard-dataencryptionkey, hkdfguard-cache, hkdfguard-securefile and
-hkdfguard-keywrapping-awskms, compiled straight into hkdfguard-keywrapping-v1's tests (which it
+hkdfguard-securefile and the AWS KMS and Azure Key Vault wrappers write to. It is test code only - a
+test-scope dependency of hkdfguard-dataencryptionkey, hkdfguard-cache, hkdfguard-securefile,
+hkdfguard-keywrapping-awskms and hkdfguard-keywrapping-azurekeyvault, compiled straight into hkdfguard-keywrapping-v1's tests (which it
 depends on) - and is never published, signed or shipped in a release.
 
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
@@ -181,7 +182,7 @@ hkdfguard:
 ## Native access
 
 `hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API, and
-`hkdfguard-securefile` (which `hkdfguard-keywrapping-awskms` reads key files through) makes its
+`hkdfguard-securefile` (which the AWS KMS and Azure Key Vault wrappers read key files through) makes its
 owner and permission checks through FFM too. The checks both share - security descriptors and SIDs
 on Windows, file status and the path walk on Linux and macOS - are made by `hkdfguard-platform`,
 which both depend on. On the class path, run with `--enable-native-access=ALL-UNNAMED`. On the module
@@ -293,7 +294,7 @@ plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has n
 any other key wrapper must read key files itself, and must refuse one another account could have
 written or replaced. `hkdfguard-securefile`'s `TrustedKeyFile.readAsync` does that in Java, by the
 same rules and with the same exceptions, for key wrappers with no native library to read through;
-`AwsKmsKeyWrapperImpl` reads key files with it.
+`AwsKmsKeyWrapperImpl` and `AzureKeyVaultKeyWrapperImpl` read key files with it.
 
 **Status codes.** The Windows, Linux and macOS native libraries share one `HKDFGUARD_ERR_*` table,
 number for number, and every failure message names the status and what it means:
@@ -439,6 +440,58 @@ bean, and the client as a bean Spring closes.
 permissions for each role, credentials, and creating key files.
 [Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md) sets up a key of
 your own for `AwsKmsIntegrationTest`, which is otherwise reported as skipped.
+
+## Wrapping under Azure Key Vault instead
+
+`AzureKeyVaultKeyWrapperImpl` (artifact `hkdfguard-keywrapping-azurekeyvault`) is a `KeyWrapper` over
+two Azure Key Vault keys: an RSA key (2048 or 3072 bits) that wraps every DEK with RSA-OAEP-256, and
+a separate EC P-256 key that signs every wrapped DEK with ES256. Use it in place of
+`NativeHkdfKeyWrapperV1Impl` wherever a wrapper is taken. The private keys never leave Key Vault;
+unwrapping and signing are Key Vault requests, authorized by the process's Azure credential:
+
+```java
+var wrapper = new AzureKeyVaultKeyWrapperImpl(
+        "https://myvault.vault.azure.net/keys/myapp-wrap",
+        "https://myvault.vault.azure.net/keys/myapp-sign",
+        new DefaultAzureCredentialBuilder().build(),     // a managed identity when deployed
+        "com.example.myapp");
+```
+
+- Why two keys: RSA-OAEP wrapping needs only the public key, so on its own anyone could make a
+  wrapped DEK holding a key they chose. Unwrap verifies the signature first and refuses anything a
+  principal allowed to `sign` didn't make. Give `sign` to the pipeline that creates key files,
+  never to the application. The wrapper refuses the same key for both jobs.
+- Both keys are pinned. Each wrapped DEK records only the versions of the two keys it was made
+  with; the vault and key names always come from the constructor. Rotating either key in Key Vault
+  needs nothing here, as long as versions in use stay enabled. Give identifiers without a version.
+- The optional context is bound into the signature and must be given again, exactly, to reveal the
+  DEK. It isn't secret.
+- Key Vault has no "generate data key": `generateAndWrapAsync` generates the DEK in the process,
+  wraps it and zeroes it. Plaintext the wrapper owns is zeroed - its copy of the key sent to be
+  wrapped, and its copy of the revealed key. The SDK's request and response bodies, and the array
+  inside the `UnwrapResult` (whose getter returns a copy), aren't exposed, so they can't be.
+- Wrapped DEKs are byte for byte the .NET `AzureKeyVaultKeyWrapper`'s, so a key file made by either
+  is read by the other, given the same keys and context.
+- Failures complete the future with a `CryptographicException` naming Key Vault's error code (for
+  example `Forbidden` or `KeyNotFound`) and the HTTP status, with the Azure exception as its cause;
+  argument errors throw from the call. Cancelling a returned future cancels the Key Vault request in
+  flight. A failed unwrap zeroes the caller's buffer.
+- Key files are read through `hkdfguard-securefile`, by the same rules as for AWS KMS. A wrapped DEK
+  under RSA-2048 is 359 bytes, and under RSA-3072 487, inside `WrappedKeyLimits.MAX_BYTES`.
+
+**Dependencies.** The module depends on `com.azure:azure-security-keyvault-keys`, at the version the
+`com.azure:azure-sdk-bom` in this build's parent POM pins, but excludes the HTTP client it declares
+(`azure-core-http-netty`), as the AWS module does. The wrapper builds one Key Vault client per key
+version it uses, with the HTTP client azure-core finds on the class path; `azure-identity`, which most
+applications add for the credential, brings `azure-core-http-netty` with it, or add
+`com.azure:azure-core-http-jdk-httpclient` for the JDK's own. The longest constructor takes a
+`Consumer<CryptographyClientBuilder>` for the HTTP client, retries, logging or service version.
+There is no Spring Boot auto-configuration for it: declare the wrapper as your `KeyWrapper` bean.
+
+[Wrap keys with Azure Key Vault](docs/how-to/use-azure-key-vault.md) walks through creating the keys,
+the roles for each identity, credentials, and creating key files.
+[Run the Azure Key Vault integration tests](docs/how-to/run-azure-key-vault-integration-tests.md)
+sets up a test vault for `AzureKeyVaultIntegrationTest`, which is otherwise reported as skipped.
 
 ## Building
 
