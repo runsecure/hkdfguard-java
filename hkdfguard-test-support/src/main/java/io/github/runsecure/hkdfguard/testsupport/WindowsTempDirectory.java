@@ -19,7 +19,7 @@ import java.util.Comparator;
 
 /**
  * A fresh folder under the user's temp folder for the Windows key-file tests of
- * hkdfguard-securefile and hkdfguard-keywrapping-awskms, named by its long path: Windows may report
+ * hkdfguard-securefile and the AWS KMS and Azure Key Vault key wrappers, named by its long path: Windows may report
  * the temp folder by an 8.3 short name ({@code C:\Users\RUNNER~1\...} on hosted runners), which key
  * files are never read through. The account running the tests owns, and may modify, its own temp
  * folder, so a test reading key files from here trusts {@link #currentUserSid()} as a deployer.

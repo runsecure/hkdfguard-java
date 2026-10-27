@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-keywrapping-azurekeyvault</artifactId>
+  <name>HkdfGuard KeyWrapping Azure Key Vault</name>
+  <description>
+    Wraps DEKs under an RSA key in Azure Key Vault and signs every wrapped DEK with a second, EC P-256
+    key, through the Azure SDK for Java, and reads key files only from where no untrusted account
+    could have replaced them.
+  </description>
+
+  <properties>
+    <!-- Java 25, like hkdfguard-securefile, which reads its key files through the FFM API. The
+         securefile and platform modules call the operating system, so they need native access in
+         this module's tests too. -->
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-securefile</artifactId>
+    </dependency>
+
+    <!-- The application chooses the HTTP client the Key Vault clients run on (azure-core-http-netty,
+         azure-core-http-jdk-httpclient, ...), as with the AWS module. The keys library declares
+         azure-core-http-netty as a dependency so that a bare client builder works; it is excluded
+         here, so depending on this module doesn't put Netty on every consumer's class path. An
+         application adds the one it wants; azure-core finds it on the class path. -->
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-security-keyvault-keys</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>com.azure</groupId>
+          <artifactId>azure-core-http-netty</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- AzureKeyVaultIntegrationTest authenticates with DefaultAzureCredential and needs an HTTP
+         client; it uses the JDK's (java.net.http), so no Netty either. The other tests use a stub
+         vault, or the real Key Vault clients over a stub HttpClient, and make no network calls. -->
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-identity</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>com.azure</groupId>
+          <artifactId>azure-core-http-netty</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-core-http-jdk-httpclient</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- End-to-end tests only: a crypto provider revealing its DEK through the Key Vault wrapper. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory, for the Windows real-file tests. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
