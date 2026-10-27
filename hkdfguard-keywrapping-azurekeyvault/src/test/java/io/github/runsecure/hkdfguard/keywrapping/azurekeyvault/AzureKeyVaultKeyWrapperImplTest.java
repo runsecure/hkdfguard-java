@@ -3,6 +3,7 @@ package io.github.runsecure.hkdfguard.keywrapping.azurekeyvault;
 import static io.github.runsecure.hkdfguard.keywrapping.azurekeyvault.Futures.assertFailsWith;
 import static io.github.runsecure.hkdfguard.keywrapping.azurekeyvault.Futures.await;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -138,9 +139,11 @@ class AzureKeyVaultKeyWrapperImplTest {
 
     @Test
     void constructor_AllowsKeysWithTheSameNameInDifferentVaults() {
-        wrapper(CONTEXT, FakeKeyVault.WRAPPING_KEY_ID, "https://other-vault.vault.azure.net/keys/" + FakeKeyVault.WRAPPING_KEY_NAME);
+        assertDoesNotThrow(() -> wrapper(CONTEXT, FakeKeyVault.WRAPPING_KEY_ID,
+                "https://other-vault.vault.azure.net/keys/" + FakeKeyVault.WRAPPING_KEY_NAME));
         // The port is part of the vault.
-        wrapper(CONTEXT, FakeKeyVault.WRAPPING_KEY_ID, "https://hkdfguard-test.vault.azure.net:8443/keys/" + FakeKeyVault.WRAPPING_KEY_NAME);
+        assertDoesNotThrow(() -> wrapper(CONTEXT, FakeKeyVault.WRAPPING_KEY_ID,
+                "https://hkdfguard-test.vault.azure.net:8443/keys/" + FakeKeyVault.WRAPPING_KEY_NAME));
     }
 
     @Test
@@ -560,7 +563,7 @@ class AzureKeyVaultKeyWrapperImplTest {
     void publicConstructor_MakesNoCallUntilTheWrapperIsUsed() {
         TokenCredential failing = request -> Mono.error(new IllegalStateException("No token in tests."));
 
-        new AzureKeyVaultKeyWrapperImpl(FakeKeyVault.WRAPPING_KEY_ID, FakeKeyVault.SIGNING_KEY_ID, failing);
+        assertDoesNotThrow(() -> new AzureKeyVaultKeyWrapperImpl(FakeKeyVault.WRAPPING_KEY_ID, FakeKeyVault.SIGNING_KEY_ID, failing));
     }
 
     @Test

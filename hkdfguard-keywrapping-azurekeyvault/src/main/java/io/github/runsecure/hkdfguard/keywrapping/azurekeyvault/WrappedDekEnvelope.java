@@ -8,6 +8,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.Objects;
 
 /**
  * The wrapped-DEK format {@link AzureKeyVaultKeyWrapperImpl} writes and reads, byte for byte the
@@ -47,6 +48,31 @@ final class WrappedDekEnvelope {
 
     /** A parsed envelope: the parts, and where the signed part ends. */
     record Parts(String wrappingKeyVersion, byte[] wrappedDek, String signingKeyVersion, byte[] signature, int unsignedLength) {
+        // A record's generated equals, hashCode and toString would compare and print the arrays by identity.
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Parts(var otherWrappingKeyVersion, var otherWrappedDek, var otherSigningKeyVersion,
+                    var otherSignature, var otherUnsignedLength)
+                    && unsignedLength == otherUnsignedLength
+                    && Objects.equals(wrappingKeyVersion, otherWrappingKeyVersion)
+                    && Arrays.equals(wrappedDek, otherWrappedDek)
+                    && Objects.equals(signingKeyVersion, otherSigningKeyVersion)
+                    && Arrays.equals(signature, otherSignature);
+        }
+
+        @Override
+        public int hashCode() {
+            var result = Objects.hash(wrappingKeyVersion, signingKeyVersion, unsignedLength);
+            result = 31 * result + Arrays.hashCode(wrappedDek);
+            return 31 * result + Arrays.hashCode(signature);
+        }
+
+        @Override
+        public String toString() {
+            return "Parts[wrappingKeyVersion=" + wrappingKeyVersion + ", wrappedDek=" + Arrays.toString(wrappedDek)
+                    + ", signingKeyVersion=" + signingKeyVersion + ", signature=" + Arrays.toString(signature)
+                    + ", unsignedLength=" + unsignedLength + "]";
+        }
     }
 
     /**

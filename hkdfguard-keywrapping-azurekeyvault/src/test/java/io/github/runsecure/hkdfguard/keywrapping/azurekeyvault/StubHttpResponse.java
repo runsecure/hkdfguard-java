@@ -9,11 +9,14 @@ import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.regex.Pattern;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /** A canned HTTP response, for {@link KeyVaultHttpStub} and for refusals shaped like the SDK's. */
 final class StubHttpResponse extends HttpResponse {
+    private static final Pattern ERROR_CODE = Pattern.compile("\"code\":\"([^\"]*)\"");
+
     private final int status;
     private final HttpHeaders headers;
     private final byte[] body;
@@ -40,7 +43,9 @@ final class StubHttpResponse extends HttpResponse {
 
     /** The body as the SDK deserializes an error body into an HttpResponseException's value. */
     Object errorValue() {
-        var code = new String(body, StandardCharsets.UTF_8).replaceAll(".*\"code\":\"([^\"]*)\".*", "$1");
+        var text = new String(body, StandardCharsets.UTF_8);
+        var match = ERROR_CODE.matcher(text);
+        var code = match.find() ? match.group(1) : text;
         return Map.of("error", Map.of("code", code, "message", code + " from the stub vault."));
     }
 

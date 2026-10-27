@@ -18,8 +18,8 @@ record KeyVaultKeyId(String vault, String name, String version) {
     // Key Vault's own rules: names are 1-127 letters, digits and dashes; versions are 32 hex digits
     // in Key Vault and Managed HSM alike, but only their characters are checked here: a version
     // recorded in a wrapped DEK must be exactly 32 (see WrappedDekEnvelope).
-    private static final Pattern NAME = Pattern.compile("[0-9A-Za-z-]{1,127}");
-    private static final Pattern VERSION = Pattern.compile("[0-9A-Za-z]{1,64}");
+    private static final Pattern NAME_PATTERN = Pattern.compile("[0-9A-Za-z-]{1,127}");
+    private static final Pattern VERSION_PATTERN = Pattern.compile("[0-9A-Za-z]{1,64}");
 
     /**
      * Parses a key identifier.
@@ -42,7 +42,7 @@ record KeyVaultKeyId(String vault, String name, String version) {
             path = path.substring(0, path.length() - 1);
         var segments = path.split("/", -1);
         if ((segments.length != 3 && segments.length != 4) || !segments[0].isEmpty() || !"keys".equals(segments[1])
-                || !NAME.matcher(segments[2]).matches() || (segments.length == 4 && !VERSION.matcher(segments[3]).matches()))
+                || !NAME_PATTERN.matcher(segments[2]).matches() || (segments.length == 4 && !VERSION_PATTERN.matcher(segments[3]).matches()))
             throw invalid(keyId, null);
 
         var vault = "https://" + uri.getHost().toLowerCase(Locale.ROOT) + (uri.getPort() == -1 ? "" : ":" + uri.getPort());
