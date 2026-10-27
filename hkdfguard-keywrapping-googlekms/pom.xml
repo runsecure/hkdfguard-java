@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-keywrapping-googlekms</artifactId>
+  <name>HkdfGuard KeyWrapping Google Cloud KMS</name>
+  <description>
+    Wraps and reveals DEKs under one symmetric Google Cloud KMS key, through the Google Cloud Java
+    client for Cloud KMS, and reads key files only from where no untrusted account could have
+    replaced them.
+  </description>
+
+  <properties>
+    <!-- Java 25, like hkdfguard-securefile, which reads its key files through the FFM API. With no
+         module descriptor (see the jar plugin below), the tests run on the class path, where the
+         parent's ALL-UNNAMED grants the securefile and platform code native access. -->
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-securefile</artifactId>
+    </dependency>
+
+    <!-- The application builds, configures and closes the KeyManagementServiceClient. Unlike the
+         AWS and Azure SDKs, the Google client has one transport built in (gRPC over a shaded copy of
+         Netty, which puts no Netty classes of its own on the class path), so nothing is excluded. -->
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-kms</artifactId>
+    </dependency>
+
+    <!-- The tests run a fake Cloud KMS as an in-process gRPC server, and call it through a real
+         KeyManagementServiceClient, so the client's own error mapping, retries and cancellation are
+         exercised. They make no network calls, except GoogleKmsIntegrationTest's. -->
+    <dependency>
+      <groupId>com.google.api.grpc</groupId>
+      <artifactId>grpc-google-cloud-kms-v1</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-inprocess</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- End-to-end tests only: a crypto provider revealing its DEK through the Cloud KMS wrapper. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory, for the Windows real-file tests. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- No module descriptor: google-cloud-kms, gax and the Cloud KMS protos name no module, so
+           a descriptor could only require names guessed from their file names, which change with
+           how a build lays out its jars. Like the Spring Boot starter, the jar names its module, so
+           an application on the module path can still require it as an automatic module. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>io.github.runsecure.hkdfguard.keywrapping.googlekms</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
