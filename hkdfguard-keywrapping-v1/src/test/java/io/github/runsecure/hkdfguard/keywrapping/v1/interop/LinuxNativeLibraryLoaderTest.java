@@ -2,21 +2,24 @@ package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
+import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -34,13 +37,13 @@ class LinuxNativeLibraryLoaderTest {
     private static final long ROOT = 0;
     private static final long USER = 1000;
 
-    private static final Set<PosixFilePermission> MODE_755 = UnixFileStatus.permissionsFromMode(0755);
-    private static final Set<PosixFilePermission> MODE_775 = UnixFileStatus.permissionsFromMode(0775);
-    // The sticky bit isn't a permission bit; /tmp is refused for being world-writable either way.
-    private static final Set<PosixFilePermission> MODE_1777 = UnixFileStatus.permissionsFromMode(0777);
-    private static final Set<PosixFilePermission> MODE_644 = UnixFileStatus.permissionsFromMode(0644);
-    private static final Set<PosixFilePermission> MODE_664 = UnixFileStatus.permissionsFromMode(0664);
-    private static final Set<PosixFilePermission> MODE_777 = UnixFileStatus.permissionsFromMode(0777);
+    private static final int MODE_755 = 0755;
+    private static final int MODE_775 = 0775;
+    // /tmp is refused for being world-writable, sticky bit or not.
+    private static final int MODE_1777 = 01777;
+    private static final int MODE_644 = 0644;
+    private static final int MODE_664 = 0664;
+    private static final int MODE_777 = 0777;
 
     private static final String LIB_DIR = "/usr/lib/x86_64-linux-gnu";
     private static final String LIBRARY = LIB_DIR + "/libhkdfguard.so.1";
@@ -59,7 +62,7 @@ class LinuxNativeLibraryLoaderTest {
             return dir(path, owner, MODE_755);
         }
 
-        FileSystem dir(String path, long owner, Set<PosixFilePermission> mode) {
+        FileSystem dir(String path, long owner, int mode) {
             entries.put(path, new UnixFileStatus(owner, owner, mode, UnixFileType.DIRECTORY));
             return this;
         }
@@ -83,7 +86,7 @@ class LinuxNativeLibraryLoaderTest {
             return this;
         }
 
-        void setPermissions(String path, Set<PosixFilePermission> mode) {
+        void setPermissions(String path, int mode) {
             var status = entries.get(path);
             entries.put(path, new UnixFileStatus(status.ownerId(), status.groupId(), mode, status.type()));
         }
@@ -280,7 +283,7 @@ class LinuxNativeLibraryLoaderTest {
         var fs = standardHost().link("/opt/a", "/opt/b").link("/opt/b", "/opt/a");
 
         var ex = assertThrows(SecurityException.class, () -> fs.resolve("/opt/a/x"));
-        assertTrue(ex.getMessage().contains(LinuxNativeLibraryLoader.MAX_SYMBOLIC_LINKS + " symbolic links"));
+        assertTrue(ex.getMessage().contains(UnixPathResolver.MAX_SYMBOLIC_LINKS + " symbolic links"));
     }
 
     @Test
@@ -333,12 +336,6 @@ class LinuxNativeLibraryLoaderTest {
                 () -> LinuxNativeLibraryLoader.resolveTrusted(LIBRARY, UnixFileType.REGULAR_FILE, p -> null, p -> null));
 
         assertTrue(ex.getMessage().contains("'/'"));
-    }
-
-    @ParameterizedTest
-    @CsvSource({"/, /", "/usr, /", "/usr/lib, /usr"})
-    void parentOf_WalksUpToRoot(String path, String parent) {
-        assertEquals(parent, LinuxNativeLibraryLoader.parentOf(path));
     }
 
     // --- Environment ----------------------------------------------------------------------------
@@ -568,6 +565,57 @@ class LinuxNativeLibraryLoaderTest {
 
         var ex = assertThrows(SecurityException.class, () -> verifyDependencies(hostWithClosure(), loaded));
         assertTrue(ex.getMessage().contains("libgcc_s.so.1"));
+    }
+
+    @Test
+    void parseListing_ReturnsEveryFile_SkippingTheVdso() {
+        var output = "\tlinux-vdso.so.1 (0x00007ffd2a5f2000)\n"
+                + "\tlibtss2-esys.so.0 => /lib/x86_64-linux-gnu/libtss2-esys.so.0 (0x00007f1c2a000000)\n"
+                + "\t/usr/lib/libpreloaded.so (0x00007f1c29e00000)\n"
+                + "\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f1c29c00000)\n"
+                + "\t/lib64/ld-linux-x86-64.so.2 (0x00007f1c2a200000)\n";
+
+        assertEquals(List.of("/lib/x86_64-linux-gnu/libtss2-esys.so.0", "/usr/lib/libpreloaded.so", "/lib/x86_64-linux-gnu/libc.so.6",
+                "/lib64/ld-linux-x86-64.so.2"), LinuxNativeLibraryLoader.parseListing("lib", output));
+    }
+
+    @Test
+    void parseListing_ANameItCannotFind_OrALineItCannotRead_IsRefused() {
+        assertListingRefused("\tlibmissing.so.1 => not found\n", "can't find 'libmissing.so.1'");
+        assertListingRefused("\tstatically linked\n", "doesn't understand");
+        assertListingRefused("\tlibx.so => relative/libx.so (0x1000)\n", "not an absolute path");
+    }
+
+    private static void assertListingRefused(String output, String reason) {
+        var ex = assertThrows(SecurityException.class, () -> LinuxNativeLibraryLoader.parseListing("lib", output));
+        assertTrue(ex.getMessage().contains(reason), ex.getMessage());
+    }
+
+    @Test
+    void listingEnvironment_IsOnlyTheStartupLibraryPathAndPreload() {
+        var initial = "HOME=/root\0LD_LIBRARY_PATH=/opt/lib\0LD_AUDIT=/opt/audit.so\0PATH=/usr/bin\0LD_PRELOAD=/opt/pre.so\0".getBytes(StandardCharsets.UTF_8);
+
+        assertEquals(Map.of("LD_LIBRARY_PATH", "/opt/lib", "LD_PRELOAD", "/opt/pre.so"), LinuxNativeLibraryLoader.listingEnvironment(initial));
+        assertEquals(Map.of(), LinuxNativeLibraryLoader.listingEnvironment(null));
+        assertEquals(Map.of(), LinuxNativeLibraryLoader.listingEnvironment(new byte[0]));
+        // Neither a longer name that starts the same nor a bare name without '=' counts.
+        assertEquals(Map.of(), LinuxNativeLibraryLoader.listingEnvironment("LD_PRELOAD_X=/a\0LD_PRELOAD\0".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void verifyListing_RefusesTheFirstUntrustedPath() {
+        UnaryOperator<String> trusted = p -> {
+            if (p.startsWith("/tmp/"))
+                throw new SecurityException("'" + p + "' is writable by others.");
+            return p;
+        };
+
+        assertDoesNotThrow(() -> LinuxNativeLibraryLoader.verifyListing("lib", List.of("/lib/libc.so.6", "/lib64/ld-linux-x86-64.so.2"), trusted));
+        var ex = assertThrows(SecurityException.class,
+                () -> LinuxNativeLibraryLoader.verifyListing("lib", List.of("/lib/libc.so.6", "/tmp/libtss2-esys.so.0", "/tmp/second.so"), trusted));
+        assertTrue(ex.getMessage().contains("/tmp/libtss2-esys.so.0"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("nothing was loaded"), ex.getMessage());
+        assertFalse(ex.getMessage().contains("/tmp/second.so"), ex.getMessage());
     }
 
     @Test

@@ -1,6 +1,8 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -14,13 +16,15 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * DT_NEEDED parsing, against synthetic ELF images and, where installed, the real library. Test
- * names follow the .NET port's ElfDependenciesTests.
+ * DT_NEEDED and PT_INTERP parsing, against synthetic ELF images and, where installed, the real
+ * library. Test names follow the .NET port's ElfDependenciesTests.
  */
 class ElfDependenciesTest {
     private static final long LOAD_ADDRESS = 0x40_0000L;
@@ -152,6 +156,94 @@ class ElfDependenciesTest {
 
         assertTrue(ex.getMessage().contains("test.so"));
         assertTrue(ex.getMessage().contains(reason), ex.getMessage());
+    }
+
+    /**
+     * A minimal 64-bit little-endian ELF image with one PT_INTERP, whose segment is {@code size}
+     * bytes holding {@code content}.
+     */
+    private static byte[] elfWithInterpreter(byte[] content, long size) {
+        final int dataOffset = 64 + 56;
+        var image = new byte[dataOffset + content.length];
+        var buffer = ByteBuffer.wrap(image).order(ByteOrder.LITTLE_ENDIAN);
+        image[0] = 0x7F;
+        image[1] = 'E';
+        image[2] = 'L';
+        image[3] = 'F';
+        image[4] = 2;
+        image[5] = 1;
+        image[6] = 1;
+        buffer.putLong(32, 64);           // e_phoff
+        buffer.putShort(54, (short) 56);  // e_phentsize
+        buffer.putShort(56, (short) 1);   // e_phnum
+        programHeader(buffer, 0, 3, dataOffset, 0, size);
+        System.arraycopy(content, 0, image, dataOffset, content.length);
+        return image;
+    }
+
+    private static byte[] cString(String value) {
+        return Arrays.copyOf(value.getBytes(StandardCharsets.UTF_8), value.length() + 1);
+    }
+
+    private static String parseInterpreter(byte[] image) {
+        return ElfDependencies.readInterpreter("test",
+                (offset, count) -> offset + count <= image.length ? Arrays.copyOfRange(image, (int) offset, (int) offset + count) : null);
+    }
+
+    @Test
+    void readsTheInterpreterPath() {
+        var path = cString("/lib64/ld-linux-x86-64.so.2");
+
+        assertEquals("/lib64/ld-linux-x86-64.so.2", parseInterpreter(elfWithInterpreter(path, path.length)));
+    }
+
+    @Test
+    void anObjectWithNoInterpreter_HasNone() {
+        assertNull(parseInterpreter(elf("libc.so.6"))); // a shared object: PT_LOAD and PT_DYNAMIC only
+    }
+
+    static Stream<Arguments> malformedInterpreters() {
+        var path = cString("/lib64/ld-linux-x86-64.so.2");
+        var huge = new byte[ElfDependencies.MAX_INTERPRETER_BYTES + 1];
+        Arrays.fill(huge, (byte) 'a');
+        huge[huge.length - 1] = 0;
+        var unterminated = "/lib64/ld-linux-x86-64.so.2".getBytes(StandardCharsets.UTF_8);
+
+        return Stream.of(
+                Arguments.of("empty or implausibly long", elfWithInterpreter(new byte[0], 0)),
+                Arguments.of("empty or implausibly long", elfWithInterpreter(huge, huge.length)),
+                Arguments.of("empty or implausibly long", elfWithInterpreter(path, -1L)), // ulong.MaxValue
+                Arguments.of("not a NUL-terminated string", elfWithInterpreter(unterminated, unterminated.length)),
+                Arguments.of("not a NUL-terminated string", elfWithInterpreter(new byte[] {0, 'x', 0}, 3)), // empty string
+                Arguments.of("runs past the end", elfWithInterpreter(path, path.length + 8L)));
+    }
+
+    @ParameterizedTest
+    @MethodSource("malformedInterpreters")
+    void aMalformedInterpreterPath_IsRefused(String reason, byte[] image) {
+        var ex = assertThrows(SecurityException.class, () -> parseInterpreter(image));
+
+        assertTrue(ex.getMessage().contains(reason), ex.getMessage());
+    }
+
+    @Test
+    void anOversizedProgramHeaderTable_IsRefusedBeforeItIsRead() {
+        var image = elf("x.so");
+        var buffer = ByteBuffer.wrap(image).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putShort(54, (short) 0xFFFF);
+        buffer.putShort(56, (short) 4096);
+
+        var ex = assertThrows(SecurityException.class, () -> parse(image));
+        assertTrue(ex.getMessage().contains("program header table is implausibly large"), ex.getMessage());
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.LINUX, disabledReason = "Linux only.")
+    void thisProcesssExecutable_NamesAnAbsoluteInterpreter() {
+        var interpreter = ElfDependencies.readInterpreter("/proc/self/exe");
+
+        assertNotNull(interpreter);
+        assertTrue(interpreter.startsWith("/"), interpreter);
     }
 
     @Test

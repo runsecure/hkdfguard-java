@@ -5,11 +5,12 @@ HkdfGuard Key Wrapping and Secret Protection library for Java - the Java port of
 library decrypt with the other: the wire format, AAD rules, AES-GCM layout, span/metric names and
 log event ids are identical.
 
-Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-keywrapping-v1`,
-which requires **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the
-OpenTelemetry API; logging is SLF4J; native KMS calls use the Java FFM API, which is final only from
-Java 22 - hence the key wrapper's higher minimum. On Java 21, use the library with a `KeyWrapper` of
-your own (a cloud KMS, say) in place of the native one. Building the library needs JDK 25; CI also
+Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-platform`,
+`hkdfguard-keywrapping-v1`, `hkdfguard-securefile` and `hkdfguard-keywrapping-awskms`, which require
+**Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
+calls and the key-file checks use the Java FFM API, which is final only from Java 22 - hence those
+modules' higher minimum. On Java 21, use the library with a `KeyWrapper` of your own in place of the
+native one. Building the library needs JDK 25; CI also
 runs the Java 21 modules' tests on a Java 21 runtime.
 
 ## Modules
@@ -19,7 +20,10 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-diagnostics`               | HkdfGuard.Diagnostics                | `HkdfGuardTelemetry`, span/attribute/event/metric names, `HkdfGuardLog` |
 | `hkdfguard-abstractions`              | HkdfGuard.Abstractions               | `CryptoProvider`, `KeyWrapper`, `KeyRing`, `DataProtector`, ... ; `ProtectedCacheBase`, `ServiceNames`, `ProtectedConfigurationPurpose` |
 | `hkdfguard-cryptoprovider-aesgcm256`  | HkdfGuard.CryptoProvider.AesGcm256   | `AesGcmCryptoProviderImpl`, `AesGcmCryptoProviderFactoryImpl`, `AesGcmPipelineDataProtectorImpl` |
+| `hkdfguard-platform`                  | -                                    | Internal: the OS calls and path checks `hkdfguard-keywrapping-v1` and `hkdfguard-securefile` share - Windows security descriptors and SIDs, Linux and macOS file status, the symbolic-link-following path walk (Java 25+). Not an API for applications |
 | `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
+| `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java (Java 25+) |
+| `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
 | `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl` |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
@@ -27,14 +31,16 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 
 The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
 native integration tests of several modules share (which provisioned service they use, and where key
-files may be written). It is test code only - a test-scope dependency of hkdfguard-dataencryptionkey
-and hkdfguard-cache, compiled straight into hkdfguard-keywrapping-v1's tests (which it depends on) -
-and is never published, signed or shipped in a release.
+files may be written), and `WindowsTempDirectory`, the folder the Windows key-file tests of
+hkdfguard-securefile and hkdfguard-keywrapping-awskms write to. It is test code only - a test-scope
+dependency of hkdfguard-dataencryptionkey, hkdfguard-cache, hkdfguard-securefile and
+hkdfguard-keywrapping-awskms, compiled straight into hkdfguard-keywrapping-v1's tests (which it
+depends on) - and is never published, signed or shipped in a release.
 
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
-implementing them end in `Impl`.
-Plain data classes that implement no interface (`HkdfGuardOptions`, `KeyFileOptions`) keep their
-.NET names.
+implementing them end in `Impl` (.NET's `AwsKmsKeyWrapper` is `AwsKmsKeyWrapperImpl`).
+Plain data classes and static helpers that implement no interface (`HkdfGuardOptions`,
+`KeyFileOptions`, `KeyFileTrust`, `TrustedKeyFile`) keep their .NET names.
 
 ## Example
 
@@ -58,7 +64,7 @@ int length = protector.decrypt(encrypted, result);
 
 - **Async** is `CompletableFuture`; there is no `CancellationToken`. Argument errors throw from the
   call itself; failures revealing a key complete the future exceptionally. Background refresh and
-  rotation run on virtual threads.
+  rotation run on daemon background threads.
 - **Disposal** is `close()` (blocking) and `closeAsync()`.
 - **Spans** (`ReadOnlySpan<char>`/`Span<byte>`) become `CharSequence` for read-only text and
   `byte[]`/`char[]` for buffers. `TryGet...(out ...)` becomes `find...` returning `Optional`/`OptionalInt`.
@@ -166,17 +172,31 @@ hkdfguard:
 - **Health:** with Actuator, `/actuator/health` gains an `hkdfguard` component that encrypts and
   decrypts a random probe with the current key. It reports `DOWN` when that key can't protect new
   values, most often because it failed closed after its KEK was revoked or became unreachable.
-  It never calls the KMS, and its only detail is `currentVersion`. Turn it off with
+  It never calls the KMS. Its details are `currentVersion` (the key checked) and, when it is
+  `DOWN`, `error`: a fixed message when the probe doesn't decrypt to what was encrypted, or, when
+  the check throws, the exception's class and message (added by Spring's
+  `AbstractHealthIndicator`). No key material, probe or ciphertext is reported. Turn it off with
   `management.health.hkdfguard.enabled=false`.
 
 ## Native access
 
-`hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API. Run with
-`--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1` (module path) or
-`--enable-native-access=ALL-UNNAMED` (class path). The native library is installed separately and
+`hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API, and
+`hkdfguard-securefile` (which `hkdfguard-keywrapping-awskms` reads key files through) makes its
+owner and permission checks through FFM too. The checks both share - security descriptors and SIDs
+on Windows, file status and the path walk on Linux and macOS - are made by `hkdfguard-platform`,
+which both depend on. On the class path, run with `--enable-native-access=ALL-UNNAMED`. On the module
+path, grant each of these modules you use and `hkdfguard-platform`:
+
+```text
+--enable-native-access=io.github.runsecure.hkdfguard.keywrapping.v1,io.github.runsecure.hkdfguard.platform
+--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform
+```
+ The native library is installed separately and
 loaded only from its verified location, exactly as in .NET (path ACLs, Authenticode signer/root/EKU
-and PE checks on Windows; ownership, code signature and dyld checks on macOS; ownership, the
-dynamic linker's environment and every loaded dependency on Linux).
+and PE checks on Windows, and after loading, that the module Windows mapped is the verified file;
+ownership, code signature and dyld checks on macOS; ownership, the
+dynamic linker's environment, where it would find every dependency (asked before loading) and
+every loaded dependency on Linux).
 
 Installed locations:
 
@@ -199,7 +219,9 @@ database (`getpwuid_r`), never the `user.home` property, which `-Duser.home` on 
 could point anywhere; with no usable entry, only the system install is considered. Besides the
 location, ownership and Developer ID signature checks, the library's own version - its
 `LC_ID_DYLIB` current version, in the Mach-O header the signature covers - must be at least
-`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused.
+`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused. On
+Windows the same 0.9.0 floor applies to `HkdfGuard.dll`'s signed version resource; a DLL with none
+is refused.
 
 Certificate revocation is not checked on macOS. Apple's code-signing check can be told to require
 it, but then a host that can't reach Apple's servers couldn't load the library, turning a network
@@ -232,6 +254,12 @@ enforces. Before loading, it requires all of the following:
   service's environment: whatever `LD_PRELOAD` or `LD_AUDIT` loads runs when the process starts,
   before the check, and can hide from it. Protect the service's environment (its unit file,
   container spec or launch configuration) as carefully as its binaries.
+- The process's own dynamic linker (its `PT_INTERP`, which must pass the same ownership checks) is
+  asked in list mode (`ld.so --list`, what `ldd` uses), under the `LD_LIBRARY_PATH` and
+  `LD_PRELOAD` the process started with and nothing else, where it would find every library
+  `libhkdfguard.so.1` pulls in. Each must pass the same ownership checks, so a dependency found
+  somewhere writable is refused before any of its code runs, and a dependency it can't find refuses
+  the load. Preloaded objects are listed too, including ones `LD_PRELOAD` names without a path.
 
 On macOS the loader also refuses while `DYLD_INSERT_LIBRARIES`, `DYLD_FRAMEWORK_PATH`,
 `DYLD_VERSIONED_LIBRARY_PATH`, `DYLD_VERSIONED_FRAMEWORK_PATH` or `DYLD_IMAGE_SUFFIX` is set: each
@@ -257,12 +285,15 @@ touches a KEK) and refuses a file that is missing, unreadable, the wrong size fo
 not a valid wrapped payload, or that holds what looks like an unwrapped key (32 raw bytes, or their
 hex or base64) - and a file whose location isn't trusted: a symbolic link, junction or other
 reparse point, an 8.3 short name, a UNC, mapped or SUBST drive, or a file or folder another account
-could write or replace. Each refusal is an `IOException` naming the path and the native status:
+could write or replace. Each refusal names the path and the native status, and is an
+`IllegalArgumentException` for -1 (invalid argument) and otherwise an `IOException`:
 `NoSuchFileException` (-32), `AccessDeniedException` (-33 access denied, -39 untrusted location),
 `InvalidKeyFileException` (-35 too short, -36 too long, -37 plaintext key, -38 malformed), or a
 plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has no default, so
 any other key wrapper must read key files itself, and must refuse one another account could have
-written or replaced.
+written or replaced. `hkdfguard-securefile`'s `TrustedKeyFile.readAsync` does that in Java, by the
+same rules and with the same exceptions, for key wrappers with no native library to read through;
+`AwsKmsKeyWrapperImpl` reads key files with it.
 
 **Status codes.** The Windows, Linux and macOS native libraries share one `HKDFGUARD_ERR_*` table,
 number for number, and every failure message names the status and what it means:
@@ -346,6 +377,68 @@ Windows service**: it closes later threads too.
 The Spring Boot starter deliberately has no property for this: auto-configuration runs after
 Spring has started its own threads and loaded the application's classes, too late to be the
 "first thing at startup" it should be, so call it in `main` before `SpringApplication.run`.
+
+## Wrapping under AWS KMS instead
+
+`AwsKmsKeyWrapperImpl` (artifact `hkdfguard-keywrapping-awskms`) is a `KeyWrapper` over one
+symmetric AWS KMS key. Use it in place of `NativeHkdfKeyWrapperV1Impl` wherever a wrapper is taken.
+Every call is a KMS request, authorized by the process's IAM credentials and recorded in CloudTrail:
+
+```java
+// The application builds the client, keeps it open while anything uses the wrapper, and closes it.
+var kms = KmsAsyncClient.builder()                       // default credential and region chain
+        .httpClientBuilder(NettyNioAsyncHttpClient.builder())
+        .build();
+var wrapper = new AwsKmsKeyWrapperImpl(kms,
+        "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+        Map.of("purpose", "my.service"));
+```
+
+- `generateAndWrapAsync` calls `GenerateDataKeyWithoutPlaintext` for an AES-256 key, so the
+  plaintext DEK never leaves KMS on that call. `wrapAsync` calls `Encrypt` and `unwrapAsync` calls `Decrypt`.
+- The key is pinned on every `Decrypt`. A symmetric ciphertext names its own key, and without the pin
+  a substituted key file wrapped under any other key the principal may use would still be revealed.
+  Prefer a key ARN to an alias: `Decrypt` resolves an alias when it is called, so re-pointing the
+  alias makes DEKs wrapped under the old key unreadable. KMS's automatic key rotation keeps the
+  ARN and needs nothing here.
+- The optional encryption context is KMS's AAD. It is bound into every wrapped DEK, required again
+  to reveal it, and can be required by the key policy (`kms:EncryptionContext:purpose`). CloudTrail
+  logs it in plaintext, so it must never hold a secret.
+- Failures complete the future with a `CryptographicException` naming KMS's error code (for example
+  `AccessDeniedException` or `InvalidCiphertextException`) and the HTTP status, with the AWS
+  exception as its cause; argument errors throw from the call. Cancellation - a cancelled future, or
+  the SDK's `AbortedException` - is passed on unwrapped, and cancelling a returned future cancels its
+  KMS request. A failed unwrap zeroes the caller's buffer.
+- Key files are read only from where no untrusted account could have written or replaced them, by
+  the native library's rules, checked in Java by `hkdfguard-securefile`: on Windows, a local fixed
+  drive, reached through no link, junction or substituted drive, with the file and every folder
+  above it owned and modifiable only by SYSTEM, Administrators or TrustedInstaller; on Linux and
+  macOS, the file and every directory above it owned by root and writable by no one else, following
+  only root-owned links. A `KeyFileTrust` passed to the constructor adds the deployment's own account
+  or group. A file that looks like an unwrapped key is refused too. A KMS ciphertext is about 184
+  bytes, well inside `WrappedKeyLimits.MAX_BYTES`.
+- Plaintext the wrapper can reach is zeroed: its copy of the key sent to `Encrypt`, and the array
+  inside the `SdkBytes` `Decrypt` returns. The SDK's JSON request and response bodies, and the array
+  it decodes the response's base64 into before copying it, aren't exposed, so they can't be.
+- The principal needs `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKeyWithoutPlaintext` on the key.
+  A process that only reads existing key files needs only `kms:Decrypt`.
+
+**Dependencies.** The module depends on `software.amazon.awssdk:kms`, at the version the
+`software.amazon.awssdk:bom` in this build's parent POM pins, but excludes the SDK's two default HTTP
+clients (`netty-nio-client` and `apache5-client`, which the SDK otherwise adds at run time): the
+application builds the client, so it chooses the HTTP client, and no consumer gets Netty's
+dependency tree on its class path without asking for it. Add the one you build your
+`KmsAsyncClient` with - `software.amazon.awssdk:netty-nio-client` or
+`software.amazon.awssdk:aws-crt-client` - at the same SDK version, ideally by importing the same
+`software.amazon.awssdk:bom`. Without one, `KmsAsyncClient.builder().build()` fails with "Unable to
+load an HTTP implementation". There is no Spring Boot auto-configuration for it (as in .NET, whose
+dependency-injection package doesn't wire AWS either): declare the wrapper as your `KeyWrapper`
+bean, and the client as a bean Spring closes.
+
+[Wrap keys with AWS KMS](docs/how-to/use-aws-kms.md) walks through creating the key, the IAM
+permissions for each role, credentials, and creating key files.
+[Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md) sets up a key of
+your own for `AwsKmsIntegrationTest`, which is otherwise reported as skipped.
 
 ## Building
 

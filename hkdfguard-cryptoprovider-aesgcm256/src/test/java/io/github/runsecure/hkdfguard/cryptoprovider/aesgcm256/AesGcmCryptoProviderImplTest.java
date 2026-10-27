@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256;
 
 import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.await;
-import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.assertFailsWith;
 import static io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.Futures.sleep;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -73,7 +73,7 @@ class AesGcmCryptoProviderImplTest {
         var wrapper = new FakeKeyWrapper();
         wrapper.throwOnUnwrap = new IllegalStateException("reveal failed");
 
-        awaitFailure(IllegalStateException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
+        assertFailsWith(IllegalStateException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
     }
 
     @Test
@@ -85,7 +85,7 @@ class AesGcmCryptoProviderImplTest {
             }
         };
 
-        var failure = awaitFailure(CryptographicException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
+        var failure = assertFailsWith(CryptographicException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
         assertEquals("KEK unavailable", failure.getMessage());
     }
 
@@ -119,7 +119,7 @@ class AesGcmCryptoProviderImplTest {
         var wrapper = new FakeKeyWrapper();
         wrapper.unwrapBytesWrittenOverride = bytesWritten;
 
-        var failure = awaitFailure(CryptographicException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
+        var failure = assertFailsWith(CryptographicException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
 
         assertTrue(failure.getMessage().contains("revealed " + bytesWritten + " bytes"));
     }

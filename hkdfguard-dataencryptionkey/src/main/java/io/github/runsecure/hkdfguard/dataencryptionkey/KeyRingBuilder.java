@@ -207,6 +207,13 @@ public final class KeyRingBuilder {
      * available - 1-300, so a bad value fails here, not at build. A revocation check, not a limit on
      * how long the DEK stays in memory. Together with {@link #getMaxRefreshFailures()} it sets how
      * quickly a revoked KEK stops a running process.
+     * <p>
+     * It is also each refresh's deadline: a reveal that takes longer than one interval counts as a
+     * failed refresh, so a hung key wrapper can't keep a revoked KEK's key in use. A short interval
+     * is therefore a short deadline. A TPM-backed KEK can take more than a second to answer, longer
+     * while other processes share the TPM, and a locked macOS keychain stalls the call; under the
+     * default fail-closed policy, that many slow answers in a row suspend the key though the KEK is
+     * healthy. Keep it at 10 seconds or more for TPM-backed keys.
      *
      * @throws IllegalArgumentException keyRefreshInterval is not between 1 and 300
      */
@@ -298,7 +305,7 @@ public final class KeyRingBuilder {
 
     /**
      * Reads each registered key file's wrapped bytes, mints each registered ephemeral key, and
-     * returns a populated ring - on a virtual thread, so the caller never blocks on a key-wrapper
+     * returns a populated ring - on a background thread, so the caller never blocks on a key-wrapper
      * call. If anything fails partway (an unreadable file, an unwrap failure, a duplicate version),
      * every provider created so far is closed and the future fails with the cause.
      *
@@ -332,7 +339,9 @@ public final class KeyRingBuilder {
                 maxRefreshFailures, ephemeralKeyRotationInterval, ephemeralKeyRetention);
 
         var result = new CompletableFuture<KeyRingImpl>();
-        Thread.ofVirtual().name("hkdfguard-key-ring-build").start(() -> {
+        // A platform thread: the build calls the key wrapper, which may block in native code - that
+        // pins a virtual thread's carrier.
+        Thread.ofPlatform().daemon().name("hkdfguard-key-ring-build").start(() -> {
             try {
                 result.complete(plan.build());
             } catch (Throwable t) {

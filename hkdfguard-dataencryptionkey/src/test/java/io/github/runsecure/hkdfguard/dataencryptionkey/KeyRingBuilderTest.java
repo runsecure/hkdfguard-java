@@ -1,7 +1,7 @@
 package io.github.runsecure.hkdfguard.dataencryptionkey;
 
 import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.await;
-import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.awaitFailure;
+import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.assertFailsWith;
 import static io.github.runsecure.hkdfguard.dataencryptionkey.TestKeys.utf8;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -177,7 +177,7 @@ class KeyRingBuilderTest {
     void build_WhenAVersionIsRegisteredTwice_ClosesEveryProviderItCreated() throws IOException {
         var factory = new TestKeys.RecordingCryptoProviderFactory();
 
-        awaitFailure(IllegalArgumentException.class, configured(factory).withKeyFile(1, keyFile("v1.bin", utf8("wrapped"))).withEphemeralKey(1).buildAsync());
+        assertFailsWith(IllegalArgumentException.class, configured(factory).withKeyFile(1, keyFile("v1.bin", utf8("wrapped"))).withEphemeralKey(1).buildAsync());
 
         assertEquals(2, factory.createdProviders.size());
         factory.createdProviders.forEach(KeyRingBuilderTest::assertClosed);
@@ -214,7 +214,7 @@ class KeyRingBuilderTest {
     void build_WhenAKeyFileCannotBeRead_ClosesTheProvidersAlreadyCreated() throws IOException {
         var factory = new TestKeys.RecordingCryptoProviderFactory();
 
-        awaitFailure(NoSuchFileException.class, configured(factory)
+        assertFailsWith(NoSuchFileException.class, configured(factory)
                 .withKeyFile(1, keyFile("v1.bin", utf8("wrapped")))
                 .withKeyFile(2, directory.resolve("missing.bin"))
                 .buildAsync());
@@ -255,7 +255,7 @@ class KeyRingBuilderTest {
         var path = keyFile("v1.bin", new byte[length]);
         var factory = new TestKeys.RecordingCryptoProviderFactory();
 
-        awaitFailure(InvalidKeyFileException.class, configured(factory).withKeyFile(1, path).buildAsync());
+        assertFailsWith(InvalidKeyFileException.class, configured(factory).withKeyFile(1, path).buildAsync());
         assertEquals(0, factory.createdWrapped.size());
     }
 
@@ -302,7 +302,7 @@ class KeyRingBuilderTest {
         wrapper.failure = new InvalidKeyFileException("Key file 'v2.bin' was refused by the native library with status -37 (...).");
         var factory = new TestKeys.RecordingCryptoProviderFactory();
 
-        var thrown = awaitFailure(InvalidKeyFileException.class, new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory)
+        var thrown = assertFailsWith(InvalidKeyFileException.class, new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory)
                 .withKeyRefreshInterval(60).withEphemeralKey(5)
                 .withKeyFile(1, directory.resolve("v1.bin"))
                 .withKeyFile(2, wrapper.failingPath)

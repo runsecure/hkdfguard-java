@@ -4,23 +4,24 @@ import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
-import static java.lang.foreign.ValueLayout.JAVA_SHORT;
 
+import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
+import io.github.runsecure.hkdfguard.platform.unix.UnixFiles;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
-import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.VarHandle;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.NoSuchFileException;
 
 /**
  * The macOS system calls {@link MacOsNativeLibraryLoader}'s checks rely on, bound through the FFM
- * API: lstat for ownership, permissions and type; geteuid and getpwuid_r for the user's home; dlopen/dlsym/dlclose, and dladdr for
+ * API: lstat for ownership, permissions and type (hkdfguard-platform's UnixFiles, shared with the
+ * key-file checks); geteuid and getpwuid_r for the user's home; dlopen/dlsym/dlclose, and dladdr for
  * which file dyld really loaded; and the Security framework's static code signature check. Every
  * library is named by absolute path. Bound only on first use, so inert off macOS.
  */
@@ -30,19 +31,6 @@ final class MacOsNative {
     private static final String CORE_FOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
     private static final String SECURITY = "/System/Library/Frameworks/Security.framework/Security";
 
-    // struct stat on arm64, the only architecture the loader runs on (it refuses x64 first): st_dev
-    // int32 @0, st_mode uint16 @4, st_nlink uint16 @6, st_ino uint64 @8, st_uid uint32 @16, st_gid
-    // uint32 @20. sizeof(struct stat) is 144; the buffer is larger to be safe.
-    private static final int STAT_BUFFER_SIZE = 256;
-    private static final int MODE_OFFSET = 4;
-    private static final int UID_OFFSET = 16;
-    private static final int GID_OFFSET = 20;
-
-    private static final int FILE_TYPE_MASK = 0xF000; // S_IFMT
-    private static final int REGULAR_FILE = 0x8000;   // S_IFREG
-    private static final int DIRECTORY = 0x4000;      // S_IFDIR
-    private static final int SYMBOLIC_LINK = 0xA000;  // S_IFLNK
-
     private static final int RTLD_NOW = 0x2;
     private static final int RTLD_LOCAL = 0x4;
 
@@ -51,9 +39,6 @@ final class MacOsNative {
     private static final int SEC_CS_STRICT_VALIDATE = 1 << 4;
 
     private static final Linker LINKER = Linker.nativeLinker();
-    private static final Linker.Option CAPTURE_ERRNO = Linker.Option.captureCallState("errno");
-    private static final MemoryLayout CAPTURE_LAYOUT = Linker.Option.captureStateLayout();
-    private static final VarHandle ERRNO = CAPTURE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("errno"));
 
     private MacOsNative() {
     }
@@ -66,7 +51,6 @@ final class MacOsNative {
     private static final class LibSystem {
         // By name: system libraries live in the dyld shared cache, not as files on disk.
         static final SymbolLookup LIBRARY = SymbolLookup.libraryLookup(LIB_SYSTEM, Arena.global());
-        static final MethodHandle LSTAT = bind(LIBRARY, "lstat", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), CAPTURE_ERRNO);
         static final MethodHandle GETEUID = bind(LIBRARY, "geteuid", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle DLOPEN = bind(LIBRARY, "dlopen", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT));
         static final MethodHandle DLSYM = bind(LIBRARY, "dlsym", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
@@ -103,39 +87,28 @@ final class MacOsNative {
 
     /** lstat's result for a path whose existence is only being probed: 0 if it exists, else the errno. */
     static int probe(String path) {
-        try (var arena = Arena.ofConfined()) {
-            var capture = arena.allocate(CAPTURE_LAYOUT);
-            var result = (int) LibSystem.LSTAT.invokeExact(capture, arena.allocateFrom(path), arena.allocate(STAT_BUFFER_SIZE, 8));
-            return result == 0 ? 0 : (int) ERRNO.get(capture, 0L);
-        } catch (Throwable t) {
-            throw rethrow(t);
+        try {
+            return UnixFiles.probe(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 
     /**
      * lstat: describes the path itself, never what a symbolic link points to.
      *
-     * @throws UncheckedIOException lstat failed
+     * @throws UncheckedIOException lstat failed, or nothing is there
      */
     static UnixFileStatus status(String path) {
-        try (var arena = Arena.ofConfined()) {
-            var capture = arena.allocate(CAPTURE_LAYOUT);
-            var buffer = arena.allocate(STAT_BUFFER_SIZE, 8);
-            if ((int) LibSystem.LSTAT.invokeExact(capture, arena.allocateFrom(path), buffer) != 0)
-                throw new UncheckedIOException(new IOException("lstat('" + path + "') failed with errno " + (int) ERRNO.get(capture, 0L) + "."));
-
-            var mode = Short.toUnsignedInt(buffer.get(JAVA_SHORT, MODE_OFFSET));
-            var type = switch (mode & FILE_TYPE_MASK) {
-                case REGULAR_FILE -> UnixFileType.REGULAR_FILE;
-                case DIRECTORY -> UnixFileType.DIRECTORY;
-                case SYMBOLIC_LINK -> UnixFileType.SYMBOLIC_LINK;
-                default -> UnixFileType.OTHER;
-            };
-            return new UnixFileStatus(Integer.toUnsignedLong(buffer.get(JAVA_INT, UID_OFFSET)),
-                    Integer.toUnsignedLong(buffer.get(JAVA_INT, GID_OFFSET)), UnixFileStatus.permissionsFromMode(mode), type);
-        } catch (Throwable t) {
-            throw rethrow(t);
+        UnixFileStatus status;
+        try {
+            status = UnixFiles.statusOrNull(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
+        if (status == null)
+            throw new UncheckedIOException(new NoSuchFileException(path, null, "lstat('" + path + "') found nothing there."));
+        return status;
     }
 
     // struct passwd on arm64 (pwd.h): pw_name @0, pw_passwd @8, pw_uid @16, pw_gid @20, pw_change @24,

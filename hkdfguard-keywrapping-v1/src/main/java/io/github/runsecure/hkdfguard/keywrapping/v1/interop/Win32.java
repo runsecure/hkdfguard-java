@@ -16,36 +16,28 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * The Win32 calls the Windows loader's checks rely on, bound through the FFM API: known-folder
- * lookup, file attributes, security descriptors and SIDs, WinVerifyTrust, and LoadLibraryExW /
- * GetProcAddress. kernel32 is a KnownDLL, always mapped from System32; every other system library
- * is loaded by its absolute System32 path, so nothing here can be planted in the application
- * directory or on PATH. Each library is bound only on first use, so this class is inert off
- * Windows. 64-bit Windows only - the only Windows the JDK still supports.
+ * lookup, version resources, WinVerifyTrust, and LoadLibraryExW / GetProcAddress. File attributes,
+ * security descriptors and SIDs are hkdfguard-platform's WindowsSecurity, shared with the key-file
+ * checks. kernel32 is a KnownDLL, always mapped from System32. Every other system library here
+ * (shell32, ole32, wintrust, version) is loaded by its absolute System32 path
+ * through {@link SymbolLookup#libraryLookup(Path, Arena)}, a plain LoadLibrary of that path: the
+ * library itself can't be planted in the application directory or on PATH, but the imports it
+ * pulls in that aren't KnownDLLs (wintrust.dll's crypt32.dll and msasn1.dll, for example) are
+ * found by the default DLL search order, which starts at the application directory - the JDK's
+ * bin folder. The HkdfGuard DLL is loaded differently ({@link #loadLibrary}): LoadLibraryExW with
+ * LOAD_LIBRARY_SEARCH_SYSTEM32, so its dependencies come from System32 only. Each library is bound
+ * only on first use, so this class is inert off Windows. 64-bit Windows only - the only Windows
+ * the JDK still supports.
  */
 @SuppressWarnings("restricted") // Native access is this class's purpose; the module requires --enable-native-access.
 final class Win32 {
-    static final int INVALID_FILE_ATTRIBUTES = -1;
-    static final int FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
-
-    static final int ACCESS_ALLOWED_ACE_TYPE = 0x00;
-    static final int ACCESS_DENIED_ACE_TYPE = 0x01;
-    static final int ACCESS_DENIED_OBJECT_ACE_TYPE = 0x06;
-    static final int ACCESS_ALLOWED_CALLBACK_ACE_TYPE = 0x09;
-    static final int ACCESS_DENIED_CALLBACK_ACE_TYPE = 0x0A;
-    static final int ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE = 0x0C;
-    static final int INHERIT_ONLY_ACE = 0x08;
-
     private static final int LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800;
     private static final int KF_FLAG_DONT_VERIFY = 0x4000;
-    private static final int SE_FILE_OBJECT = 1;
-    private static final int OWNER_SECURITY_INFORMATION = 0x1;
-    private static final int DACL_SECURITY_INFORMATION = 0x4;
-    private static final int SDDL_REVISION_1 = 1;
 
     private static final Linker LINKER = Linker.nativeLinker();
     private static final Linker.Option CAPTURE_LAST_ERROR = Linker.Option.captureCallState("GetLastError");
@@ -71,8 +63,8 @@ final class Win32 {
         static final MethodHandle GET_SYSTEM_DIRECTORY = bind(LIBRARY, "GetSystemDirectoryW", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
         static final MethodHandle LOAD_LIBRARY_EX = bind(LIBRARY, "LoadLibraryExW", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_INT), CAPTURE_LAST_ERROR);
         static final MethodHandle GET_PROC_ADDRESS = bind(LIBRARY, "GetProcAddress", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
-        static final MethodHandle GET_FILE_ATTRIBUTES = bind(LIBRARY, "GetFileAttributesW", FunctionDescriptor.of(JAVA_INT, ADDRESS), CAPTURE_LAST_ERROR);
-        static final MethodHandle LOCAL_FREE = bind(LIBRARY, "LocalFree", FunctionDescriptor.of(ADDRESS, ADDRESS));
+        static final MethodHandle GET_MODULE_FILE_NAME = bind(LIBRARY, "GetModuleFileNameW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT), CAPTURE_LAST_ERROR);
+        static final MethodHandle FREE_LIBRARY = bind(LIBRARY, "FreeLibrary", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final String SYSTEM_DIRECTORY = systemDirectory();
     }
 
@@ -86,27 +78,51 @@ final class Win32 {
         static final MethodHandle CO_TASK_MEM_FREE = bind(LIBRARY, "CoTaskMemFree", FunctionDescriptor.ofVoid(ADDRESS));
     }
 
-    private static final class Advapi32 {
-        static final SymbolLookup LIBRARY = system32("advapi32.dll");
-        static final MethodHandle GET_NAMED_SECURITY_INFO = bind(LIBRARY, "GetNamedSecurityInfoW",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
-        static final MethodHandle CONVERT_SDDL_TO_SD = bind(LIBRARY, "ConvertStringSecurityDescriptorToSecurityDescriptorW",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS), CAPTURE_LAST_ERROR);
-        static final MethodHandle GET_SD_OWNER = bind(LIBRARY, "GetSecurityDescriptorOwner", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
-        static final MethodHandle GET_SD_DACL = bind(LIBRARY, "GetSecurityDescriptorDacl", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
-        static final MethodHandle GET_ACE = bind(LIBRARY, "GetAce", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
-        static final MethodHandle CONVERT_SID_TO_STRING = bind(LIBRARY, "ConvertSidToStringSidW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
-        static final MethodHandle CONVERT_STRING_TO_SID = bind(LIBRARY, "ConvertStringSidToSidW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
-        static final MethodHandle LOOKUP_ACCOUNT_SID = bind(LIBRARY, "LookupAccountSidW",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
-    }
-
     private static final class WinTrust {
         static final SymbolLookup LIBRARY = system32("wintrust.dll");
         static final MethodHandle WIN_VERIFY_TRUST = bind(LIBRARY, "WinVerifyTrust", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
         static final MethodHandle PROV_DATA_FROM_STATE_DATA = bind(LIBRARY, "WTHelperProvDataFromStateData", FunctionDescriptor.of(ADDRESS, ADDRESS));
         static final MethodHandle GET_PROV_SIGNER_FROM_CHAIN = bind(LIBRARY, "WTHelperGetProvSignerFromChain",
                 FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
+    }
+
+    private static final class Version {
+        static final SymbolLookup LIBRARY = system32("version.dll");
+        static final MethodHandle GET_FILE_VERSION_INFO_SIZE = bind(LIBRARY, "GetFileVersionInfoSizeW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle GET_FILE_VERSION_INFO = bind(LIBRARY, "GetFileVersionInfoW", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS));
+        static final MethodHandle VER_QUERY_VALUE = bind(LIBRARY, "VerQueryValueW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+    }
+
+    /**
+     * The file version {major, minor, patch} from a file's version resource, read through
+     * version.dll from System32; null if it has none or it can't be read.
+     */
+    static int[] fileVersion(String path) {
+        try (var arena = Arena.ofConfined()) {
+            var name = arena.allocateFrom(path, UTF_16LE);
+            var size = (int) Version.GET_FILE_VERSION_INFO_SIZE.invokeExact(name, MemorySegment.NULL);
+            if (size <= 0)
+                return null;
+            var block = arena.allocate(size);
+            if ((int) Version.GET_FILE_VERSION_INFO.invokeExact(name, 0, size, block) == 0)
+                return null;
+            var info = arena.allocate(ADDRESS);
+            var length = arena.allocate(JAVA_INT);
+            if ((int) Version.VER_QUERY_VALUE.invokeExact(block, arena.allocateFrom("\\", UTF_16LE), info, length) == 0)
+                return null;
+            var fixedInfo = info.get(ADDRESS, 0);
+            if (isNull(fixedInfo) || length.get(JAVA_INT, 0) < 52)
+                return null;
+            // VS_FIXEDFILEINFO: signature, struct version, file version MS, file version LS, ...
+            fixedInfo = fixedInfo.reinterpret(52);
+            if (fixedInfo.get(JAVA_INT, 0) != 0xFEEF04BD)
+                return null;
+            var ms = fixedInfo.get(JAVA_INT, 8);
+            var ls = fixedInfo.get(JAVA_INT, 12);
+            return new int[] {ms >>> 16, ms & 0xFFFF, ls >>> 16};
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
     }
 
     private static RuntimeException rethrow(Throwable t) {
@@ -123,16 +139,6 @@ final class Win32 {
 
     private static String readWideString(MemorySegment pointer) {
         return pointer.reinterpret(Long.MAX_VALUE).getString(0, UTF_16LE);
-    }
-
-    private static void localFree(MemorySegment pointer) {
-        if (isNull(pointer))
-            return;
-        try {
-            var ignored = (MemorySegment) Kernel32.LOCAL_FREE.invokeExact(pointer);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
     }
 
     // --- Paths and loading ------------------------------------------------------------------
@@ -174,11 +180,29 @@ final class Win32 {
         }
     }
 
-    /** GetFileAttributesW: the item's own attributes (a link is not followed), or {@link #INVALID_FILE_ATTRIBUTES}. */
-    static int fileAttributes(String path) {
+    /**
+     * GetModuleFileNameW: the file Windows mapped a loaded module from.
+     *
+     * @throws IllegalStateException it can't be read
+     */
+    static String moduleFileName(MemorySegment module) {
         try (var arena = Arena.ofConfined()) {
+            var capacity = 32768; // the longest path Windows supports, plus its terminator
+            var buffer = arena.allocate(JAVA_CHAR, capacity);
             var capture = arena.allocate(CAPTURE_LAYOUT);
-            return (int) Kernel32.GET_FILE_ATTRIBUTES.invokeExact(capture, arena.allocateFrom(path, UTF_16LE));
+            var length = (int) Kernel32.GET_MODULE_FILE_NAME.invokeExact(capture, module, buffer, capacity);
+            if (length <= 0 || length >= capacity)
+                throw new IllegalStateException("GetModuleFileNameW failed with error " + (int) LAST_ERROR.get(capture, 0L) + ".");
+            return buffer.getString(0, UTF_16LE);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** FreeLibrary: releases a reference {@link #loadLibrary(String)} took. */
+    static void freeLibrary(MemorySegment module) {
+        try {
+            var ignored = (int) Kernel32.FREE_LIBRARY.invokeExact(module);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -186,7 +210,7 @@ final class Win32 {
 
     /**
      * LoadLibraryExW of an absolute path, with the library's own dependencies resolved from
-     * System32 only - never the application directory or PATH. Never unloaded.
+     * System32 only - never the application directory or PATH. Never unloaded once verified.
      *
      * @throws IllegalStateException the load failed
      */
@@ -213,159 +237,6 @@ final class Win32 {
         }
     }
 
-    // --- Security descriptors ---------------------------------------------------------------
-
-    /** One ACE: its type, flags, access mask, and trustee SID (null for an ACE type with no plain SID). */
-    record Ace(int type, int flags, int mask, String sid) {
-    }
-
-    /**
-     * An item's owner and DACL.
-     *
-     * @param ownerSid           the owner's SID string, or null if the descriptor has no owner
-     * @param grantsEveryoneFull true when there is no DACL (or a NULL one), which grants everyone full access
-     * @param aces               the DACL's entries, in order
-     */
-    record SecurityDescriptorInfo(String ownerSid, boolean grantsEveryoneFull, List<Ace> aces) {
-    }
-
-    /**
-     * The owner and DACL of a file or directory, read without following a link.
-     *
-     * @throws SecurityException the descriptor could not be read
-     */
-    static SecurityDescriptorInfo securityDescriptorOf(String path) {
-        try (var arena = Arena.ofConfined()) {
-            var owner = arena.allocate(ADDRESS);
-            var dacl = arena.allocate(ADDRESS);
-            var descriptor = arena.allocate(ADDRESS);
-            var error = (int) Advapi32.GET_NAMED_SECURITY_INFO.invokeExact(arena.allocateFrom(path, UTF_16LE), SE_FILE_OBJECT,
-                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, owner, MemorySegment.NULL, dacl, MemorySegment.NULL, descriptor);
-            if (error != 0)
-                throw new SecurityException("Could not read the security descriptor of '" + path + "' (error " + error + "); refusing to load from it.");
-
-            var sd = descriptor.get(ADDRESS, 0);
-            try {
-                return parse(sd);
-            } finally {
-                localFree(sd);
-            }
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
-    /**
-     * A security descriptor written in SDDL - for testing the policy against descriptors a real
-     * folder would be hard to give.
-     *
-     * @throws IllegalArgumentException the SDDL is invalid
-     */
-    static SecurityDescriptorInfo securityDescriptorFromSddl(String sddl) {
-        try (var arena = Arena.ofConfined()) {
-            var capture = arena.allocate(CAPTURE_LAYOUT);
-            var descriptor = arena.allocate(ADDRESS);
-            var ok = (int) Advapi32.CONVERT_SDDL_TO_SD.invokeExact(capture, arena.allocateFrom(sddl, UTF_16LE), SDDL_REVISION_1,
-                    descriptor, MemorySegment.NULL);
-            if (ok == 0)
-                throw new IllegalArgumentException("Invalid SDDL (error " + (int) LAST_ERROR.get(capture, 0L) + "): " + sddl);
-
-            var sd = descriptor.get(ADDRESS, 0);
-            try {
-                return parse(sd);
-            } finally {
-                localFree(sd);
-            }
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
-    private static SecurityDescriptorInfo parse(MemorySegment sd) throws Throwable {
-        try (var arena = Arena.ofConfined()) {
-            var owner = arena.allocate(ADDRESS);
-            var defaulted = arena.allocate(JAVA_INT);
-            if ((int) Advapi32.GET_SD_OWNER.invokeExact(sd, owner, defaulted) == 0)
-                throw new SecurityException("Could not read a security descriptor's owner.");
-            var ownerPointer = owner.get(ADDRESS, 0);
-            var ownerSid = isNull(ownerPointer) ? null : sidToString(ownerPointer);
-
-            var present = arena.allocate(JAVA_INT);
-            var dacl = arena.allocate(ADDRESS);
-            if ((int) Advapi32.GET_SD_DACL.invokeExact(sd, present, dacl, defaulted) == 0)
-                throw new SecurityException("Could not read a security descriptor's DACL.");
-            var daclPointer = dacl.get(ADDRESS, 0);
-            if (present.get(JAVA_INT, 0) == 0 || isNull(daclPointer))
-                return new SecurityDescriptorInfo(ownerSid, true, List.of());
-
-            // ACL header: AclRevision u8, Sbz1 u8, AclSize u16, AceCount u16 @4, Sbz2 u16.
-            var aceCount = Short.toUnsignedInt(daclPointer.reinterpret(8).get(JAVA_SHORT, 4));
-            var aces = new ArrayList<Ace>(aceCount);
-            var acePointer = arena.allocate(ADDRESS);
-            for (var i = 0; i < aceCount; i++) {
-                if ((int) Advapi32.GET_ACE.invokeExact(daclPointer, i, acePointer) == 0)
-                    throw new SecurityException("Could not read ACE " + i + " of a DACL.");
-
-                // ACE_HEADER: AceType u8, AceFlags u8, AceSize u16; then, for the plain allow/deny
-                // types and their callback forms, Mask u32 @4 and the SID @8.
-                var ace = acePointer.get(ADDRESS, 0).reinterpret(8);
-                var type = Byte.toUnsignedInt(ace.get(JAVA_BYTE, 0));
-                var flags = Byte.toUnsignedInt(ace.get(JAVA_BYTE, 1));
-                var size = Short.toUnsignedInt(ace.get(JAVA_SHORT, 2));
-                var mask = ace.get(JAVA_INT, 4);
-                var hasPlainSid = type == ACCESS_ALLOWED_ACE_TYPE || type == ACCESS_DENIED_ACE_TYPE
-                        || type == ACCESS_ALLOWED_CALLBACK_ACE_TYPE || type == ACCESS_DENIED_CALLBACK_ACE_TYPE;
-                var sid = hasPlainSid ? sidToString(ace.reinterpret(size).asSlice(8)) : null;
-                aces.add(new Ace(type, flags, mask, sid));
-            }
-            return new SecurityDescriptorInfo(ownerSid, false, List.copyOf(aces));
-        }
-    }
-
-    private static String sidToString(MemorySegment sid) throws Throwable {
-        try (var arena = Arena.ofConfined()) {
-            var result = arena.allocate(ADDRESS);
-            if ((int) Advapi32.CONVERT_SID_TO_STRING.invokeExact(sid, result) == 0)
-                throw new SecurityException("Could not read a SID.");
-            var text = result.get(ADDRESS, 0);
-            try {
-                return readWideString(text);
-            } finally {
-                localFree(text);
-            }
-        }
-    }
-
-    /** The account a SID maps to, as DOMAIN\name - or null if it maps to none here. */
-    static String accountName(String sid) {
-        try (var arena = Arena.ofConfined()) {
-            var binary = arena.allocate(ADDRESS);
-            if ((int) Advapi32.CONVERT_STRING_TO_SID.invokeExact(arena.allocateFrom(sid, UTF_16LE), binary) == 0)
-                return null;
-
-            var sidPointer = binary.get(ADDRESS, 0);
-            try {
-                var capacity = 256;
-                var name = arena.allocate(JAVA_CHAR, capacity);
-                var domain = arena.allocate(JAVA_CHAR, capacity);
-                var nameLength = arena.allocateFrom(JAVA_INT, capacity);
-                var domainLength = arena.allocateFrom(JAVA_INT, capacity);
-                var use = arena.allocate(JAVA_INT);
-                var ok = (int) Advapi32.LOOKUP_ACCOUNT_SID.invokeExact(MemorySegment.NULL, sidPointer, name, nameLength, domain, domainLength, use);
-                if (ok == 0)
-                    return null;
-
-                var domainName = domain.getString(0, UTF_16LE);
-                var accountName = name.getString(0, UTF_16LE);
-                return domainName.isEmpty() ? accountName : domainName + "\\" + accountName;
-            } finally {
-                localFree(sidPointer);
-            }
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
     // --- WinVerifyTrust ---------------------------------------------------------------------
 
     /**
@@ -377,6 +248,22 @@ final class Win32 {
      * @param rootDer the root the chain ends at (DER) when status is 0, else null
      */
     record SignatureVerification(int status, byte[] leafDer, byte[] rootDer) {
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof SignatureVerification that && status == that.status && Arrays.equals(leafDer, that.leafDer)
+                    && Arrays.equals(rootDer, that.rootDer);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(status, Arrays.hashCode(leafDer), Arrays.hashCode(rootDer));
+        }
+
+        @Override
+        public String toString() {
+            return String.format("SignatureVerification[status=0x%08X, leafDer=%s, rootDer=%s]", status,
+                    leafDer == null ? "none" : leafDer.length + " bytes", rootDer == null ? "none" : rootDer.length + " bytes");
+        }
     }
 
     // WINTRUST_ACTION_GENERIC_VERIFY_V2 {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}

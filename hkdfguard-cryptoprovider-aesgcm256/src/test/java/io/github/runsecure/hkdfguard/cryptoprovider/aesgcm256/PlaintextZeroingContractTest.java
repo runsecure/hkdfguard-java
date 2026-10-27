@@ -96,7 +96,7 @@ class PlaintextZeroingContractTest {
             }
         };
 
-        Futures.awaitFailure(CryptographicException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
+        Futures.assertFailsWith(CryptographicException.class, AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60));
 
         assertArrayEquals(new byte[32], captured[0]);
     }

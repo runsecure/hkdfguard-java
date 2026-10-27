@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -43,8 +44,8 @@ class WindowsNativeLibraryLoaderTest {
     private static final List<String> GENUINE_EKUS =
             List.of(ARTIFACT_SIGNING_EKU, WindowsNativeLibraryLoader.CODE_SIGNING_EKU, WindowsNativeLibraryLoader.EXPECTED_PROFILE_EKU);
 
-    private static Win32.SecurityDescriptorInfo sddl(String sddl) {
-        return Win32.securityDescriptorFromSddl(sddl);
+    private static WindowsSecurity.SecurityDescriptorInfo sddl(String sddl) {
+        return WindowsSecurity.securityDescriptorFromSddl(sddl);
     }
 
     // --- Location -------------------------------------------------------------------------------
@@ -430,7 +431,91 @@ class WindowsNativeLibraryLoaderTest {
         WindowsNativeLibraryLoader.verifySignerIdentity("test", leafSubject, leafEkuOids, rootSha256, WindowsNativeLibraryLoader.EXPECTED_PUBLISHER);
     }
 
+    // --- Version floor --------------------------------------------------------------------------
+
+    @ParameterizedTest
+    @CsvSource({"0,9,0", "0,9,1", "0,10,0", "1,0,0"})
+    void verifyMinimumVersion_TheMinimumOrLater_Passes(int major, int minor, int patch) {
+        assertDoesNotThrow(() -> WindowsNativeLibraryLoader.verifyMinimumVersion("test", new int[] {major, minor, patch}));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0,8,9", "0,8,65535", "0,0,0"})
+    void verifyMinimumVersion_AnOlderVersion_IsRefused(int major, int minor, int patch) {
+        var e = assertThrows(SecurityException.class,
+                () -> WindowsNativeLibraryLoader.verifyMinimumVersion("test", new int[] {major, minor, patch}));
+
+        assertTrue(e.getMessage().contains("older than the minimum"), e.getMessage());
+    }
+
+    @Test
+    void verifyMinimumVersion_NoVersionResource_IsRefused() {
+        var e = assertThrows(SecurityException.class, () -> WindowsNativeLibraryLoader.verifyMinimumVersion("test", null));
+
+        assertTrue(e.getMessage().contains("no readable version resource"), e.getMessage());
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void fileVersion_AFileWithNoVersionResource_IsNull() throws IOException {
+        var path = Files.createTempFile("hkdfguard", ".dll");
+        try {
+            Files.write(path, "MZ not really a PE image".getBytes(StandardCharsets.US_ASCII));
+
+            assertEquals(null, Win32.fileVersion(path.toString()));
+        } finally {
+            Files.delete(path);
+        }
+    }
+
+    @Test
+    void fileVersion_TheInstalledLibrary_IsAtLeastTheMinimum() {
+        NativeTestEnvironment.assumeWindowsLibraryInstalled();
+
+        var version = Win32.fileVersion(WindowsNativeLibraryLoader.installedPath());
+
+        assertNotEquals(null, version);
+        assertDoesNotThrow(() -> WindowsNativeLibraryLoader.verifyMinimumVersion(WindowsNativeLibraryLoader.installedPath(), version));
+    }
+
+    // --- The module Windows mapped --------------------------------------------------------------
+
+    @ParameterizedTest
+    @EnabledOnOs(OS.WINDOWS)
+    @ValueSource(strings = {
+            "C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll",
+            "c:\\program files\\hkdfguard\\v1\\hkdfguard.DLL",
+            "\\\\?\\C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll"})
+    void verifyLoadedModule_TheVerifiedFileItself_Passes_WhateverItsCaseOrLongPathPrefix(String loaded) {
+        assertDoesNotThrow(() -> WindowsNativeLibraryLoader.verifyLoadedModule("C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll", loaded));
+    }
+
+    @ParameterizedTest
+    @EnabledOnOs(OS.WINDOWS)
+    @ValueSource(strings = {
+            "C:\\Users\\someone\\AppData\\Local\\Temp\\HkdfGuard.dll", // the same name, loaded earlier from elsewhere
+            "C:\\app\\app.exe.local\\HkdfGuard.dll", // DLL redirection
+            "C:\\Program Files\\HkdfGuard\\v2\\HkdfGuard.dll",
+            "\\\\?\\UNC\\server\\share\\HkdfGuard.dll"})
+    void verifyLoadedModule_AModuleMappedFromAnyOtherFile_IsRefused(String loaded) {
+        var verified = "C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll";
+
+        var e = assertThrows(SecurityException.class, () -> WindowsNativeLibraryLoader.verifyLoadedModule(verified, loaded));
+
+        assertTrue(e.getMessage().contains(verified) && e.getMessage().contains(loaded), e.getMessage());
+    }
+
     // --- Against the installed library ----------------------------------------------------------
+
+    @Test
+    void load_TheInstalledLibrary_IsTheFileWindowsMapped() {
+        NativeTestEnvironment.assumeWindowsLibraryInstalled();
+
+        var library = WindowsNativeLibraryLoader.load();
+
+        assertEquals(WindowsNativeLibraryLoader.installedPath().toLowerCase(Locale.ROOT),
+                Win32.moduleFileName(library).toLowerCase(Locale.ROOT));
+    }
 
     @Test
     void verifyImageKind_TheInstalledLibrary_Passes() {
