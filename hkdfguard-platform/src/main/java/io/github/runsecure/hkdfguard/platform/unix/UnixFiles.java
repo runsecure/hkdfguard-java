@@ -6,6 +6,7 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 import static java.lang.foreign.ValueLayout.JAVA_SHORT;
 
+import io.github.runsecure.hkdfguard.platform.NativeCalls;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -69,8 +70,7 @@ public final class UnixFiles {
     }
 
     private static MethodHandle bind(SymbolLookup library, String name, FunctionDescriptor descriptor) {
-        var address = library.find(name).orElseThrow(() -> new UnsatisfiedLinkError("C library export '" + name + "' not found."));
-        return LINKER.downcallHandle(address, descriptor, CAPTURE_ERRNO);
+        return NativeCalls.bind(library, "C library", name, descriptor, CAPTURE_ERRNO);
     }
 
     private static final class Linux {
@@ -98,11 +98,7 @@ public final class UnixFiles {
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException runtime)
-            return runtime;
-        if (t instanceof Error error)
-            throw error;
-        return new IllegalStateException("A system call failed.", t);
+        return NativeCalls.rethrow(t, "A system call failed.");
     }
 
     /**

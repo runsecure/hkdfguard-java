@@ -5,6 +5,9 @@
  * native access with the JVM option {@code --enable-native-access=io.github.runsecure.hkdfguard.platform}.
  */
 module io.github.runsecure.hkdfguard.platform {
+    exports io.github.runsecure.hkdfguard.platform to
+            io.github.runsecure.hkdfguard.keywrapping.v1,
+            io.github.runsecure.hkdfguard.securefile;
     exports io.github.runsecure.hkdfguard.platform.unix to
             io.github.runsecure.hkdfguard.keywrapping.v1,
             io.github.runsecure.hkdfguard.securefile;

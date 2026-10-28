@@ -1,5 +1,7 @@
 package io.github.runsecure.hkdfguard.platform.windows;
 
+import static io.github.runsecure.hkdfguard.platform.NativeCalls.isNull;
+import static io.github.runsecure.hkdfguard.platform.NativeCalls.readWideString;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_CHAR;
@@ -7,6 +9,7 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_SHORT;
 import static java.nio.charset.StandardCharsets.UTF_16LE;
 
+import io.github.runsecure.hkdfguard.platform.NativeCalls;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -51,7 +54,6 @@ public final class WindowsSecurity {
 
     private static final int ERROR_ACCESS_DENIED = 5;
 
-    private static final Linker LINKER = Linker.nativeLinker();
     private static final Linker.Option CAPTURE_LAST_ERROR = Linker.Option.captureCallState("GetLastError");
     private static final MemoryLayout CAPTURE_LAYOUT = Linker.Option.captureStateLayout();
     private static final VarHandle LAST_ERROR = CAPTURE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("GetLastError"));
@@ -62,8 +64,7 @@ public final class WindowsSecurity {
     // --- Binding ---------------------------------------------------------------------------
 
     private static MethodHandle bind(SymbolLookup library, String name, FunctionDescriptor descriptor, Linker.Option... options) {
-        var address = library.find(name).orElseThrow(() -> new UnsatisfiedLinkError("Windows export '" + name + "' not found."));
-        return LINKER.downcallHandle(address, descriptor, options);
+        return NativeCalls.bind(library, "Windows", name, descriptor, options);
     }
 
     private static final class Kernel32 {
@@ -71,7 +72,7 @@ public final class WindowsSecurity {
         static final MethodHandle GET_SYSTEM_DIRECTORY = bind(LIBRARY, "GetSystemDirectoryW", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
         static final MethodHandle GET_FILE_ATTRIBUTES = bind(LIBRARY, "GetFileAttributesW", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle LOCAL_FREE = bind(LIBRARY, "LocalFree", FunctionDescriptor.of(ADDRESS, ADDRESS));
-        static final String SYSTEM_DIRECTORY = systemDirectory();
+        static final String SYSTEM_DIRECTORY = readSystemDirectory();
     }
 
     private static final class Advapi32 {
@@ -92,19 +93,7 @@ public final class WindowsSecurity {
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException runtime)
-            return runtime;
-        if (t instanceof Error error)
-            throw error;
-        return new IllegalStateException("A Win32 call failed.", t);
-    }
-
-    private static boolean isNull(MemorySegment pointer) {
-        return pointer.address() == 0;
-    }
-
-    private static String readWideString(MemorySegment pointer) {
-        return pointer.reinterpret(Long.MAX_VALUE).getString(0, UTF_16LE);
+        return NativeCalls.rethrow(t, "A Win32 call failed.");
     }
 
     private static void localFree(MemorySegment pointer) {
@@ -117,7 +106,12 @@ public final class WindowsSecurity {
         }
     }
 
-    private static String systemDirectory() {
+    /** The System32 folder, from GetSystemDirectoryW; read once. */
+    public static String systemDirectory() {
+        return Kernel32.SYSTEM_DIRECTORY;
+    }
+
+    private static String readSystemDirectory() {
         try (var arena = Arena.ofConfined()) {
             var capacity = 1024;
             var buffer = arena.allocate(JAVA_CHAR, capacity);
@@ -181,12 +175,7 @@ public final class WindowsSecurity {
             if (error != 0)
                 throw new IOException("Could not read the security descriptor of '" + path + "' (error " + error + ").");
 
-            var sd = descriptor.get(ADDRESS, 0);
-            try {
-                return parse(sd);
-            } finally {
-                localFree(sd);
-            }
+            return parseAndFree(descriptor.get(ADDRESS, 0));
         } catch (IOException e) {
             throw e;
         } catch (Throwable t) {
@@ -208,12 +197,7 @@ public final class WindowsSecurity {
             if (error != 0)
                 throw new IOException("Could not read the opened file's security descriptor (error " + error + ").");
 
-            var sd = descriptor.get(ADDRESS, 0);
-            try {
-                return parse(sd);
-            } finally {
-                localFree(sd);
-            }
+            return parseAndFree(descriptor.get(ADDRESS, 0));
         } catch (IOException e) {
             throw e;
         } catch (Throwable t) {
@@ -236,14 +220,18 @@ public final class WindowsSecurity {
             if (ok == 0)
                 throw new IllegalArgumentException("Invalid SDDL (error " + (int) LAST_ERROR.get(capture, 0L) + "): " + sddl);
 
-            var sd = descriptor.get(ADDRESS, 0);
-            try {
-                return parse(sd);
-            } finally {
-                localFree(sd);
-            }
+            return parseAndFree(descriptor.get(ADDRESS, 0));
         } catch (Throwable t) {
             throw rethrow(t);
+        }
+    }
+
+    // Parses a security descriptor the system allocated, then frees it with LocalFree.
+    private static SecurityDescriptorInfo parseAndFree(MemorySegment sd) throws Throwable {
+        try {
+            return parse(sd);
+        } finally {
+            localFree(sd);
         }
     }
 

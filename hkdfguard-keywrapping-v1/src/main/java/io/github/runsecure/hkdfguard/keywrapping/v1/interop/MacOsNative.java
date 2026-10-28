@@ -1,10 +1,12 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
+import static io.github.runsecure.hkdfguard.platform.NativeCalls.isNull;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
+import io.github.runsecure.hkdfguard.platform.NativeCalls;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFiles;
 import java.io.IOException;
@@ -38,14 +40,12 @@ final class MacOsNative {
     private static final int SEC_CS_CHECK_ALL_ARCHITECTURES = 1;
     private static final int SEC_CS_STRICT_VALIDATE = 1 << 4;
 
-    private static final Linker LINKER = Linker.nativeLinker();
 
     private MacOsNative() {
     }
 
     private static MethodHandle bind(SymbolLookup library, String name, FunctionDescriptor descriptor, Linker.Option... options) {
-        var address = library.find(name).orElseThrow(() -> new UnsatisfiedLinkError("macOS export '" + name + "' not found."));
-        return LINKER.downcallHandle(address, descriptor, options);
+        return NativeCalls.bind(library, "macOS", name, descriptor, options);
     }
 
     private static final class LibSystem {
@@ -74,15 +74,7 @@ final class MacOsNative {
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException runtime)
-            return runtime;
-        if (t instanceof Error error)
-            throw error;
-        return new IllegalStateException("A macOS system call failed.", t);
-    }
-
-    private static boolean isNull(MemorySegment pointer) {
-        return pointer.address() == 0;
+        return NativeCalls.rethrow(t, "A macOS system call failed.");
     }
 
     /** lstat's result for a path whose existence is only being probed: 0 if it exists, else the errno. */

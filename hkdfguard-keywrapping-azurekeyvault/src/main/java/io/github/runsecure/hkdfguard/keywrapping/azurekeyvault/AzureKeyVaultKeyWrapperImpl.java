@@ -9,18 +9,17 @@ import com.azure.security.keyvault.keys.cryptography.models.UnwrapResult;
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
+import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
+import io.github.runsecure.hkdfguard.abstractions.LocalKeyGeneration;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
 import java.nio.file.Path;
-import java.security.SecureRandom;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -68,7 +67,6 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
     /** The largest plaintext RSA-OAEP-256 wraps under a 2048-bit key, in bytes. */
     public static final int MAX_PLAINTEXT_LENGTH = 190;
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final KeyVaultKeyId wrappingKey;
     private final KeyVaultKeyId signingKey;
@@ -286,15 +284,8 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
      */
     @Override
     public CompletableFuture<Integer> generateAndWrapAsync(byte[] result) {
-        Objects.requireNonNull(result, "result");
-        var dek = new byte[GENERATED_KEY_LENGTH];
-        try {
-            RANDOM.nextBytes(dek);
-            // wrapAsync works on its own copy, taken before it returns.
-            return wrapAsync(dek, result);
-        } finally {
-            ArrayUtility.zeroMemory(dek);
-        }
+        // wrapAsync copies the DEK before it returns, so it can be zeroed straight away.
+        return LocalKeyGeneration.generateAndWrap(this, GENERATED_KEY_LENGTH, result);
     }
 
     /**
@@ -360,9 +351,7 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
     // client-side ones such as a credential that can't get a token - into the CryptographicException
     // every KeyWrapper fails with. Cancellation is left as it is.
     private static RuntimeException translate(Throwable error, String operation, KeyVaultKeyId key) {
-        while ((error instanceof CompletionException || error instanceof ExecutionException) && error.getCause() != null)
-            error = error.getCause();
-
+        error = KeyWrapperFutures.unwrap(error);
         if (error instanceof CancellationException e)
             return e;
         if (error instanceof CryptographicException e)
