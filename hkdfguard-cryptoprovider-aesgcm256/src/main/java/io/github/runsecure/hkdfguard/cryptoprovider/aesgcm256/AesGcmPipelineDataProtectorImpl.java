@@ -168,13 +168,7 @@ public final class AesGcmPipelineDataProtectorImpl implements PipelineDataProtec
                     throw new NoSuchElementException("No key is registered for version " + value.keyVersion() + ".");
 
                 // AEAD ciphertext is always longer than the plaintext it encloses.
-                var plaintextBytes = new byte[value.value().length];
-                try {
-                    var bytesWritten = current.decrypt(value.value(), aad, plaintextBytes);
-                    return Utf8Utility.decode(plaintextBytes, bytesWritten, result);
-                } finally {
-                    ArrayUtility.zeroMemory(plaintextBytes);
-                }
+                return Utf8Utility.decodeWritten(value.value().length, bytes -> current.decrypt(value.value(), aad, bytes), result);
             } catch (RuntimeException e) {
                 op.recordException(e);
                 throw e;

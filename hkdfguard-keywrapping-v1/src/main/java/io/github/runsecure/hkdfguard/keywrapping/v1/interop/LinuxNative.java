@@ -1,8 +1,10 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
+import static io.github.runsecure.hkdfguard.platform.NativeCalls.isNull;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 
+import io.github.runsecure.hkdfguard.platform.NativeCalls;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFiles;
 import java.io.IOException;
@@ -47,21 +49,12 @@ final class LinuxNative {
         static final MethodHandle DLCLOSE = bind("dlclose", FunctionDescriptor.of(JAVA_INT, ADDRESS));
 
         private static MethodHandle bind(String name, FunctionDescriptor descriptor, Linker.Option... options) {
-            var address = LIBRARY.find(name).orElseThrow(() -> new UnsatisfiedLinkError("C library export '" + name + "' not found."));
-            return LINKER.downcallHandle(address, descriptor, options);
+            return NativeCalls.bind(LIBRARY, "C library", name, descriptor, options);
         }
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException runtime)
-            return runtime;
-        if (t instanceof Error error)
-            throw error;
-        return new IllegalStateException("A Linux system call failed.", t);
-    }
-
-    private static boolean isNull(MemorySegment pointer) {
-        return pointer.address() == 0;
+        return NativeCalls.rethrow(t, "A Linux system call failed.");
     }
 
     private static String cString(MemorySegment pointer) {

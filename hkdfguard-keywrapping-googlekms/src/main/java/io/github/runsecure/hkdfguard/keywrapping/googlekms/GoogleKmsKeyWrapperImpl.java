@@ -17,6 +17,9 @@ import com.google.protobuf.UnsafeByteOperations;
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
+import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
+import io.github.runsecure.hkdfguard.abstractions.LocalKeyGeneration;
+import io.github.runsecure.hkdfguard.abstractions.Utf8Utility;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
@@ -24,18 +27,12 @@ import io.grpc.StatusRuntimeException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 import java.util.zip.CRC32C;
 
@@ -98,7 +95,6 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
     // existing key file unreadable.
     private static final byte[] AAD_LABEL = "HkdfGuard-GoogleKms-wrap-v1\0".getBytes(StandardCharsets.US_ASCII);
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final KeyManagementServiceClient client;
     private final String keyName;
@@ -209,7 +205,7 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
 
         var call = send(() -> client.encryptCallable().futureCall(request));
         var completed = call.whenComplete((response, error) -> ArrayUtility.zeroMemory(buffer));
-        return cancellable(completed.handle((response, error) -> {
+        return KeyWrapperFutures.cancelling(completed.handle((response, error) -> {
             if (error != null)
                 throw translate(error, "wrap");
             return copyWrapped(response, result);
@@ -246,7 +242,7 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
                 .build();
 
         var call = send(() -> client.decryptCallable().futureCall(request));
-        return cancellable(call.handle((response, error) -> {
+        return KeyWrapperFutures.cancelling(call.handle((response, error) -> {
             try {
                 if (error != null)
                     throw translate(error, "unwrap");
@@ -268,15 +264,8 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
      */
     @Override
     public CompletableFuture<Integer> generateAndWrapAsync(byte[] result) {
-        Objects.requireNonNull(result, "result");
-        var dek = new byte[GENERATED_KEY_LENGTH];
-        try {
-            RANDOM.nextBytes(dek);
-            // wrapAsync copies the DEK before it returns, so this one can be zeroed straight away.
-            return wrapAsync(dek, result);
-        } finally {
-            ArrayUtility.zeroMemory(dek);
-        }
+        // wrapAsync copies the DEK before it returns, so it can be zeroed straight away.
+        return LocalKeyGeneration.generateAndWrap(this, GENERATED_KEY_LENGTH, result);
     }
 
     /**
@@ -386,19 +375,11 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
     private static byte[] encodeContext(String context) {
         if (context == null)
             return new byte[0];
-
-        ByteBuffer encoded;
         try {
-            encoded = StandardCharsets.UTF_8.newEncoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .encode(CharBuffer.wrap(context));
-        } catch (CharacterCodingException e) {
+            return Utf8Utility.encodeStrict(context);
+        } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("The context isn't well-formed text: it holds an unpaired surrogate.", e);
         }
-        var bytes = new byte[encoded.remaining()];
-        encoded.get(bytes);
-        return bytes;
     }
 
     // The client's future as a CompletableFuture, or a failed one if the call threw instead of
@@ -430,22 +411,11 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
         return future;
     }
 
-    // Cancelling the future a caller holds cancels the Cloud KMS request it is waiting on.
-    private static <T> CompletableFuture<T> cancellable(CompletableFuture<T> result, CompletableFuture<?> call) {
-        result.whenComplete((value, error) -> {
-            if (result.isCancelled())
-                call.cancel(true);
-        });
-        return result;
-    }
-
     // Turns Cloud KMS failures - service refusals and transport failures (ApiException, naming the
     // gRPC status), and client-side ones - into the CryptographicException every KeyWrapper fails
     // with. Cancellation is left as it is. A CANCELLED status the caller didn't ask for is a failure.
     private RuntimeException translate(Throwable error, String operation) {
-        while ((error instanceof CompletionException || error instanceof ExecutionException) && error.getCause() != null)
-            error = error.getCause();
-
+        error = KeyWrapperFutures.unwrap(error);
         if (error instanceof CancellationException e)
             return e;
         if (error instanceof CryptographicException e)

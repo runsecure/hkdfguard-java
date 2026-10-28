@@ -1,10 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.azurekeyvault;
 
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
+import io.github.runsecure.hkdfguard.abstractions.Utf8Utility;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -166,21 +163,15 @@ final class WrappedDekEnvelope {
         if (context == null)
             return new byte[0];
 
-        ByteBuffer encoded;
+        byte[] bytes;
         try {
-            encoded = StandardCharsets.UTF_8.newEncoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .encode(CharBuffer.wrap(context));
-        } catch (CharacterCodingException e) {
+            bytes = Utf8Utility.encodeStrict(context);
+        } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("The context isn't well-formed text: it holds an unpaired surrogate.", e);
         }
-        if (encoded.remaining() > MAX_FIELD_LENGTH)
-            throw new IllegalArgumentException("The context is " + encoded.remaining() + " bytes in UTF-8; at most "
+        if (bytes.length > MAX_FIELD_LENGTH)
+            throw new IllegalArgumentException("The context is " + bytes.length + " bytes in UTF-8; at most "
                     + MAX_FIELD_LENGTH + " are allowed.");
-
-        var bytes = new byte[encoded.remaining()];
-        encoded.get(bytes);
         return bytes;
     }
 

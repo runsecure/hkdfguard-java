@@ -92,13 +92,7 @@ public class DefaultFormatProviderImpl implements EncryptedFormatProvider {
                         Attributes.of(ENCRYPTED_LENGTH, (long) encrypted.length()));
 
             try {
-                var segments = parseSegments(encrypted);
-                if (segments == null)
-                    throw new EncryptedFormatException(MALFORMED);
-
-                if (!Base64ConversionUtility.isBase64(segments.base64()))
-                    throw new EncryptedFormatException("Encrypted value is not valid base64.");
-
+                var segments = parseValid(encrypted);
                 var value = new byte[Base64ConversionUtility.getBinaryLength(segments.base64())];
                 Base64ConversionUtility.fromBase64(segments.base64(), value);
                 return new KeyTrackingValue(segments.version(), value);
@@ -118,12 +112,7 @@ public class DefaultFormatProviderImpl implements EncryptedFormatProvider {
                         Attributes.of(ENCRYPTED_LENGTH, (long) encrypted.length()));
 
             try {
-                var segments = parseSegments(encrypted);
-                if (segments == null)
-                    throw new EncryptedFormatException(MALFORMED);
-
-                if (!Base64ConversionUtility.isBase64(segments.base64()))
-                    throw new EncryptedFormatException("Encrypted value is not valid base64.");
+                var segments = parseValid(encrypted);
                 return Base64ConversionUtility.getBinaryLength(segments.base64());
             } catch (RuntimeException e) {
                 op.recordException(e);
@@ -133,6 +122,17 @@ public class DefaultFormatProviderImpl implements EncryptedFormatProvider {
     }
 
     private record Segments(int version, CharSequence base64) {
+    }
+
+    // The segments of a well-formed encrypted value, whose payload is valid base64.
+    private Segments parseValid(CharSequence encrypted) {
+        var segments = parseSegments(encrypted);
+        if (segments == null)
+            throw new EncryptedFormatException(MALFORMED);
+
+        if (!Base64ConversionUtility.isBase64(segments.base64()))
+            throw new EncryptedFormatException("Encrypted value is not valid base64.");
+        return segments;
     }
 
     // Shared by parse and getMaxDecryptedLength so both agree on exactly what counts as

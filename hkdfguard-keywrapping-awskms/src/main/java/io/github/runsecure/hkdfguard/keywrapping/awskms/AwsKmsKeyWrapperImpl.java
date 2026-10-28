@@ -3,6 +3,7 @@ package io.github.runsecure.hkdfguard.keywrapping.awskms;
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
+import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
@@ -14,7 +15,6 @@ import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.core.SdkBytes;
@@ -178,7 +178,7 @@ public final class AwsKmsKeyWrapperImpl implements KeyWrapper {
 
         var call = send(() -> client.encrypt(request));
         var completed = call.whenComplete((response, error) -> ArrayUtility.zeroMemory(buffer));
-        return cancellable(completed.handle((response, error) -> {
+        return KeyWrapperFutures.cancelling(completed.handle((response, error) -> {
             if (error != null)
                 throw translate(error, "wrap");
             return copyWrapped(response.ciphertextBlob(), result, "wrap");
@@ -213,7 +213,7 @@ public final class AwsKmsKeyWrapperImpl implements KeyWrapper {
                 .build();
 
         var call = send(() -> client.decrypt(request));
-        return cancellable(call.handle((response, error) -> {
+        return KeyWrapperFutures.cancelling(call.handle((response, error) -> {
             try {
                 if (error != null)
                     throw translate(error, "unwrap");
@@ -251,7 +251,7 @@ public final class AwsKmsKeyWrapperImpl implements KeyWrapper {
                 .build();
 
         var call = send(() -> client.generateDataKeyWithoutPlaintext(request));
-        return cancellable(call.handle((response, error) -> {
+        return KeyWrapperFutures.cancelling(call.handle((response, error) -> {
             if (error != null)
                 throw translate(error, "generate-and-wrap");
             return copyWrapped(response.ciphertextBlob(), result, "generate-and-wrap");
@@ -296,24 +296,13 @@ public final class AwsKmsKeyWrapperImpl implements KeyWrapper {
         }
     }
 
-    // Cancelling the future a caller holds cancels the KMS request it is waiting on.
-    private static <T> CompletableFuture<T> cancellable(CompletableFuture<T> result, CompletableFuture<?> call) {
-        result.whenComplete((value, error) -> {
-            if (result.isCancelled())
-                call.cancel(true);
-        });
-        return result;
-    }
-
     // Turns AWS failures - service refusals (AwsServiceException) and client-side ones such as
     // unresolvable credentials (SdkClientException) - into the CryptographicException every
     // KeyWrapper fails with, naming KMS's error code. Cancellation - a CancellationException, or the
     // SDK's AbortedException for an interrupted or aborted call - is left as it is, as is anything
     // that isn't an AWS failure.
     private RuntimeException translate(Throwable error, String operation) {
-        while ((error instanceof CompletionException || error instanceof ExecutionException) && error.getCause() != null)
-            error = error.getCause();
-
+        error = KeyWrapperFutures.unwrap(error);
         if (error instanceof AwsServiceException e) {
             var details = e.awsErrorDetails();
             var code = details != null && details.errorCode() != null ? details.errorCode() : e.getClass().getSimpleName();

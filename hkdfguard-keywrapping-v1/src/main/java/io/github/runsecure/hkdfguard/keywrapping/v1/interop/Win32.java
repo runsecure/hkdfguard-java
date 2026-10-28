@@ -1,5 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
+import static io.github.runsecure.hkdfguard.platform.NativeCalls.isNull;
+import static io.github.runsecure.hkdfguard.platform.NativeCalls.readWideString;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_CHAR;
@@ -7,6 +9,8 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_SHORT;
 import static java.nio.charset.StandardCharsets.UTF_16LE;
 
+import io.github.runsecure.hkdfguard.platform.NativeCalls;
+import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -39,7 +43,6 @@ final class Win32 {
     private static final int LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800;
     private static final int KF_FLAG_DONT_VERIFY = 0x4000;
 
-    private static final Linker LINKER = Linker.nativeLinker();
     private static final Linker.Option CAPTURE_LAST_ERROR = Linker.Option.captureCallState("GetLastError");
     private static final MemoryLayout CAPTURE_LAYOUT = Linker.Option.captureStateLayout();
     private static final VarHandle LAST_ERROR = CAPTURE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("GetLastError"));
@@ -50,22 +53,19 @@ final class Win32 {
     // --- Binding ---------------------------------------------------------------------------
 
     private static MethodHandle bind(SymbolLookup library, String name, FunctionDescriptor descriptor, Linker.Option... options) {
-        var address = library.find(name).orElseThrow(() -> new UnsatisfiedLinkError("Windows export '" + name + "' not found."));
-        return LINKER.downcallHandle(address, descriptor, options);
+        return NativeCalls.bind(library, "Windows", name, descriptor, options);
     }
 
     private static SymbolLookup system32(String fileName) {
-        return SymbolLookup.libraryLookup(Path.of(Kernel32.SYSTEM_DIRECTORY, fileName), Arena.global());
+        return SymbolLookup.libraryLookup(Path.of(WindowsSecurity.systemDirectory(), fileName), Arena.global());
     }
 
     private static final class Kernel32 {
         static final SymbolLookup LIBRARY = SymbolLookup.libraryLookup("kernel32.dll", Arena.global());
-        static final MethodHandle GET_SYSTEM_DIRECTORY = bind(LIBRARY, "GetSystemDirectoryW", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
         static final MethodHandle LOAD_LIBRARY_EX = bind(LIBRARY, "LoadLibraryExW", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_INT), CAPTURE_LAST_ERROR);
         static final MethodHandle GET_PROC_ADDRESS = bind(LIBRARY, "GetProcAddress", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
         static final MethodHandle GET_MODULE_FILE_NAME = bind(LIBRARY, "GetModuleFileNameW", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT), CAPTURE_LAST_ERROR);
         static final MethodHandle FREE_LIBRARY = bind(LIBRARY, "FreeLibrary", FunctionDescriptor.of(JAVA_INT, ADDRESS));
-        static final String SYSTEM_DIRECTORY = systemDirectory();
     }
 
     private static final class Shell32 {
@@ -126,35 +126,10 @@ final class Win32 {
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException runtime)
-            return runtime;
-        if (t instanceof Error error)
-            throw error;
-        return new IllegalStateException("A Win32 call failed.", t);
-    }
-
-    private static boolean isNull(MemorySegment pointer) {
-        return pointer.address() == 0;
-    }
-
-    private static String readWideString(MemorySegment pointer) {
-        return pointer.reinterpret(Long.MAX_VALUE).getString(0, UTF_16LE);
+        return NativeCalls.rethrow(t, "A Win32 call failed.");
     }
 
     // --- Paths and loading ------------------------------------------------------------------
-
-    private static String systemDirectory() {
-        try (var arena = Arena.ofConfined()) {
-            var capacity = 1024;
-            var buffer = arena.allocate(JAVA_CHAR, capacity);
-            var length = (int) Kernel32.GET_SYSTEM_DIRECTORY.invokeExact(buffer, capacity);
-            if (length <= 0 || length >= capacity)
-                throw new IllegalStateException("GetSystemDirectoryW failed.");
-            return buffer.getString(0, UTF_16LE);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
 
     /**
      * The Program Files folder, from the known-folder registry setting (only an administrator can
