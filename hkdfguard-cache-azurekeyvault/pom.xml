@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-cache-azurekeyvault</artifactId>
+  <name>HkdfGuard Cache Azure Key Vault</name>
+  <description>
+    A protected read-only cache over one Azure Key Vault's secrets: each secret is read on its first
+    lookup, taken out of the response before SecretClient can make it a String, encrypted under the
+    key ring's current key and cached only as ciphertext.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache</artifactId>
+    </dependency>
+
+    <!-- The application chooses the HTTP client the Key Vault client runs on (azure-core-http-netty,
+         azure-core-http-jdk-httpclient, ...), as with hkdfguard-keywrapping-azurekeyvault: the
+         secrets library's azure-core-http-netty is excluded, so depending on this module doesn't put
+         Netty on every consumer's class path. -->
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-security-keyvault-secrets</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>com.azure</groupId>
+          <artifactId>azure-core-http-netty</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- The integration test authenticates with DefaultAzureCredential over the JDK's HTTP client,
+         so no Netty either. The other tests run the real SecretClient over a stub HttpClient, with
+         no network. -->
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-identity</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>com.azure</groupId>
+          <artifactId>azure-core-http-netty</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-core-http-jdk-httpclient</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- The tests encrypt under a real key ring of AES-256-GCM keys. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-cache-hashicorpvault</artifactId>
+  <name>HkdfGuard Cache HashiCorp Vault</name>
+  <description>
+    A protected read-only cache over one HashiCorp Vault KV secrets engine: each secret is read on
+    its first lookup over Vault's HTTP API, its keys taken out of the response without ever becoming
+    Strings, encrypted under the key ring's current key and cached only as ciphertext.
+  </description>
+
+  <!-- The tests serve a fake Vault with the JDK's com.sun.net.httpserver (module jdk.httpserver).
+       They are compiled and run inside this module, patched in on the module path, so that module
+       is added to the graph and this one made to read it - for the tests alone: the shipped module
+       doesn't require it. -->
+  <properties>
+    <hkdfguard.httpserver.reads>--add-reads=io.github.runsecure.hkdfguard.cache.hashicorpvault=jdk.httpserver</hkdfguard.httpserver.reads>
+    <hkdfguard.test.argLine>--enable-native-access=ALL-UNNAMED --add-modules=jdk.httpserver ${hkdfguard.httpserver.reads}</hkdfguard.test.argLine>
+  </properties>
+
+  <!-- No dependency beyond hkdfguard-cache: Vault is called through the JDK's java.net.http. -->
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache</artifactId>
+    </dependency>
+
+    <!-- The tests encrypt under a real key ring of AES-256-GCM keys, and protect the token with a
+         real data protector over it. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <configuration>
+              <compilerArgs>
+                <arg>--add-modules=jdk.httpserver</arg>
+                <arg>${hkdfguard.httpserver.reads}</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

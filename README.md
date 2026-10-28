@@ -27,7 +27,11 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault  | `AzureKeyVaultKeyWrapperImpl` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through the Azure SDK for Java (Java 25+) |
 | `hkdfguard-keywrapping-googlekms`     | HkdfGuard.KeyWrapping.GoogleKms      | `GoogleKmsKeyWrapperImpl` over one symmetric Google Cloud KMS key, through the Google Cloud client for Cloud KMS (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
-| `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl` |
+| `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl`; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody`: the shared base of the secret-store caches below |
+| `hkdfguard-cache-awssecretsmanager`   | HkdfGuard.Cache.AwsSecretsManager    | `AwsSecretsManagerSecretCacheImpl` over AWS Secrets Manager, through the AWS SDK for Java 2.x |
+| `hkdfguard-cache-azurekeyvault`       | HkdfGuard.Cache.AzureKeyVault        | `AzureKeyVaultSecretCacheImpl` over one Azure Key Vault's secrets, through the Azure SDK for Java |
+| `hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager  | `GoogleSecretManagerSecretCacheImpl` over one Google Cloud project's Secret Manager |
+| `hkdfguard-cache-hashicorpvault`      | HkdfGuard.Cache.HashiCorpVault       | `HashiCorpVaultSecretCacheImpl` over one HashiCorp Vault KV secrets engine, through `java.net.http` |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
@@ -65,8 +69,10 @@ int length = protector.decrypt(encrypted, result);
 
 ## Differences from .NET, by design
 
-- **Async** is `CompletableFuture`; there is no `CancellationToken`. Argument errors throw from the
-  call itself; failures revealing a key complete the future exceptionally. Background refresh and
+- **Async** is `CompletableFuture`; there is no `CancellationToken` - cancel the future instead.
+  Argument errors throw from the call itself; failures revealing a key complete the future
+  exceptionally. A cache's `decryptAsync` reports every failure, a null name included, through its
+  future. `InvalidDataException` for secrets is `InvalidSecretDataException`. Background refresh and
   rotation run on daemon background threads.
 - **Disposal** is `close()` (blocking) and `closeAsync()`.
 - **Spans** (`ReadOnlySpan<char>`/`Span<byte>`) become `CharSequence` for read-only text and
@@ -556,6 +562,177 @@ bean, and the client as a bean Spring closes.
 roles for each identity, credentials, and creating key files.
 [Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md) sets up
 a key of your own for `GoogleKmsIntegrationTest`, which is otherwise reported as skipped.
+
+## Caching secrets from a secret store
+
+Four caches read secrets from a remote store on demand: `AwsSecretsManagerSecretCacheImpl`,
+`AzureKeyVaultSecretCacheImpl`, `GoogleSecretManagerSecretCacheImpl` and
+`HashiCorpVaultSecretCacheImpl`. Each is a `ProtectedReadOnlyCache`. Nothing is fetched up front:
+the first `decrypt` or `findMaxDecryptedLength` for a name reads that one secret, encrypts it under
+the ring's current key bound to its name, and caches only the ciphertext; later lookups never call
+the store. None of them ever lists secrets, so the application needs only read access to the
+secrets it uses. A cached value isn't refreshed: a new secret version is picked up by a new cache.
+
+A secret that doesn't exist, or is empty, returns 0 and is looked up again next time; any other
+failure (access denied, the store unreachable) throws the SDK's exception. A name the store can't
+hold, such as the configuration path `ConnectionStrings:Admin`, returns 0 without a call, so a
+cache can go last in a `ProtectedCacheCollectionImpl` behind other sources.
+
+**A secret never becomes a `String`.** Each cache takes the value out below the SDK, before the
+SDK can parse it into one: the AWS and Azure caches read the raw response body into an array of
+their own, hand the value to the cache as bytes (`SecretJsonBody`), and give the SDK the body with
+the value blanked; the Vault cache reads its response the same way, with no SDK above it; the
+Google cache reads gRPC's message into an array of its own instead of gRPC's reused thread-local
+buffer, and zeroes it and the payload once the payload is encrypted. Every array that held a value
+is zeroed. Out of reach are the HTTP stack's own buffers (TLS decryption, socket reads, Netty's
+pools) and, as everywhere on the JVM, copies a compacting collector left behind.
+
+### AWS Secrets Manager
+
+```java
+// The application builds, configures and closes the client, as for AWS KMS.
+var client = SecretsManagerAsyncClient.create();
+var secrets = new AwsSecretsManagerSecretCacheImpl(client, ring, null);
+
+var buffer = new char[256];
+int written = secrets.decrypt("prod/Db-Password", buffer); // 0 if the secret doesn't exist
+```
+
+`GetSecretValue` reads the secret's `AWSCURRENT` version; the principal needs only
+`secretsmanager:GetSecretValue` (plus `kms:Decrypt` on a customer managed key that encrypts it).
+Names match exactly, as Secrets Manager's do: anything but 1-512 ASCII letters, digits and
+`/_+=.@-` returns 0 without a call, so look secrets up by name, not ARN. A `SecretString` is cached
+as its UTF-8 bytes and a `SecretBinary` as its bytes. The capture is attached to each request as a
+per-request plugin, so the application's client is left as it is and can be shared.
+
+### Azure Key Vault
+
+```java
+var builder = new SecretClientBuilder()
+        .vaultUrl("https://myvault.vault.azure.net/")
+        .credential(new DefaultAzureCredentialBuilder().build());
+var secrets = new AzureKeyVaultSecretCacheImpl(builder, ring);
+```
+
+`GetSecret` reads the secret's current version; the application needs only the **Key Vault
+Secrets User** role (`get`), never `list`. Names are 1-127 ASCII letters, digits and hyphens,
+compared ignoring case as Key Vault compares them. The cache builds its own `SecretClient` from the
+builder you pass - set the HTTP client, retry options and so on there - and changes that builder:
+it adds its capture policy, clears any `HttpPipeline` set on it (which would replace that policy),
+and sets HTTP log options that never log bodies (the environment's level, with `BODY` becoming
+`NONE` and `BODY_AND_HEADERS` becoming `HEADERS`), since the logging policy sees the response before
+the capture does.
+
+### Google Cloud Secret Manager
+
+```java
+try (var secrets = GoogleSecretManagerSecretCacheImpl.create("my-project", ring, null)) { // ADC
+    int written = secrets.decrypt("Db-Password", buffer);
+}
+```
+
+`AccessSecretVersion` reads the secret's `latest` version; the application needs only the
+**Secret Manager Secret Accessor** role. Secret IDs match exactly: anything but 1-255 ASCII
+letters, digits, hyphens and underscores returns 0 without a call. A payload whose CRC32C doesn't
+match the checksum Google returns, or a response naming another secret, is refused with a
+`CryptographicException`. For your own credentials or endpoint, pass `SecretManagerServiceSettings`
+to the constructor: its transport must be an `InstantiatingGrpcChannelProvider` (the default),
+which the cache keeps as configured and adds its interceptor to. The cache owns the client it
+builds, so close it.
+
+### HashiCorp Vault
+
+```java
+var tokenProtector = ring.createProtector(HashiCorpVaultSecretCacheImpl.TOKEN_PURPOSE);
+try (var secrets = new HashiCorpVaultSecretCacheImpl(
+        URI.create("https://vault.example.com:8200"),
+        StaticVaultToken.protect(tokenProtector, System.getenv("VAULT_TOKEN")), // held encrypted
+        tokenProtector,
+        ring,
+        HashiCorpVaultSecretCacheOptions.builder().mountPath("secret").build(), // KV version 2 unless set to V1
+        null)) {
+    int written = secrets.decrypt("myapp/db#password", buffer); // 0 if there's no such secret or key
+}
+```
+
+A Vault secret holds several keys, so a name is the secret's path with the key after `#`; a name
+without one reads `defaultKey` (`value` unless set). The token's policy needs only `read`.
+Authentication is left to a `VaultTokenProvider`, asked on every fetch, so a provider can log in
+and renew however it likes; it hands the token over encrypted by the token protector, and a fetch
+given anything else fails with `IllegalStateException` without calling Vault. The token is
+decrypted into a `char[]` that is zeroed, but `java.net.http` takes a header only as a `String`,
+which Java can't zero: one is made for each request and dropped once it is sent. The address must
+be https except on loopback, and the cache's own client follows no redirects, which would carry the
+token elsewhere; a client you supply that follows redirects is refused unless `allowRedirects` is
+set. A failure that isn't "not found" throws `VaultRequestException` with Vault's status and
+errors, never the token. Transient failures (no answer, a timed-out attempt, 429, a 5xx other than
+501) are retried `retryCount` times (3-10), backing off from `retryDelay` up to 10 seconds plus a
+random 0-100 ms.
+
+### Secrets holding several keys
+
+Every cache reads one key of a secret holding a JSON object - an AWS key/value secret, a JSON
+object kept in a Key Vault secret or Google payload, any Vault KV secret - as `secret#key`:
+
+```java
+int written = secrets.decrypt("prod/app#api-credential-21", buffer);
+written = secrets.decrypt("prod/app#port", buffer);  // "5432"
+written = secrets.decrypt("prod/app", buffer);       // the whole JSON text
+```
+
+The first lookup of any key fetches the secret once and caches its whole value and every key,
+each encrypted on its own and bound to its own name; concurrent lookups of different keys share
+that fetch. A string member is cached as its UTF-8 bytes; a number, `true` or `false` as its JSON
+text; `null`, an object, an array, an empty string, or a member whose name isn't a key (1-256
+printable ASCII characters other than space, `!` and `#`) is left out. A value that isn't exactly
+one JSON object is cached whole only; an object naming a member twice is refused with
+`InvalidSecretDataException`. Keys match exactly, even in Key Vault. A key the secret doesn't hold
+returns 0 and costs a fetch each time it is asked for.
+
+### Reading asynchronously
+
+Every `ProtectedReadOnlyCache` also has `decryptAsync` (into a `byte[]` or `char[]`) and
+`findMaxDecryptedLengthAsync`, returning `CompletableFuture`. On a secret-store cache they fetch a
+missing secret without blocking the caller: through the SDK's asynchronous call for AWS and Google,
+and on a virtual thread for Azure and Vault. `decrypt` blocks until the store answers.
+`ProtectedCacheCollectionImpl` asks each source in turn the same way. Every other cache gets them
+from the interface, where they call the synchronous members.
+
+Synchronous and asynchronous lookups of the same uncached secret share one fetch. Cancelling a
+lookup's future stops it waiting, and cancels the fetch itself only if that lookup started it; a
+lookup whose fetch was cancelled by another starts a new one rather than failing.
+
+### Another secret store
+
+All four derive from `RemoteSecretCache` (in `hkdfguard-cache`), which owns fetching, caching,
+encryption, name matching and telemetry. Another store needs only a subclass:
+
+```java
+public final class MySecretStoreCache extends RemoteSecretCache {
+    private final MyClient client;
+
+    public MySecretStoreCache(MyClient client, KeyRing ring) {
+        super(ring, SecretNameMatching.EXACT, null);
+        this.client = client;
+    }
+
+    @Override
+    protected boolean isValidName(String name) {
+        return name.chars().allMatch(Character::isLetterOrDigit);
+    }
+
+    // Hand the value to the sink, or return without doing so if the secret doesn't exist.
+    @Override
+    protected void fetch(String name, SecretValueSink value) {
+        var secret = client.get(name); // bytes, never a String
+        if (secret != null)
+            value.setBytes(secret);    // zeroed once encrypted
+    }
+}
+```
+
+Override `fetchAsync` too if the client is asynchronous; without it, `decryptAsync` runs `fetch`
+on a virtual thread.
 
 ## Building
 

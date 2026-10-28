@@ -3,6 +3,7 @@ package io.github.runsecure.hkdfguard.abstractions;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,6 +13,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.OptionalInt;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -307,8 +313,183 @@ class ProtectedCacheBaseTest {
 
     // The smallest concrete cache: exposes encrypt/encryptChars for storing, and records (and
     // optionally answers) tryPopulate calls - falling back to the base implementation otherwise.
+    @Test
+    void decryptAsync_ForAStoredName_RevealsTheValueForBothOverloads() {
+        var cache = new TestCache();
+        cache.storeChars("item", "h\u00e9llo".toCharArray());
+
+        var bytes = new byte[16];
+        assertArrayEquals(utf8("h\u00e9llo"), Arrays.copyOf(bytes, await(cache.decryptAsync("ITEM", bytes))));
+        var chars = new char[16];
+        assertEquals("h\u00e9llo", new String(chars, 0, await(cache.decryptAsync("item", chars))));
+        assertEquals(OptionalInt.of(6), await(cache.findMaxDecryptedLengthAsync("item")));
+        assertTrue(cache.populateRequests.isEmpty());
+    }
+
+    @Test
+    void decryptAsync_ForAMissingName_ReturnsZero_AfterAskingTryPopulateByDefault() {
+        var cache = new TestCache();
+
+        assertEquals(0, await(cache.decryptAsync("missing", new byte[16])));
+        assertEquals(0, await(cache.decryptAsync("missing", new char[16])));
+        assertEquals(OptionalInt.empty(), await(cache.findMaxDecryptedLengthAsync("missing")));
+        assertEquals(List.of("missing", "missing", "missing"), cache.populateRequests);
+    }
+
+    @Test
+    void decryptAsync_OnAMiss_PopulatesThroughTryPopulateAsync_WhenOverridden() {
+        var cache = new TestCache();
+        cache.onTryPopulateAsync = name -> CompletableFuture.supplyAsync(() -> {
+            cache.store(name, utf8("fetched"));
+            return true;
+        });
+
+        var result = new byte[16];
+        assertArrayEquals(utf8("fetched"), Arrays.copyOf(result, await(cache.decryptAsync("remote", result))));
+        assertTrue(cache.populateRequests.isEmpty());
+    }
+
+    @Test
+    void decryptAsync_WhenTryPopulateClaimsSuccessButStoresNothing_ReturnsZero() {
+        var cache = new TestCache();
+        cache.onTryPopulate = name -> true;
+
+        assertEquals(0, await(cache.decryptAsync("remote", new byte[16])));
+        assertEquals(OptionalInt.empty(), await(cache.findMaxDecryptedLengthAsync("remote")));
+    }
+
+    @Test
+    void decryptAsync_WhenTryPopulateFails_FailsForEveryMember() {
+        var cache = new TestCache();
+        cache.onTryPopulate = name -> {
+            throw new IllegalStateException("unreachable");
+        };
+
+        assertFailsWith(IllegalStateException.class, cache.decryptAsync("remote", new byte[16]));
+        assertFailsWith(IllegalStateException.class, cache.decryptAsync("remote", new char[16]));
+        assertFailsWith(IllegalStateException.class, cache.findMaxDecryptedLengthAsync("remote"));
+    }
+
+    @Test
+    void decryptAsync_WhenTryPopulateAsyncThrowsOrReturnsNull_Fails() {
+        var cache = new TestCache();
+        cache.onTryPopulateAsync = name -> {
+            throw new IllegalStateException("thrown");
+        };
+        assertFailsWith(IllegalStateException.class, cache.decryptAsync("remote", new byte[16]));
+
+        cache.onTryPopulateAsync = name -> null;
+        assertFailsWith(NullPointerException.class, cache.decryptAsync("remote", new byte[16]));
+    }
+
+    @Test
+    void decryptAsync_WithANullName_Fails() {
+        var cache = new TestCache();
+
+        assertFailsWith(NullPointerException.class, cache.decryptAsync(null, new byte[16]));
+        assertFailsWith(NullPointerException.class, cache.findMaxDecryptedLengthAsync(null));
+    }
+
+    @Test
+    void cancellingALookup_CancelsItsPopulation() {
+        var cache = new TestCache();
+        var population = new CompletableFuture<Boolean>();
+        cache.onTryPopulateAsync = name -> population;
+
+        var decrypted = cache.decryptAsync("remote", new byte[16]);
+        var length = cache.findMaxDecryptedLengthAsync("remote");
+        assertTrue(decrypted.cancel(true));
+
+        assertTrue(population.isCancelled());
+        assertTrue(length.isCompletedExceptionally());
+    }
+
+    @Test
+    void decryptAsync_WhenTheKeyFails_FailsForBothOverloads() {
+        var key = new MaskingKey();
+        var cache = new TestCache(key);
+        cache.store("item", utf8("value"));
+        key.throwOnDecrypt = true;
+
+        assertFailsWith(IllegalStateException.class, cache.decryptAsync("item", new byte[16]));
+        assertFailsWith(IllegalStateException.class, cache.decryptAsync("item", new char[16]));
+    }
+
+    @Test
+    void decryptAsync_WithSensitiveLoggingEnabled_StillWorks() {
+        var original = HkdfGuardTelemetry.ROOT.isSensitiveLoggingEnabled();
+        HkdfGuardTelemetry.ROOT.setSensitiveLoggingEnabled(true);
+        try {
+            var cache = new TestCache();
+            cache.store("item", utf8("value"));
+
+            assertEquals(5, await(cache.decryptAsync("item", new byte[16])));
+        } finally {
+            HkdfGuardTelemetry.ROOT.setSensitiveLoggingEnabled(original);
+        }
+    }
+
+    @Test
+    void theInterfacesDefaultAsyncMembers_CallTheSynchronousOnes() {
+        ProtectedReadOnlyCache cache = new SyncOnlyCache();
+
+        var bytes = new byte[16];
+        assertArrayEquals(utf8("bytes"), Arrays.copyOf(bytes, await(cache.decryptAsync("item", bytes))));
+        var chars = new char[16];
+        assertEquals("chars", new String(chars, 0, await(cache.decryptAsync("item", chars))));
+        assertEquals(OptionalInt.of(42), await(cache.findMaxDecryptedLengthAsync("item")));
+        assertEquals(OptionalInt.empty(), await(cache.findMaxDecryptedLengthAsync("missing")));
+    }
+
+    @Test
+    void theInterfacesDefaultAsyncMembers_ReportAFailureThroughTheFuture() {
+        ProtectedReadOnlyCache cache = new SyncOnlyCache();
+
+        assertFailsWith(NullPointerException.class, cache.decryptAsync(null, new byte[16]));
+        assertFailsWith(NullPointerException.class, cache.decryptAsync(null, new char[16]));
+        assertFailsWith(NullPointerException.class, cache.findMaxDecryptedLengthAsync(null));
+    }
+
+    private static <T> T await(CompletableFuture<T> future) {
+        try {
+            return future.get(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static void assertFailsWith(Class<? extends Throwable> type, CompletableFuture<?> future) {
+        var e = assertThrows(ExecutionException.class, () -> future.get(10, TimeUnit.SECONDS));
+        assertInstanceOf(type, e.getCause());
+    }
+
+    // A ProtectedReadOnlyCache with only the synchronous members, as one written before the
+    // asynchronous ones existed. Each throws NullPointerException for a null name.
+    private static final class SyncOnlyCache implements ProtectedReadOnlyCache {
+        @Override
+        public int decrypt(String name, byte[] result) {
+            name.length();
+            var bytes = utf8("bytes");
+            System.arraycopy(bytes, 0, result, 0, bytes.length);
+            return bytes.length;
+        }
+
+        @Override
+        public int decrypt(String name, char[] result) {
+            name.length();
+            "chars".getChars(0, 5, result, 0);
+            return 5;
+        }
+
+        @Override
+        public OptionalInt findMaxDecryptedLength(String name) {
+            return name.equals("item") ? OptionalInt.of(42) : OptionalInt.empty();
+        }
+    }
+
     private static final class TestCache extends ProtectedCacheBase {
         Predicate<String> onTryPopulate;
+        Function<String, CompletableFuture<Boolean>> onTryPopulateAsync;
         final List<String> populateRequests = new ArrayList<>();
 
         TestCache() {
@@ -355,6 +536,11 @@ class ProtectedCacheBaseTest {
         protected boolean tryPopulate(String name) {
             populateRequests.add(name);
             return onTryPopulate != null ? onTryPopulate.test(name) : super.tryPopulate(name);
+        }
+
+        @Override
+        protected CompletableFuture<Boolean> tryPopulateAsync(String name) {
+            return onTryPopulateAsync != null ? onTryPopulateAsync.apply(name) : super.tryPopulateAsync(name);
         }
     }
 

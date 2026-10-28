@@ -5,9 +5,11 @@ import io.opentelemetry.api.metrics.LongCounter;
 
 /**
  * Cache component instruments, built on {@link HkdfGuardTelemetry#CACHE}'s meter. Operations counts
- * every ProtectedCache add/addOrUpdate call, tagged with {@link AttributeNames#OPERATION_NAME}
- * (which {@link SpanNames.Cache} constant ran) and {@link AttributeNames#RESULT} ("success" or
- * "error").
+ * every ProtectedCache add/addOrUpdate call and every fetch a populating cache (e.g. the Azure Key
+ * Vault, AWS Secrets Manager, Google Secret Manager and HashiCorp Vault secret caches) makes on a
+ * miss, tagged with {@link AttributeNames#OPERATION_NAME} (which {@link SpanNames.Cache} constant
+ * ran) and {@link AttributeNames#RESULT} ("success" or "error", or "not_found" for a fetch whose
+ * source has no such value).
  */
 public final class CacheMetrics {
     public static final String OPERATIONS_UNIT = "{operation}";

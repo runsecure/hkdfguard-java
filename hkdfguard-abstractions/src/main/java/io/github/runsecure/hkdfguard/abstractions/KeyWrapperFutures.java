@@ -6,7 +6,8 @@ import java.util.concurrent.ExecutionException;
 
 /**
  * Future plumbing shared by the network KMS key wrappers (AWS KMS, Azure Key Vault, Google Cloud
- * KMS), whose every call completes on the client's threads.
+ * KMS), whose every call completes on the client's threads, and by the caches that fetch from a
+ * remote secret store.
  */
 public final class KeyWrapperFutures {
     private KeyWrapperFutures() {

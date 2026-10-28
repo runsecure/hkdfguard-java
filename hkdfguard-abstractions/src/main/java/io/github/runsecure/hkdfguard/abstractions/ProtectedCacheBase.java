@@ -1,15 +1,18 @@
 package io.github.runsecure.hkdfguard.abstractions;
 
+import io.github.runsecure.hkdfguard.diagnostics.AttributeNames;
+import io.github.runsecure.hkdfguard.diagnostics.ComponentTelemetry;
 import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardTelemetry;
 import io.github.runsecure.hkdfguard.diagnostics.SpanNames;
-import io.github.runsecure.hkdfguard.diagnostics.AttributeNames;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import java.nio.charset.StandardCharsets;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.OptionalInt;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.ToIntFunction;
 
 /**
  * Shared {@link ProtectedReadOnlyCache} plumbing for every cache in this library: a
@@ -19,6 +22,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * implementation here returns false (nothing to pull from), but a subclass backed by an external
  * source (e.g. a remote secret store) overrides it to fetch the plaintext value and encrypt it in
  * on demand, so nothing here ever holds plaintext beyond the duration of a single call.
+ * decryptAsync and findMaxDecryptedLengthAsync fall back to {@link #tryPopulateAsync} instead,
+ * which calls tryPopulate unless it is overridden too.
  * <p>
  * <b>Keys come from the ring, so the cache follows rotation.</b> Every value is encrypted under the
  * ring's current key at the moment it is stored, and its entry records that key's version. Decrypt
@@ -106,6 +111,21 @@ public abstract class ProtectedCacheBase implements ProtectedReadOnlyCache {
         return false;
     }
 
+    /**
+     * {@link #tryPopulate} for decryptAsync/findMaxDecryptedLengthAsync: override it too, to do the
+     * same without blocking. The default implementation calls tryPopulate. Cancelling a lookup
+     * cancels the future this returned.
+     *
+     * @return completes with true if name was populated as a result of this call
+     */
+    protected CompletableFuture<Boolean> tryPopulateAsync(String name) {
+        try {
+            return CompletableFuture.completedFuture(tryPopulate(name));
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+    }
+
     /** Stores an entry from {@link #encrypt}/{@link #encryptChars} for this same name, replacing any. */
     protected final void putEntry(String name, KeyTrackingValue entry) {
         data.put(canonicalName(name), Objects.requireNonNull(entry, "entry"));
@@ -138,22 +158,7 @@ public abstract class ProtectedCacheBase implements ProtectedReadOnlyCache {
      */
     @Override
     public int decrypt(String name, byte[] result) {
-        try (var op = HkdfGuardTelemetry.ROOT.startSpan(SpanNames.Cache.DECRYPT)) {
-            if (HkdfGuardTelemetry.ROOT.isSensitiveLoggingEnabled())
-                HkdfGuardTelemetry.ROOT.logSensitiveOperation(op.span(), SpanNames.Cache.DECRYPT, Attributes.of(NAME, name));
-
-            try {
-                var entry = findEntry(name);
-                if (entry == null)
-                    return 0;
-
-                var key = keyRing.get(entry.keyVersion());
-                return key.decrypt(entry.value(), aadFor(name), result);
-            } catch (RuntimeException e) {
-                op.recordException(e);
-                throw e;
-            }
-        }
+        return decryptTraced(name, entry -> decryptEntry(name, entry, result));
     }
 
     /**
@@ -163,21 +168,54 @@ public abstract class ProtectedCacheBase implements ProtectedReadOnlyCache {
      */
     @Override
     public int decrypt(String name, char[] result) {
+        return decryptTraced(name, entry -> decryptEntry(name, entry, result));
+    }
+
+    @Override
+    public OptionalInt findMaxDecryptedLength(String name) {
+        return maxDecryptedLength(findEntry(name));
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Fails with {@link NoSuchElementException} when the entry's key version is no longer in the
+     * ring.
+     */
+    @Override
+    public CompletableFuture<Integer> decryptAsync(String name, byte[] result) {
+        return decryptTracedAsync(name, entry -> decryptEntry(name, entry, result));
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Fails with {@link NoSuchElementException} when the entry's key version is no longer in the
+     * ring.
+     */
+    @Override
+    public CompletableFuture<Integer> decryptAsync(String name, char[] result) {
+        return decryptTracedAsync(name, entry -> decryptEntry(name, entry, result));
+    }
+
+    @Override
+    public CompletableFuture<OptionalInt> findMaxDecryptedLengthAsync(String name) {
+        var lookup = findEntryAsync(name);
+        return KeyWrapperFutures.cancelling(lookup.thenApply(ProtectedCacheBase::maxDecryptedLength), lookup);
+    }
+
+    private static OptionalInt maxDecryptedLength(KeyTrackingValue entry) {
+        return entry == null ? OptionalInt.empty() : OptionalInt.of(entry.value().length);
+    }
+
+    private int decryptTraced(String name, ToIntFunction<KeyTrackingValue> decrypt) {
         try (var op = HkdfGuardTelemetry.ROOT.startSpan(SpanNames.Cache.DECRYPT)) {
             if (HkdfGuardTelemetry.ROOT.isSensitiveLoggingEnabled())
                 HkdfGuardTelemetry.ROOT.logSensitiveOperation(op.span(), SpanNames.Cache.DECRYPT, Attributes.of(NAME, name));
 
             try {
                 var entry = findEntry(name);
-                if (entry == null)
-                    return 0;
-
-                var key = keyRing.get(entry.keyVersion());
-                var aad = aadFor(name);
-
-                // AEAD ciphertext is always at least as long as the plaintext it encloses, so the
-                // entry's length is a safe upper bound for the decrypted UTF-8 byte count.
-                return Utf8Utility.decodeWritten(entry.value().length, bytes -> key.decrypt(entry.value(), aad, bytes), result);
+                return entry == null ? 0 : decrypt.applyAsInt(entry);
             } catch (RuntimeException e) {
                 op.recordException(e);
                 throw e;
@@ -185,10 +223,32 @@ public abstract class ProtectedCacheBase implements ProtectedReadOnlyCache {
         }
     }
 
-    @Override
-    public OptionalInt findMaxDecryptedLength(String name) {
-        var entry = findEntry(name);
-        return entry == null ? OptionalInt.empty() : OptionalInt.of(entry.value().length);
+    // decryptTraced across a lookup that may complete later, on another thread: the span isn't made
+    // current, and ends when the returned future completes.
+    private CompletableFuture<Integer> decryptTracedAsync(String name, ToIntFunction<KeyTrackingValue> decrypt) {
+        var span = HkdfGuardTelemetry.ROOT.getTracer().spanBuilder(SpanNames.Cache.DECRYPT).startSpan();
+        if (HkdfGuardTelemetry.ROOT.isSensitiveLoggingEnabled())
+            HkdfGuardTelemetry.ROOT.logSensitiveOperation(span, SpanNames.Cache.DECRYPT, Attributes.of(NAME, String.valueOf(name)));
+
+        var lookup = findEntryAsync(name);
+        var decrypted = KeyWrapperFutures.cancelling(lookup.thenApply(entry -> entry == null ? 0 : decrypt.applyAsInt(entry)), lookup);
+        decrypted.whenComplete((written, error) -> {
+            if (error != null)
+                ComponentTelemetry.recordException(span, KeyWrapperFutures.unwrap(error));
+            span.end();
+        });
+        return decrypted;
+    }
+
+    private int decryptEntry(String name, KeyTrackingValue entry, byte[] result) {
+        var key = keyRing.get(entry.keyVersion());
+        return key.decrypt(entry.value(), aadFor(name), result);
+    }
+
+    private int decryptEntry(String name, KeyTrackingValue entry, char[] result) {
+        // AEAD ciphertext is always at least as long as the plaintext it encloses, so the entry's
+        // length is a safe upper bound for the decrypted UTF-8 byte count.
+        return Utf8Utility.decodeWritten(entry.value().length, bytes -> decryptEntry(name, entry, bytes), result);
     }
 
     private KeyTrackingValue findEntry(String name) {
@@ -197,6 +257,22 @@ public abstract class ProtectedCacheBase implements ProtectedReadOnlyCache {
             return entry;
 
         return tryPopulate(name) ? getEntry(name) : null;
+    }
+
+    // findEntry through tryPopulateAsync; cancelling the result cancels the population.
+    private CompletableFuture<KeyTrackingValue> findEntryAsync(String name) {
+        CompletableFuture<Boolean> population;
+        try {
+            var entry = getEntry(name);
+            if (entry != null)
+                return CompletableFuture.completedFuture(entry);
+
+            population = Objects.requireNonNull(tryPopulateAsync(name), "tryPopulateAsync returned null");
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+
+        return KeyWrapperFutures.cancelling(population.thenApply(populated -> populated ? getEntry(name) : null), population);
     }
 
     /**
