@@ -84,13 +84,7 @@ final class DataProtectorImpl implements DataProtector {
 
                 // AEAD ciphertext is always at least as long as the plaintext it encloses, so the
                 // value's length is a safe upper bound for the decrypted UTF-8 byte count.
-                var plaintextBytes = new byte[value.value().length];
-                try {
-                    var bytesWritten = key.decrypt(value.value(), aad, plaintextBytes);
-                    return Utf8Utility.decode(plaintextBytes, bytesWritten, result);
-                } finally {
-                    ArrayUtility.zeroMemory(plaintextBytes);
-                }
+                return Utf8Utility.decodeWritten(value.value().length, bytes -> key.decrypt(value.value(), aad, bytes), result);
             } catch (RuntimeException e) {
                 op.recordException(e);
                 throw e;

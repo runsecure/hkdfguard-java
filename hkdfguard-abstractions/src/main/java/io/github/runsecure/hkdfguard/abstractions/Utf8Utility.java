@@ -6,6 +6,7 @@ import java.nio.charset.CoderResult;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.function.ToIntFunction;
 
 /**
  * UTF-8 conversions that write into caller-owned arrays, so secrets never pass through a String,
@@ -84,6 +85,24 @@ public final class Utf8Utility {
         }
 
         return out.position();
+    }
+
+    /**
+     * Decodes into {@code destination} the UTF-8 that {@code writer} - a decryption, say - writes
+     * into a new {@code capacity}-byte array, then zeroes that array, so the bytes never outlive
+     * the call.
+     *
+     * @param writer fills the array it is given, returning the number of bytes it wrote
+     * @return the number of chars written
+     * @throws IllegalArgumentException as {@link #decode}
+     */
+    public static int decodeWritten(int capacity, ToIntFunction<byte[]> writer, char[] destination) {
+        var bytes = new byte[capacity];
+        try {
+            return decode(bytes, writer.applyAsInt(bytes), destination);
+        } finally {
+            ArrayUtility.zeroMemory(bytes);
+        }
     }
 
     private static int encodedLength(CharSequence text, boolean strict) {

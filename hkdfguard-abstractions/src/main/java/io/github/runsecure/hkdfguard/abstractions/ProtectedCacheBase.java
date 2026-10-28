@@ -177,13 +177,7 @@ public abstract class ProtectedCacheBase implements ProtectedReadOnlyCache {
 
                 // AEAD ciphertext is always at least as long as the plaintext it encloses, so the
                 // entry's length is a safe upper bound for the decrypted UTF-8 byte count.
-                var plaintextBytes = new byte[entry.value().length];
-                try {
-                    var decryptedLength = key.decrypt(entry.value(), aad, plaintextBytes);
-                    return Utf8Utility.decode(plaintextBytes, decryptedLength, result);
-                } finally {
-                    ArrayUtility.zeroMemory(plaintextBytes);
-                }
+                return Utf8Utility.decodeWritten(entry.value().length, bytes -> key.decrypt(entry.value(), aad, bytes), result);
             } catch (RuntimeException e) {
                 op.recordException(e);
                 throw e;

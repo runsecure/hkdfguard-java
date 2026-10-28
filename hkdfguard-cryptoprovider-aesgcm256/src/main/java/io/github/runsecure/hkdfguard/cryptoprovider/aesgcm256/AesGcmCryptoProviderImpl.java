@@ -587,18 +587,8 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
             Thread.currentThread().interrupt();
     }
 
+    // Zeroes every revealed key, as failing closed does; current is null if it already had.
     private void endClose() {
-        synchronized (gate) {
-            if (retiring != null) {
-                retiring.close();
-                retiring = null;
-            }
-
-            // Null if this provider had already failed closed.
-            var outgoing = current;
-            current = null;
-            if (outgoing != null)
-                outgoing.close();
-        }
+        suspendKeyAccess();
     }
 }

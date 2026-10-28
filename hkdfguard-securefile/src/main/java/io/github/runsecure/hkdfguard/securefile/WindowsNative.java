@@ -6,6 +6,7 @@ import static java.lang.foreign.ValueLayout.JAVA_CHAR;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.nio.charset.StandardCharsets.UTF_16LE;
 
+import io.github.runsecure.hkdfguard.platform.NativeCalls;
 import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.io.Closeable;
 import java.io.IOException;
@@ -48,7 +49,6 @@ final class WindowsNative {
     // The longest path Windows supports, plus its terminator.
     private static final int MAX_PATH_CHARS = 32768;
 
-    private static final Linker LINKER = Linker.nativeLinker();
     private static final Linker.Option CAPTURE_LAST_ERROR = Linker.Option.captureCallState("GetLastError");
     private static final MemoryLayout CAPTURE_LAYOUT = Linker.Option.captureStateLayout();
     private static final VarHandle LAST_ERROR = CAPTURE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("GetLastError"));
@@ -59,8 +59,7 @@ final class WindowsNative {
     // --- Binding ---------------------------------------------------------------------------
 
     private static MethodHandle bind(SymbolLookup library, String name, FunctionDescriptor descriptor, Linker.Option... options) {
-        var address = library.find(name).orElseThrow(() -> new UnsatisfiedLinkError("Windows export '" + name + "' not found."));
-        return LINKER.downcallHandle(address, descriptor, options);
+        return NativeCalls.bind(library, "Windows", name, descriptor, options);
     }
 
     private static final class Kernel32 {
@@ -79,11 +78,7 @@ final class WindowsNative {
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException runtime)
-            return runtime;
-        if (t instanceof Error error)
-            throw error;
-        return new IllegalStateException("A Win32 call failed.", t);
+        return NativeCalls.rethrow(t, "A Win32 call failed.");
     }
 
     // --- Paths -----------------------------------------------------------------------------
