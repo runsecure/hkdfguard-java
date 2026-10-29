@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-keywrapping-hashicorpvault</artifactId>
+  <name>HkdfGuard KeyWrapping HashiCorp Vault</name>
+  <description>
+    Wraps and reveals DEKs under one key in a HashiCorp Vault transit secrets engine, over Vault's
+    HTTP API through the JDK's java.net.http, without the DEK or Vault's answer ever becoming a
+    String, and reads key files only from where no untrusted account could have replaced them.
+  </description>
+
+  <!-- Java 25, like hkdfguard-securefile, which reads its key files through the FFM API: the
+       securefile and platform modules call the operating system, so they need native access in this
+       module's tests too. The tests also serve a fake Vault with the JDK's com.sun.net.httpserver
+       (module jdk.httpserver). They are compiled and run inside this module, patched in on the
+       module path, so that module is added to the graph and this one made to read it - for the
+       tests alone: the shipped module doesn't require it. -->
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.httpserver.reads>--add-reads=io.github.runsecure.hkdfguard.keywrapping.hashicorpvault=jdk.httpserver</hkdfguard.httpserver.reads>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED --add-modules=jdk.httpserver ${hkdfguard.httpserver.reads}</hkdfguard.test.argLine>
+  </properties>
+
+  <!-- No third-party dependency: Vault is called through the JDK's java.net.http. HashiCorp ships no
+       Java SDK, and the community driver decodes every answer into Strings, which a revealed DEK
+       must never become. -->
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-securefile</artifactId>
+    </dependency>
+
+    <!-- End-to-end tests only: a crypto provider revealing its DEK through the transit wrapper. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory, for the Windows real-file tests. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <configuration>
+              <compilerArgs>
+                <arg>--add-modules=jdk.httpserver</arg>
+                <arg>${hkdfguard.httpserver.reads}</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

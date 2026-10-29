@@ -7,7 +7,8 @@ log event ids are identical.
 
 Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-platform`,
 `hkdfguard-keywrapping-v1`, `hkdfguard-securefile`, `hkdfguard-keywrapping-awskms`,
-`hkdfguard-keywrapping-azurekeyvault` and `hkdfguard-keywrapping-googlekms`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
+`hkdfguard-keywrapping-azurekeyvault`, `hkdfguard-keywrapping-googlekms` and
+`hkdfguard-keywrapping-hashicorpvault`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
 calls and the key-file checks use the Java FFM API, which is final only from Java 22 - hence those
 modules' higher minimum. On Java 21, use the library with a `KeyWrapper` of your own in place of the
 native one. Building the library needs JDK 25; CI also
@@ -26,6 +27,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
 | `hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault  | `AzureKeyVaultKeyWrapperImpl` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through the Azure SDK for Java (Java 25+) |
 | `hkdfguard-keywrapping-googlekms`     | HkdfGuard.KeyWrapping.GoogleKms      | `GoogleKmsKeyWrapperImpl` over one symmetric Google Cloud KMS key, through the Google Cloud client for Cloud KMS (Java 25+) |
+| `hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `HashiCorpVaultTransitKeyWrapperImpl` over one key in a HashiCorp Vault transit secrets engine, through `java.net.http`; `VaultTokenSource`, `StaticVaultTokenSource` (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
 | `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl`; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody`: the shared base of the secret-store caches below |
 | `hkdfguard-cache-awssecretsmanager`   | HkdfGuard.Cache.AwsSecretsManager    | `AwsSecretsManagerSecretCacheImpl` over AWS Secrets Manager, through the AWS SDK for Java 2.x |
@@ -38,10 +40,11 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
 native integration tests of several modules share (which provisioned service they use, and where key
 files may be written), and `WindowsTempDirectory`, the folder the Windows key-file tests of
-hkdfguard-securefile and the AWS KMS, Azure Key Vault and Google Cloud KMS wrappers write to. It is
+hkdfguard-securefile and the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit
+wrappers write to. It is
 test code only - a test-scope dependency of hkdfguard-dataencryptionkey, hkdfguard-cache,
-hkdfguard-securefile, hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault and
-hkdfguard-keywrapping-googlekms, compiled straight into hkdfguard-keywrapping-v1's tests (which it
+hkdfguard-securefile, hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
+hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, compiled straight into hkdfguard-keywrapping-v1's tests (which it
 depends on) - and is never published, signed or shipped in a release.
 
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
@@ -190,7 +193,7 @@ hkdfguard:
 ## Native access
 
 `hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API, and
-`hkdfguard-securefile` (which the AWS KMS, Azure Key Vault and Google Cloud KMS wrappers read key files through) makes its
+`hkdfguard-securefile` (which the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit wrappers read key files through) makes its
 owner and permission checks through FFM too. The checks both share - security descriptors and SIDs
 on Windows, file status and the path walk on Linux and macOS - are made by `hkdfguard-platform`,
 which both depend on. On the class path, run with `--enable-native-access=ALL-UNNAMED`. On the module
@@ -305,7 +308,8 @@ plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has n
 any other key wrapper must read key files itself, and must refuse one another account could have
 written or replaced. `hkdfguard-securefile`'s `TrustedKeyFile.readAsync` does that in Java, by the
 same rules and with the same exceptions, for key wrappers with no native library to read through;
-`AwsKmsKeyWrapperImpl`, `AzureKeyVaultKeyWrapperImpl` and `GoogleKmsKeyWrapperImpl` read key files with it.
+`AwsKmsKeyWrapperImpl`, `AzureKeyVaultKeyWrapperImpl`, `GoogleKmsKeyWrapperImpl` and
+`HashiCorpVaultTransitKeyWrapperImpl` read key files with it.
 
 **Status codes.** The Windows, Linux and macOS native libraries share one `HKDFGUARD_ERR_*` table,
 number for number, and every failure message names the status and what it means:
@@ -562,6 +566,71 @@ bean, and the client as a bean Spring closes.
 roles for each identity, credentials, and creating key files.
 [Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md) sets up
 a key of your own for `GoogleKmsIntegrationTest`, which is otherwise reported as skipped.
+
+## Wrapping under HashiCorp Vault transit instead
+
+`HashiCorpVaultTransitKeyWrapperImpl` (artifact `hkdfguard-keywrapping-hashicorpvault`) is a
+`KeyWrapper` over one key in a HashiCorp Vault transit secrets engine. Use it in place of
+`NativeHkdfKeyWrapperV1Impl` wherever a wrapper is taken. The key never leaves Vault; every call is
+a request to Vault's HTTP API, authorized by the token's policy and recorded in Vault's audit log:
+
+```java
+var token = new StaticVaultTokenSource(System.getenv("VAULT_TOKEN"));   // or your own VaultTokenSource
+var wrapper = new HashiCorpVaultTransitKeyWrapperImpl(
+        URI.create("https://vault.example.com:8200"),
+        "myapp-kek",
+        token,
+        "com.example.myapp");
+```
+
+- `wrapAsync` calls `transit/encrypt/{key}` and `unwrapAsync` calls `transit/decrypt/{key}`.
+  Without a context, `generateAndWrapAsync` calls `transit/datakey/wrapped/{key}` with
+  `{"bits":256}`, so the plaintext DEK never leaves Vault; with one (which `datakey/wrapped` would
+  ignore) it generates the DEK in the process, wraps it with `encrypt` and zeroes it.
+- The key is pinned by its path, and a ciphertext carries only its key version, so a key file
+  wrapped under another key is refused. Vault's key rotation keeps the name: key files keep revealing
+  while their version is at or above the key's `min_decryption_version`. Use a non-derived AEAD key,
+  such as the default `aes256-gcm96`.
+- The optional context is bound into every wrapped DEK as Vault's `associated_data`, and must be
+  given again, exactly, to reveal it. An answer whose warnings say Vault ignored a parameter (a Vault
+  too old for `associated_data`) is refused, so a context is never silently dropped. It isn't
+  secret.
+- A wrapped DEK is Vault's ciphertext as it returns it, `vault:v{n}:{base64}`, in ASCII, byte for
+  byte the .NET `HashiCorpVaultTransitKeyWrapper`'s, so a key file made by either is read by the
+  other, given the same key and context. It is about 89 bytes.
+- The token comes from a `VaultTokenSource`, which copies it into a `char[]` the wrapper owns and
+  zeroes; logging in and renewing are the source's job. `StaticVaultTokenSource` holds one you
+  already have.
+- The address must be https, except on loopback. The wrapper's own `HttpClient` follows no
+  redirects, and a supplied one that does is refused unless `allowRedirects` is set. A request that
+  gets no answer, loses its connection, times out, or is answered 429 or a 5xx other than 501 is
+  retried (3-10 times, 200 ms doubling, plus jitter); options set the mount, a Vault Enterprise
+  namespace, the per-attempt timeout and an `HttpClient` trusting a private CA.
+- Failures complete the future with a `CryptographicException` naming Vault's status and errors
+  (for example `Vault answered 403 Forbidden: permission denied`), with a `VaultRequestException`
+  (or, when Vault couldn't be reached, the `IOException`) as its cause; argument errors throw from
+  the call. Each call runs on a virtual thread of its own; cancelling the returned future abandons
+  the request. A failed unwrap zeroes the caller's buffer.
+- No DEK ever becomes a `String`: the `encrypt` request body is sent from an array the wrapper
+  owns, through a body publisher that doesn't copy it, Vault's answer is read straight off the
+  response stream into another and parsed by hand, and every one is zeroed. The token's header
+  value is the one copy that can't be: `java.net.http` takes a header only as a `String`. Below
+  `java.net.http`'s API, its own buffers (TLS, HTTP/2 framing, socket reads and writes) can't be
+  reached either.
+- Key files are read through `hkdfguard-securefile`, by the same rules as for AWS KMS.
+
+**Dependencies.** None beyond the JDK and HkdfGuard's own modules: HashiCorp publishes no Java SDK,
+and the community driver decodes every answer into `String`s, so the wrapper calls Vault's HTTP API
+through `java.net.http`, as the Vault cache does. The module has a descriptor,
+`io.github.runsecure.hkdfguard.keywrapping.hashicorpvault`. Close the wrapper to release its
+connections. There is no Spring Boot auto-configuration for it: declare the wrapper as your
+`KeyWrapper` bean.
+
+[Wrap keys with HashiCorp Vault transit](docs/how-to/use-hashicorp-vault-transit.md) walks through
+creating the key, the policy for each role, the token, and creating key files.
+[Run the HashiCorp Vault transit integration tests](docs/how-to/run-hashicorp-vault-transit-integration-tests.md)
+sets up a dev server for `HashiCorpVaultTransitIntegrationTest`, which is otherwise reported as
+skipped.
 
 ## Caching secrets from a secret store
 

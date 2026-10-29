@@ -56,6 +56,7 @@
     <module>hkdfguard-keywrapping-awskms</module>
     <module>hkdfguard-keywrapping-azurekeyvault</module>
     <module>hkdfguard-keywrapping-googlekms</module>
+    <module>hkdfguard-keywrapping-hashicorpvault</module>
     <!-- Test-only helpers shared by other modules' tests; never published (see its POM). -->
     <module>hkdfguard-test-support</module>
     <module>hkdfguard-dataencryptionkey</module>
@@ -73,8 +74,9 @@
          Long Term Support release, so applications still on 21 can use the cryptographic core
          (diagnostics, abstractions, the AES-GCM provider, key rings and caches). Only
          hkdfguard-platform, hkdfguard-keywrapping-v1 and hkdfguard-securefile (with
-         hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault and
-         hkdfguard-keywrapping-googlekms, which read key files through it) need Java 25 and override
+         hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
+         hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, which read key
+         files through it) need Java 25 and override
          this: their native calls use the Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
          enforcer's requireJavaVersion) because those modules are part of every build. -->
     <maven.compiler.release>21</maven.compiler.release>
@@ -153,6 +155,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-keywrapping-googlekms</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-keywrapping-hashicorpvault</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

@@ -83,8 +83,8 @@ jobs:
 
       # Every module but hkdfguard-platform, hkdfguard-keywrapping-v1,
       # hkdfguard-securefile, hkdfguard-keywrapping-awskms,
-      # hkdfguard-keywrapping-azurekeyvault and hkdfguard-keywrapping-googlekms
-      # (FFM, Java 25) targets Java 21 (see the POM's maven.compiler.release). Rerun their
+      # hkdfguard-keywrapping-azurekeyvault, hkdfguard-keywrapping-googlekms and
+      # hkdfguard-keywrapping-hashicorpvault (FFM, Java 25) targets Java 21 (see the POM's maven.compiler.release). Rerun their
       # tests - compiled above,
       # unchanged - on a real Java 21 runtime, so "supports 21" is tested, not
       # assumed. The native tests - NativeEndToEndTest and NativeKeyFileRingTest
