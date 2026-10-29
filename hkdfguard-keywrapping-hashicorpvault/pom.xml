@@ -42,6 +42,11 @@
       <groupId>io.github.runsecure</groupId>
       <artifactId>hkdfguard-securefile</artifactId>
     </dependency>
+    <!-- JsonReader and the Vault rules, shared with hkdfguard-cache-hashicorpvault. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-remote-common</artifactId>
+    </dependency>
 
     <!-- End-to-end tests only: a crypto provider revealing its DEK through the transit wrapper. -->
     <dependency>

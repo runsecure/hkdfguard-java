@@ -3,19 +3,18 @@ package io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
-import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
 import io.github.runsecure.hkdfguard.abstractions.LocalKeyGeneration;
 import io.github.runsecure.hkdfguard.abstractions.Utf8Utility;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
-import io.github.runsecure.hkdfguard.keywrapping.hashicorpvault.JsonReader.Token;
+import io.github.runsecure.hkdfguard.remote.JsonReader;
+import io.github.runsecure.hkdfguard.remote.JsonReader.Token;
+import io.github.runsecure.hkdfguard.remote.VaultHttp;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.net.InetAddress;
 import java.net.URI;
-import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -33,14 +32,8 @@ import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Pattern;
 
 /**
  * Protects (encrypt) and reveals (decrypt) a DEK under one key in a HashiCorp Vault transit secrets
@@ -117,8 +110,6 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
     static final int MAX_RESPONSE_LENGTH = 16 * 1024;
 
     private static final String TOKEN_HEADER = "X-Vault-Token";
-
-    private static final Pattern IPV4_LITERAL = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
 
     private static final byte[] BASE64_ALPHABET =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".getBytes(StandardCharsets.US_ASCII);
@@ -210,14 +201,14 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         this.tokenSource = Objects.requireNonNull(tokenSource, "tokenSource");
         if (options == null)
             options = HashiCorpVaultTransitKeyWrapperOptions.builder().build();
-        var apiBase = apiBase(address);
+        var apiBase = VaultHttp.apiBase(address, "a token and DEKs");
 
-        if (keyName.length() > MAX_KEY_NAME_LENGTH || !isValidSegment(keyName, 0, keyName.length()))
+        if (keyName.length() > MAX_KEY_NAME_LENGTH || !VaultHttp.isValidSegment(keyName, 0, keyName.length()))
             throw new IllegalArgumentException("The key name '" + keyName + "' isn't one: 1-" + MAX_KEY_NAME_LENGTH
                     + " ASCII letters, digits, '-', '_' and '.', and not \".\" or \"..\".");
-        if (!isValidPath(options.mountPath()))
+        if (!VaultHttp.isValidPath(options.mountPath()))
             throw new IllegalArgumentException("The mount path '" + options.mountPath() + "' isn't a Vault path.");
-        if (options.namespace() != null && !isValidPath(options.namespace()))
+        if (options.namespace() != null && !VaultHttp.isValidPath(options.namespace()))
             throw new IllegalArgumentException("The namespace '" + options.namespace() + "' isn't a Vault path.");
         if (options.timeout().isNegative() || options.timeout().isZero())
             throw new IllegalArgumentException("The timeout must be positive; it is " + options.timeout() + ".");
@@ -257,7 +248,7 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         }
         this.namespace = options.namespace();
         this.timeout = options.timeout();
-        this.timeoutNanos = saturatedNanos(timeout);
+        this.timeoutNanos = VaultHttp.saturatedNanos(timeout);
         this.retryCount = options.retryCount();
         this.retryDelay = options.retryDelay();
         this.keyFileTrust = keyFileTrust != null ? keyFileTrust : KeyFileTrust.ADMINISTRATORS_ONLY;
@@ -394,19 +385,6 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         return TrustedKeyFile.readAsync(path, keyFileTrust);
     }
 
-    /** Whether token can go in a header: non-empty printable ASCII, with no spaces. */
-    static boolean isValidToken(CharSequence token) {
-        if (token.isEmpty())
-            return false;
-
-        for (var i = 0; i < token.length(); i++) {
-            var c = token.charAt(i);
-            if (c < '!' || c > '~')
-                return false;
-        }
-        return true;
-    }
-
     /** Whether value[0, length) is a transit ciphertext as Vault writes it: vault:v{version}:{base64}. */
     static boolean isVaultCiphertext(byte[] value, int length) {
         if (length < CIPHERTEXT_START.length || !Arrays.equals(value, 0, CIPHERTEXT_START.length, CIPHERTEXT_START, 0, CIPHERTEXT_START.length))
@@ -432,9 +410,7 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
      * jitterMillis.
      */
     static Duration retryDelay(Duration baseDelay, int retry, int jitterMillis) {
-        var max = HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_DELAY;
-        var backoff = retry >= 30 ? max : baseDelay.multipliedBy(1L << retry);
-        return (backoff.compareTo(max) < 0 ? backoff : max).plusMillis(jitterMillis);
+        return VaultHttp.retryDelay(baseDelay, retry, jitterMillis, HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_DELAY);
     }
 
     // Runs work on a virtual thread of its own, which cancelling the returned future interrupts.
@@ -513,7 +489,7 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
                     throw failed(operation, failure);
 
                 try {
-                    Thread.sleep(retryDelay(retryDelay, retry, ThreadLocalRandom.current().nextInt(0, 101)));
+                    Thread.sleep(retryDelay(retryDelay, retry, VaultHttp.jitterMillis()));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw cancelled();
@@ -531,28 +507,11 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         if (future == null)
             throw new IllegalStateException("The Vault token source returned no future.");
 
-        Integer length;
-        try {
-            length = future.get(timeoutNanos, TimeUnit.NANOSECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw new CancellationException("The Vault token source supplied no token within " + timeout + ".");
-        } catch (InterruptedException e) {
-            future.cancel(true);
-            Thread.currentThread().interrupt();
-            throw cancelled();
-        } catch (ExecutionException e) {
-            var cause = KeyWrapperFutures.unwrap(e);
-            if (cause instanceof RuntimeException runtime)
-                throw runtime;
-            if (cause instanceof Error error)
-                throw error;
-            if (cause instanceof IOException io)
-                throw new UncheckedIOException(io);
-            throw new CompletionException(cause);
-        }
+        Integer length = VaultHttp.await(future, timeoutNanos,
+                () -> new CancellationException("The Vault token source supplied no token within " + timeout + "."),
+                HashiCorpVaultTransitKeyWrapperImpl::cancelled);
 
-        if (length == null || length <= 0 || length > token.length || !isValidToken(CharBuffer.wrap(token, 0, length)))
+        if (length == null || length <= 0 || length > token.length || !VaultHttp.isValidToken(CharBuffer.wrap(token, 0, length)))
             throw new IllegalStateException("The Vault token source supplied no token, or one that isn't a token: printable ASCII, with no spaces.");
         return length;
     }
@@ -578,15 +537,7 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         try (var stream = response.body()) {
             // HttpRequest's timeout ends once the headers arrive; this one covers the whole body.
             var expired = new AtomicBoolean();
-            var watchdog = Thread.ofVirtual().name("hkdfguard-vault-deadline").start(() -> {
-                try {
-                    Thread.sleep(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())));
-                } catch (InterruptedException e) {
-                    return;
-                }
-                expired.set(true);
-                closeQuietly(stream);
-            });
+            var watchdog = VaultHttp.watchDeadline(deadline, stream, expired);
             try {
                 return readResponse(response.statusCode(), stream);
             } catch (IOException | UncheckedIOException e) {
@@ -924,90 +875,27 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         return new CancellationException("The Vault transit call was abandoned: the thread making it was interrupted.");
     }
 
-    private static void closeQuietly(InputStream body) {
-        try {
-            body.close();
-        } catch (IOException ignored) {
-            // The read it ends fails anyway.
+
+    /**
+     * A successful answer: bytes[0, length) of an array the reader zeroes. A class, not a record: a
+     * record's equals and hashCode would compare the array by identity, not by content.
+     */
+    private static final class Answer {
+        private final byte[] bytes;
+        private final int length;
+
+        Answer(byte[] bytes, int length) {
+            this.bytes = bytes;
+            this.length = length;
         }
-    }
 
-    private static long saturatedNanos(Duration duration) {
-        try {
-            return duration.toNanos();
-        } catch (ArithmeticException e) {
-            return Long.MAX_VALUE;
+        byte[] bytes() {
+            return bytes;
         }
-    }
 
-    // /v1/ under Vault's address, refusing an address that would send tokens and DEKs in the clear
-    // (http anywhere but loopback) or that carries credentials, a query or a fragment.
-    private static String apiBase(URI address) {
-        Objects.requireNonNull(address, "address");
-        if (!address.isAbsolute() || address.isOpaque() || address.getHost() == null)
-            throw new IllegalArgumentException("Vault's address '" + address + "' isn't absolute, e.g. https://vault.example.com:8200.");
-
-        var scheme = address.getScheme().toLowerCase(Locale.ROOT);
-        if (!scheme.equals("https") && !(scheme.equals("http") && isLoopback(address.getHost())))
-            throw new IllegalArgumentException("Vault's address '" + address + "' must be https; http is allowed only on a loopback "
-                    + "address (a local Vault Agent or dev server), since every request carries a token and DEKs.");
-        if (address.getRawUserInfo() != null || address.getRawQuery() != null || address.getRawFragment() != null)
-            throw new IllegalArgumentException("Vault's address '" + address + "' must not hold credentials, a query or a fragment.");
-
-        var path = address.getRawPath() == null ? "" : address.getRawPath();
-        var end = path.length();
-        while (end > 0 && path.charAt(end - 1) == '/')
-            end--;
-        return scheme + "://" + address.getRawAuthority() + path.substring(0, end) + "/v1/";
-    }
-
-    // localhost, or an IP literal on the loopback network. Only literals are parsed, so no name is
-    // ever resolved.
-    private static boolean isLoopback(String host) {
-        if (host.equalsIgnoreCase("localhost"))
-            return true;
-        if (!host.startsWith("[") && !IPV4_LITERAL.matcher(host).matches())
-            return false;
-
-        try {
-            return InetAddress.getByName(host).isLoopbackAddress();
-        } catch (UnknownHostException e) {
-            return false;
+        int length() {
+            return length;
         }
-    }
-
-    // '/'-separated segments, none empty, "." or "..": a path that stays where it's put.
-    private static boolean isValidPath(String path) {
-        if (path == null)
-            return false;
-
-        var start = 0;
-        while (true) {
-            var end = path.indexOf('/', start);
-            if (!isValidSegment(path, start, end < 0 ? path.length() : end))
-                return false;
-            if (end < 0)
-                return true;
-            start = end + 1;
-        }
-    }
-
-    private static boolean isValidSegment(String path, int start, int end) {
-        var length = end - start;
-        if (length == 0 || (length == 1 && path.charAt(start) == '.') || (length == 2 && path.startsWith("..", start)))
-            return false;
-
-        for (var i = start; i < end; i++) {
-            var c = path.charAt(i);
-            var allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
-            if (!allowed)
-                return false;
-        }
-        return true;
-    }
-
-    /** A successful answer: bytes[0, length) of an array the reader zeroes. */
-    private record Answer(byte[] bytes, int length) {
     }
 
     /**
@@ -1015,7 +903,13 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
      * into buffers of java.net.http's own on every send, which nothing zeroes; this hands over the
      * array itself, wrapped, so zeroing it reaches the bytes every attempt sent.
      */
-    private record ArrayBodyPublisher(byte[] body) implements HttpRequest.BodyPublisher {
+    private static final class ArrayBodyPublisher implements HttpRequest.BodyPublisher {
+        private final byte[] body;
+
+        ArrayBodyPublisher(byte[] body) {
+            this.body = body;
+        }
+
         @Override
         public long contentLength() {
             return body.length;

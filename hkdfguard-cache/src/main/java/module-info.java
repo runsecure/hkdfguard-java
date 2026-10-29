@@ -8,6 +8,7 @@
  */
 module io.github.runsecure.hkdfguard.cache {
     requires transitive io.github.runsecure.hkdfguard.abstractions;
+    requires io.github.runsecure.hkdfguard.remote;
 
     exports io.github.runsecure.hkdfguard.cache;
 }

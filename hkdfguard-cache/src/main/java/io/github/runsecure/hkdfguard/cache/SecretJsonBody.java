@@ -1,7 +1,8 @@
 package io.github.runsecure.hkdfguard.cache;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
-import io.github.runsecure.hkdfguard.cache.JsonReader.Token;
+import io.github.runsecure.hkdfguard.remote.JsonReader;
+import io.github.runsecure.hkdfguard.remote.JsonReader.Token;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;

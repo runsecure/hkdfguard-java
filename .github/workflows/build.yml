@@ -100,7 +100,7 @@ jobs:
           [[ -f "$java21.exe" ]] && java21="$java21.exe"
           "$java21" -version
           ./mvnw -B -ntp \
-            -pl hkdfguard-diagnostics,hkdfguard-abstractions,hkdfguard-cryptoprovider-aesgcm256,hkdfguard-dataencryptionkey,hkdfguard-cache,hkdfguard-cache-awssecretsmanager,hkdfguard-cache-azurekeyvault,hkdfguard-cache-googlesecretmanager,hkdfguard-cache-hashicorpvault \
+            -pl hkdfguard-diagnostics,hkdfguard-abstractions,hkdfguard-remote-common,hkdfguard-cryptoprovider-aesgcm256,hkdfguard-dataencryptionkey,hkdfguard-cache,hkdfguard-cache-awssecretsmanager,hkdfguard-cache-azurekeyvault,hkdfguard-cache-googlesecretmanager,hkdfguard-cache-hashicorpvault \
             surefire:test -Djvm="$java21" '-Dtest=!NativeEndToEndTest,!NativeKeyFileRingTest,!NativeEndToEndCacheTest' -Dsurefire.failIfNoSpecifiedTests=false
 
       # Keeps this project's own just-installed jars out of the Maven cache

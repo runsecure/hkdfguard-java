@@ -39,6 +39,7 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerAsyncClient;
  * so a test can see whether it was zeroed.
  */
 final class FakeSecretsManager implements SdkAsyncHttpClient {
+    private static final Pattern ERROR_TYPE = Pattern.compile("\"__type\":\"([^\"]*)\"");
     private static final Pattern SECRET_ID = Pattern.compile("\"SecretId\"\\s*:\\s*\"([^\"\\\\]*)\"");
 
     private final Map<String, String> secrets = new ConcurrentHashMap<>();
@@ -178,8 +179,11 @@ final class FakeSecretsManager implements SdkAsyncHttpClient {
                 .putHeader("Content-Type", "application/x-amz-json-1.1")
                 .putHeader("Content-Length", Integer.toString(body.length))
                 .putHeader("x-amzn-RequestId", "request-1");
-        if (status >= 300)
-            builder.putHeader("x-amzn-ErrorType", new String(body, StandardCharsets.UTF_8).replaceAll(".*\"__type\":\"([^\"]*)\".*", "$1"));
+        if (status >= 300) {
+            var errorType = ERROR_TYPE.matcher(new String(body, StandardCharsets.UTF_8));
+            if (errorType.find())
+                builder.putHeader("x-amzn-ErrorType", errorType.group(1));
+        }
 
         var chunks = new ArrayList<byte[]>();
         for (var offset = 0; offset < body.length; offset += chunkLength)

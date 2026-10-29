@@ -2,6 +2,7 @@ package io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.github.runsecure.hkdfguard.remote.JsonReader;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;

@@ -4,18 +4,16 @@ import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.DataProtector;
 import io.github.runsecure.hkdfguard.abstractions.KeyRing;
-import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
 import io.github.runsecure.hkdfguard.cache.ErrorResponseBody;
 import io.github.runsecure.hkdfguard.cache.RemoteSecretCache;
 import io.github.runsecure.hkdfguard.cache.SecretJsonBody;
 import io.github.runsecure.hkdfguard.cache.SecretNameMatching;
 import io.github.runsecure.hkdfguard.cache.SecretValueSink;
+import io.github.runsecure.hkdfguard.remote.VaultHttp;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.net.InetAddress;
 import java.net.URI;
-import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -23,18 +21,11 @@ import java.net.http.HttpTimeoutException;
 import java.nio.CharBuffer;
 import java.time.Duration;
 import java.util.List;
-import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 
 /**
@@ -109,8 +100,6 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
 
     private static final String TOKEN_HEADER = "X-Vault-Token";
 
-    private static final Pattern IPV4_LITERAL = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
-
     private final HttpClient http;
     private final boolean ownsHttp;
     private final VaultTokenProvider tokenProvider;
@@ -153,14 +142,14 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
         this.tokenProtector = Objects.requireNonNull(tokenProtector, "tokenProtector");
         if (options == null)
             options = HashiCorpVaultSecretCacheOptions.builder().build();
-        var apiBase = apiBase(address);
+        var apiBase = VaultHttp.apiBase(address, "a token");
 
-        if (!isValidPath(options.mountPath()))
+        if (!VaultHttp.isValidPath(options.mountPath()))
             throw new IllegalArgumentException("The mount path '" + options.mountPath() + "' isn't a Vault path.");
         if (!isValidKey(options.defaultKey()))
             throw new IllegalArgumentException("The default key '" + options.defaultKey() + "' isn't a key: 1-" + MAX_KEY_LENGTH
                     + " printable ASCII characters other than space, '!' and '#'.");
-        if (options.namespace() != null && !isValidPath(options.namespace()))
+        if (options.namespace() != null && !VaultHttp.isValidPath(options.namespace()))
             throw new IllegalArgumentException("The namespace '" + options.namespace() + "' isn't a Vault path.");
         if (options.timeout().isNegative() || options.timeout().isZero())
             throw new IllegalArgumentException("The timeout must be positive; it is " + options.timeout() + ".");
@@ -177,7 +166,7 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
                     + "Build it with followRedirects(HttpClient.Redirect.NEVER), or set allowRedirects if every redirect target may see the token.");
 
         this.timeout = options.timeout();
-        this.timeoutNanos = saturatedNanos(timeout);
+        this.timeoutNanos = VaultHttp.saturatedNanos(timeout);
         this.retryCount = options.retryCount();
         this.retryDelay = options.retryDelay();
         this.namespace = options.namespace();
@@ -202,20 +191,7 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
      * follows it in a lookup, after '#' (see {@link RemoteSecretCache#isValidKey}).
      */
     public static boolean isValidSecretName(String name) {
-        return name != null && !name.isEmpty() && name.length() <= MAX_SECRET_NAME_LENGTH && isValidPath(name);
-    }
-
-    /** Whether token can go in a header: non-empty printable ASCII, with no spaces. */
-    static boolean isValidToken(CharSequence token) {
-        if (token.isEmpty())
-            return false;
-
-        for (var i = 0; i < token.length(); i++) {
-            var c = token.charAt(i);
-            if (c < '!' || c > '~')
-                return false;
-        }
-        return true;
+        return name != null && !name.isEmpty() && name.length() <= MAX_SECRET_NAME_LENGTH && VaultHttp.isValidPath(name);
     }
 
     /**
@@ -224,9 +200,7 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
      * jitterMillis.
      */
     static Duration retryDelay(Duration baseDelay, int retry, int jitterMillis) {
-        var max = HashiCorpVaultSecretCacheOptions.MAX_RETRY_DELAY;
-        var backoff = retry >= 30 ? max : baseDelay.multipliedBy(1L << retry);
-        return (backoff.compareTo(max) < 0 ? backoff : max).plusMillis(jitterMillis);
+        return VaultHttp.retryDelay(baseDelay, retry, jitterMillis, HashiCorpVaultSecretCacheOptions.MAX_RETRY_DELAY);
     }
 
     /**
@@ -286,7 +260,7 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
             // A failed attempt has handed nothing to value: the body is read whole before anything
             // is parsed out of it, and a parse failure isn't transient.
             try {
-                Thread.sleep(retryDelay(retryDelay, retry, ThreadLocalRandom.current().nextInt(0, 101)));
+                Thread.sleep(retryDelay(retryDelay, retry, VaultHttp.jitterMillis()));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw cancelled();
@@ -300,25 +274,9 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
         if (future == null)
             throw new IllegalStateException("The Vault token provider returned no token.");
 
-        try {
-            return future.get(timeoutNanos, TimeUnit.NANOSECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw new CancellationException("The Vault token provider returned no token within " + timeout + ".");
-        } catch (InterruptedException e) {
-            future.cancel(true);
-            Thread.currentThread().interrupt();
-            throw cancelled();
-        } catch (ExecutionException e) {
-            var cause = KeyWrapperFutures.unwrap(e);
-            if (cause instanceof RuntimeException runtime)
-                throw runtime;
-            if (cause instanceof Error error)
-                throw error;
-            if (cause instanceof IOException io)
-                throw new UncheckedIOException(io);
-            throw new CompletionException(cause);
-        }
+        return VaultHttp.await(future, timeoutNanos,
+                () -> new CancellationException("The Vault token provider returned no token within " + timeout + "."),
+                HashiCorpVaultSecretCacheImpl::cancelled);
     }
 
     // One attempt: one request, and Vault's whole response, within the attempt's timeout.
@@ -329,15 +287,7 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
         try (var body = response.body()) {
             // HttpRequest's timeout ends once the headers arrive; this one covers the whole body.
             var expired = new AtomicBoolean();
-            var watchdog = Thread.ofVirtual().name("hkdfguard-vault-deadline").start(() -> {
-                try {
-                    Thread.sleep(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())));
-                } catch (InterruptedException e) {
-                    return;
-                }
-                expired.set(true);
-                closeQuietly(body);
-            });
+            var watchdog = VaultHttp.watchDeadline(deadline, body, expired);
             try {
                 readResponse(path, response.statusCode(), body, value);
             } catch (IOException | UncheckedIOException e) {
@@ -407,7 +357,7 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
                 throw notProtected();
             }
 
-            if (!isValidToken(CharBuffer.wrap(chars, 0, length)))
+            if (!VaultHttp.isValidToken(CharBuffer.wrap(chars, 0, length)))
                 throw new IllegalStateException("The protected Vault token isn't a token: printable ASCII, with no spaces.");
 
             return new String(chars, 0, length);
@@ -425,85 +375,4 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
         return new CancellationException("The read from Vault was abandoned: the thread fetching it was interrupted.");
     }
 
-    private static void closeQuietly(InputStream body) {
-        try {
-            body.close();
-        } catch (IOException ignored) {
-            // The read it ends fails anyway.
-        }
-    }
-
-    private static long saturatedNanos(Duration duration) {
-        try {
-            return duration.toNanos();
-        } catch (ArithmeticException e) {
-            return Long.MAX_VALUE;
-        }
-    }
-
-    // /v1/ under Vault's address, refusing an address that would send tokens in the clear (http
-    // anywhere but loopback) or that carries credentials, a query or a fragment.
-    private static String apiBase(URI address) {
-        Objects.requireNonNull(address, "address");
-        if (!address.isAbsolute() || address.isOpaque() || address.getHost() == null)
-            throw new IllegalArgumentException("Vault's address '" + address + "' isn't absolute, e.g. https://vault.example.com:8200.");
-
-        var scheme = address.getScheme().toLowerCase(Locale.ROOT);
-        if (!scheme.equals("https") && !(scheme.equals("http") && isLoopback(address.getHost())))
-            throw new IllegalArgumentException("Vault's address '" + address + "' must be https; http is allowed only on a loopback "
-                    + "address (a local Vault Agent or dev server), since every request carries a token.");
-        if (address.getRawUserInfo() != null || address.getRawQuery() != null || address.getRawFragment() != null)
-            throw new IllegalArgumentException("Vault's address '" + address + "' must not hold credentials, a query or a fragment.");
-
-        var path = address.getRawPath() == null ? "" : address.getRawPath();
-        var end = path.length();
-        while (end > 0 && path.charAt(end - 1) == '/')
-            end--;
-        return scheme + "://" + address.getRawAuthority() + path.substring(0, end) + "/v1/";
-    }
-
-    // localhost, or an IP literal on the loopback network. Only literals are parsed, so no name is
-    // ever resolved.
-    private static boolean isLoopback(String host) {
-        if (host.equalsIgnoreCase("localhost"))
-            return true;
-        if (!host.startsWith("[") && !IPV4_LITERAL.matcher(host).matches())
-            return false;
-
-        try {
-            return InetAddress.getByName(host).isLoopbackAddress();
-        } catch (UnknownHostException e) {
-            return false;
-        }
-    }
-
-    // '/'-separated segments, none empty, "." or "..": a path that stays where it's put.
-    private static boolean isValidPath(String path) {
-        if (path == null)
-            return false;
-
-        var start = 0;
-        while (true) {
-            var end = path.indexOf('/', start);
-            if (!isValidSegment(path, start, end < 0 ? path.length() : end))
-                return false;
-            if (end < 0)
-                return true;
-            start = end + 1;
-        }
-    }
-
-    private static boolean isValidSegment(String path, int start, int end) {
-        var length = end - start;
-        if (length == 0 || (length == 1 && path.charAt(start) == '.') || (length == 2 && path.startsWith("..", start)))
-            return false;
-
-        for (var i = start; i < end; i++) {
-            var c = path.charAt(i);
-            var allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
-            if (!allowed)
-                return false;
-        }
-        return true;
-    }
 }

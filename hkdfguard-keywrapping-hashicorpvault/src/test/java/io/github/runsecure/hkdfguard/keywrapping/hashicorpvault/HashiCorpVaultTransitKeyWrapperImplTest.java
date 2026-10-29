@@ -3,6 +3,7 @@ package io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;
 import static io.github.runsecure.hkdfguard.keywrapping.hashicorpvault.Futures.assertFailsWith;
 import static io.github.runsecure.hkdfguard.keywrapping.hashicorpvault.Futures.await;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -186,7 +187,9 @@ class HashiCorpVaultTransitKeyWrapperImplTest {
     @ValueSource(strings = {"http://127.0.0.1:8200", "http://localhost:8200", "http://[::1]:8200", "http://127.1.2.3",
             "https://vault.example.com:8200", "HTTPS://vault.example.com/prefix/"})
     void theConstructor_AcceptsHttpsAnywhere_AndHttpOnlyOnLoopback(String address) {
-        new HashiCorpVaultTransitKeyWrapperImpl(URI.create(address), KEY_NAME, new FakeTokenSource()).close();
+        var uri = URI.create(address);
+
+        assertDoesNotThrow(() -> new HashiCorpVaultTransitKeyWrapperImpl(uri, KEY_NAME, new FakeTokenSource()).close());
     }
 
     @Test
@@ -1158,7 +1161,7 @@ class HashiCorpVaultTransitKeyWrapperImplTest {
         create(vault.address(), KEY_NAME, null, new FakeTokenSource(), null, options -> options.httpClient(client)).close();
 
         var again = create(vault.address(), KEY_NAME, null, new FakeTokenSource(), null, options -> options.httpClient(client));
-        generate(again);
+        assertTrue(generate(again).length > 0);
     }
 
     @Test

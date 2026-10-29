@@ -8,6 +8,7 @@
  */
 module io.github.runsecure.hkdfguard.cache.hashicorpvault {
     requires transitive io.github.runsecure.hkdfguard.cache;
+    requires io.github.runsecure.hkdfguard.remote;
     requires transitive java.net.http;
 
     exports io.github.runsecure.hkdfguard.cache.hashicorpvault;

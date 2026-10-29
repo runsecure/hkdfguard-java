@@ -1,12 +1,12 @@
-package io.github.runsecure.hkdfguard.cache;
+package io.github.runsecure.hkdfguard.remote;
 
-import static io.github.runsecure.hkdfguard.cache.TestRings.utf8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.github.runsecure.hkdfguard.cache.JsonReader.Token;
+import io.github.runsecure.hkdfguard.remote.JsonReader.Token;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -15,6 +15,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** JsonReader accepts exactly RFC 8259 JSON, as strictly as .NET's Utf8JsonReader. */
 class JsonReaderTest {
+    private static byte[] utf8(String s) {
+        return s.getBytes(StandardCharsets.UTF_8);
+    }
+
     private static List<Token> tokens(String json) {
         var bytes = utf8(json);
         var reader = new JsonReader(bytes, bytes.length);

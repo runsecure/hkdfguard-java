@@ -49,6 +49,8 @@
     <module>hkdfguard-diagnostics</module>
     <module>hkdfguard-abstractions</module>
     <module>hkdfguard-cryptoprovider-aesgcm256</module>
+    <!-- Internal: the JSON reader and Vault rules shared by hkdfguard-cache and the Vault modules. -->
+    <module>hkdfguard-remote-common</module>
     <!-- Internal: the OS calls and path checks shared by the two modules after it. -->
     <module>hkdfguard-platform</module>
     <module>hkdfguard-keywrapping-v1</module>
@@ -125,6 +127,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-remote-common</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

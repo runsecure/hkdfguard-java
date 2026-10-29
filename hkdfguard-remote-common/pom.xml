@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-remote-common</artifactId>
+  <name>HkdfGuard Remote Common</name>
+  <description>
+    Internal to HkdfGuard: the strict JSON reader that takes secrets out of response bodies without
+    making them Strings, and the HTTP rules the HashiCorp Vault cache and key wrapper share.
+    Not an API for applications.
+  </description>
+
+  <!--
+    One copy of code that hkdfguard-cache and hkdfguard-keywrapping-hashicorpvault both need but
+    neither can take from the other: a key wrapper sits below the key ring and caches, so it can't
+    depend on hkdfguard-cache. A fix to the JSON reader, or to which Vault addresses and paths are
+    accepted, lands once for both.
+
+    The module exports its package only to hkdfguard-cache, hkdfguard-cache-hashicorpvault and
+    hkdfguard-keywrapping-hashicorpvault.
+  -->
+
+  <properties>
+    <!-- Internal, exported only to three modules of this build: its public members are commented
+         like the package-private code they came from, not tag by tag like an application API.
+         Every other doclint check stays on. -->
+    <doclint>all,-missing</doclint>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+  </dependencies>
+</project>

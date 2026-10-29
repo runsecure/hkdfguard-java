@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
+import io.github.runsecure.hkdfguard.remote.VaultHttp;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
@@ -23,7 +24,7 @@ public final class StaticVaultTokenSource implements VaultTokenSource, AutoClose
      */
     public StaticVaultTokenSource(CharSequence token) {
         Objects.requireNonNull(token, "token");
-        if (token.length() > HashiCorpVaultTransitKeyWrapperImpl.MAX_TOKEN_LENGTH || !HashiCorpVaultTransitKeyWrapperImpl.isValidToken(token))
+        if (token.length() > HashiCorpVaultTransitKeyWrapperImpl.MAX_TOKEN_LENGTH || !VaultHttp.isValidToken(token))
             throw new IllegalArgumentException("A Vault token is 1-" + HashiCorpVaultTransitKeyWrapperImpl.MAX_TOKEN_LENGTH
                     + " printable ASCII characters, with no spaces.");
 

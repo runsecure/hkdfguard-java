@@ -1,4 +1,4 @@
-package io.github.runsecure.hkdfguard.cache;
+package io.github.runsecure.hkdfguard.remote;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -16,20 +16,20 @@ import java.util.Arrays;
  * property names are reported as they are, for the caller to decide about. Malformed JSON throws
  * {@link Malformed}, which says where but never quotes it.
  */
-final class JsonReader {
+public final class JsonReader {
     /** The deepest nesting of objects and arrays read. */
-    static final int MAX_DEPTH = 64;
+    public static final int MAX_DEPTH = 64;
 
-    enum Token {
+    public enum Token {
         START_OBJECT, END_OBJECT, START_ARRAY, END_ARRAY, PROPERTY_NAME, STRING, NUMBER, TRUE, FALSE, NULL
     }
 
     /** Malformed JSON, at {@link #position} bytes into line {@link #line} (both from 0). */
-    static final class Malformed extends RuntimeException {
+    public static final class Malformed extends RuntimeException {
         private static final long serialVersionUID = 1L;
 
-        final long position;
-        final long line;
+        public final long position;
+        public final long line;
 
         Malformed(long position, long line) {
             super("Malformed JSON at byte " + position + " of line " + line + ".", null, false, false);
@@ -57,28 +57,28 @@ final class JsonReader {
     private boolean rootDone;
 
     /** A reader over json[0, length). */
-    JsonReader(byte[] json, int length) {
+    public JsonReader(byte[] json, int length) {
         this.json = json;
         this.end = length;
     }
 
     /** The token last read; null before the first. */
-    Token token() {
+    public Token token() {
         return token;
     }
 
     /** Where the token last read starts: a string's opening quote. */
-    int tokenStart() {
+    public int tokenStart() {
         return tokenStart;
     }
 
     /** Where the token last read ends: just past a string's closing quote. */
-    int bytesConsumed() {
+    public int bytesConsumed() {
         return position;
     }
 
     /** The length of a string's escaped text, or of a number's or literal's. */
-    int valueLength() {
+    public int valueLength() {
         return valueEnd - valueStart;
     }
 
@@ -89,7 +89,7 @@ final class JsonReader {
      *         for empty input)
      * @throws Malformed the input isn't JSON, or holds anything but whitespace after the root value
      */
-    boolean read() {
+    public boolean read() {
         skipWhitespace();
         if (position >= end) {
             if (token != null && !rootDone)
@@ -138,7 +138,7 @@ final class JsonReader {
      * Skips the children of the object or array just started, leaving the reader at its end; does
      * nothing after any other token.
      */
-    void skip() {
+    public void skip() {
         if (token != Token.START_OBJECT && token != Token.START_ARRAY)
             return;
 
@@ -148,7 +148,7 @@ final class JsonReader {
     }
 
     /** Whether the string or property name just read is, unescaped, exactly text. */
-    boolean valueTextEquals(String text) {
+    public boolean valueTextEquals(String text) {
         var expected = text.getBytes(StandardCharsets.UTF_8);
         if (!valueEscaped)
             return Arrays.equals(json, valueStart, valueEnd, expected, 0, expected.length);
@@ -164,7 +164,7 @@ final class JsonReader {
      *
      * @return the number of bytes written
      */
-    int copyString(byte[] destination) {
+    public int copyString(byte[] destination) {
         if (!valueEscaped) {
             System.arraycopy(json, valueStart, destination, 0, valueEnd - valueStart);
             return valueEnd - valueStart;
@@ -201,7 +201,7 @@ final class JsonReader {
     }
 
     /** Copies the number or literal just read, as its JSON text, into destination. */
-    int copyRaw(byte[] destination) {
+    public int copyRaw(byte[] destination) {
         System.arraycopy(json, valueStart, destination, 0, valueEnd - valueStart);
         return valueEnd - valueStart;
     }
@@ -210,7 +210,7 @@ final class JsonReader {
      * The string or property name just read, as a String: only for text that isn't secret, such as
      * a property name or an error message. Invalid UTF-8 becomes U+FFFD.
      */
-    String getString() {
+    public String getString() {
         var unescaped = new byte[valueLength()];
         var length = copyString(unescaped);
         try {

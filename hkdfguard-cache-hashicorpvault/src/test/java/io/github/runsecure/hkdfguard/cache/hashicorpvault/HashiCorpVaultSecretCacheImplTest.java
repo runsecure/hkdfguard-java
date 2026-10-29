@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.cache.hashicorpvault;
 
 import static io.github.runsecure.hkdfguard.cache.hashicorpvault.Futures.await;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -902,7 +903,10 @@ class HashiCorpVaultSecretCacheImplTest {
     @ValueSource(strings = {"http://localhost:8200", "http://127.0.0.1:8200", "http://127.1.2.3", "http://[::1]:8200",
             "https://vault.example.com:8200", "HTTPS://vault.example.com/prefix/"})
     void theConstructor_AcceptsHttps_AndHttpOnlyOnLoopback(String address) {
-        newCache(URI.create(address), ring(), null);
+        var uri = URI.create(address);
+        var ring = ring();
+
+        assertDoesNotThrow(() -> newCache(uri, ring, null));
     }
 
     @ParameterizedTest

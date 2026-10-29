@@ -9,6 +9,7 @@
 module io.github.runsecure.hkdfguard.keywrapping.hashicorpvault {
     requires transitive io.github.runsecure.hkdfguard.abstractions;
     requires transitive io.github.runsecure.hkdfguard.securefile;
+    requires io.github.runsecure.hkdfguard.remote;
     requires transitive java.net.http;
 
     exports io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;

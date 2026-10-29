@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.cache.hashicorpvault;
 
 import io.github.runsecure.hkdfguard.abstractions.DataProtector;
+import io.github.runsecure.hkdfguard.remote.VaultHttp;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
@@ -36,7 +37,7 @@ public final class StaticVaultToken implements VaultTokenProvider {
     public static StaticVaultToken protect(DataProtector tokenProtector, CharSequence token) {
         Objects.requireNonNull(tokenProtector, "tokenProtector");
         Objects.requireNonNull(token, "token");
-        if (!HashiCorpVaultSecretCacheImpl.isValidToken(token))
+        if (!VaultHttp.isValidToken(token))
             throw new IllegalArgumentException("A Vault token is printable ASCII, with no spaces.");
 
         return new StaticVaultToken(tokenProtector.encrypt(token));
