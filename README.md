@@ -7,7 +7,8 @@ log event ids are identical.
 
 Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-platform`,
 `hkdfguard-keywrapping-v1`, `hkdfguard-securefile`, `hkdfguard-keywrapping-awskms`,
-`hkdfguard-keywrapping-azurekeyvault` and `hkdfguard-keywrapping-googlekms`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
+`hkdfguard-keywrapping-azurekeyvault`, `hkdfguard-keywrapping-googlekms` and
+`hkdfguard-keywrapping-hashicorpvault`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
 calls and the key-file checks use the Java FFM API, which is final only from Java 22 - hence those
 modules' higher minimum. On Java 21, use the library with a `KeyWrapper` of your own in place of the
 native one. Building the library needs JDK 25; CI also
@@ -20,24 +21,31 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-diagnostics`               | HkdfGuard.Diagnostics                | `HkdfGuardTelemetry`, span/attribute/event/metric names, `HkdfGuardLog` |
 | `hkdfguard-abstractions`              | HkdfGuard.Abstractions               | `CryptoProvider`, `KeyWrapper`, `KeyRing`, `DataProtector`, ... ; `ProtectedCacheBase`, `ServiceNames`, `ProtectedConfigurationPurpose` |
 | `hkdfguard-cryptoprovider-aesgcm256`  | HkdfGuard.CryptoProvider.AesGcm256   | `AesGcmCryptoProviderImpl`, `AesGcmCryptoProviderFactoryImpl`, `AesGcmPipelineDataProtectorImpl` |
+| `hkdfguard-remote-common`             | -                                    | Internal: the strict JSON reader `hkdfguard-cache` takes secrets out of response bodies with, and the address, path, token and retry rules the two HashiCorp Vault modules share. Not an API for applications |
 | `hkdfguard-platform`                  | -                                    | Internal: the OS calls and path checks `hkdfguard-keywrapping-v1` and `hkdfguard-securefile` share - Windows security descriptors and SIDs, Linux and macOS file status, the symbolic-link-following path walk (Java 25+). Not an API for applications |
 | `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
 | `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java (Java 25+) |
 | `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
 | `hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault  | `AzureKeyVaultKeyWrapperImpl` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through the Azure SDK for Java (Java 25+) |
 | `hkdfguard-keywrapping-googlekms`     | HkdfGuard.KeyWrapping.GoogleKms      | `GoogleKmsKeyWrapperImpl` over one symmetric Google Cloud KMS key, through the Google Cloud client for Cloud KMS (Java 25+) |
+| `hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `HashiCorpVaultTransitKeyWrapperImpl` over one key in a HashiCorp Vault transit secrets engine, through `java.net.http`; `VaultTokenSource`, `StaticVaultTokenSource` (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
-| `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl` |
+| `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl`; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody`: the shared base of the secret-store caches below |
+| `hkdfguard-cache-awssecretsmanager`   | HkdfGuard.Cache.AwsSecretsManager    | `AwsSecretsManagerSecretCacheImpl` over AWS Secrets Manager, through the AWS SDK for Java 2.x |
+| `hkdfguard-cache-azurekeyvault`       | HkdfGuard.Cache.AzureKeyVault        | `AzureKeyVaultSecretCacheImpl` over one Azure Key Vault's secrets, through the Azure SDK for Java |
+| `hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager  | `GoogleSecretManagerSecretCacheImpl` over one Google Cloud project's Secret Manager |
+| `hkdfguard-cache-hashicorpvault`      | HkdfGuard.Cache.HashiCorpVault       | `HashiCorpVaultSecretCacheImpl` over one HashiCorp Vault KV secrets engine, through `java.net.http` |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
 The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
 native integration tests of several modules share (which provisioned service they use, and where key
 files may be written), and `WindowsTempDirectory`, the folder the Windows key-file tests of
-hkdfguard-securefile and the AWS KMS, Azure Key Vault and Google Cloud KMS wrappers write to. It is
+hkdfguard-securefile and the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit
+wrappers write to. It is
 test code only - a test-scope dependency of hkdfguard-dataencryptionkey, hkdfguard-cache,
-hkdfguard-securefile, hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault and
-hkdfguard-keywrapping-googlekms, compiled straight into hkdfguard-keywrapping-v1's tests (which it
+hkdfguard-securefile, hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
+hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, compiled straight into hkdfguard-keywrapping-v1's tests (which it
 depends on) - and is never published, signed or shipped in a release.
 
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
@@ -65,8 +73,10 @@ int length = protector.decrypt(encrypted, result);
 
 ## Differences from .NET, by design
 
-- **Async** is `CompletableFuture`; there is no `CancellationToken`. Argument errors throw from the
-  call itself; failures revealing a key complete the future exceptionally. Background refresh and
+- **Async** is `CompletableFuture`; there is no `CancellationToken` - cancel the future instead.
+  Argument errors throw from the call itself; failures revealing a key complete the future
+  exceptionally. A cache's `decryptAsync` reports every failure, a null name included, through its
+  future. `InvalidDataException` for secrets is `InvalidSecretDataException`. Background refresh and
   rotation run on daemon background threads.
 - **Disposal** is `close()` (blocking) and `closeAsync()`.
 - **Spans** (`ReadOnlySpan<char>`/`Span<byte>`) become `CharSequence` for read-only text and
@@ -184,7 +194,7 @@ hkdfguard:
 ## Native access
 
 `hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API, and
-`hkdfguard-securefile` (which the AWS KMS, Azure Key Vault and Google Cloud KMS wrappers read key files through) makes its
+`hkdfguard-securefile` (which the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit wrappers read key files through) makes its
 owner and permission checks through FFM too. The checks both share - security descriptors and SIDs
 on Windows, file status and the path walk on Linux and macOS - are made by `hkdfguard-platform`,
 which both depend on. On the class path, run with `--enable-native-access=ALL-UNNAMED`. On the module
@@ -299,7 +309,8 @@ plain `IOException` (-34 and anything else). `KeyWrapper.readKeyFileAsync` has n
 any other key wrapper must read key files itself, and must refuse one another account could have
 written or replaced. `hkdfguard-securefile`'s `TrustedKeyFile.readAsync` does that in Java, by the
 same rules and with the same exceptions, for key wrappers with no native library to read through;
-`AwsKmsKeyWrapperImpl`, `AzureKeyVaultKeyWrapperImpl` and `GoogleKmsKeyWrapperImpl` read key files with it.
+`AwsKmsKeyWrapperImpl`, `AzureKeyVaultKeyWrapperImpl`, `GoogleKmsKeyWrapperImpl` and
+`HashiCorpVaultTransitKeyWrapperImpl` read key files with it.
 
 **Status codes.** The Windows, Linux and macOS native libraries share one `HKDFGUARD_ERR_*` table,
 number for number, and every failure message names the status and what it means:
@@ -556,6 +567,242 @@ bean, and the client as a bean Spring closes.
 roles for each identity, credentials, and creating key files.
 [Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md) sets up
 a key of your own for `GoogleKmsIntegrationTest`, which is otherwise reported as skipped.
+
+## Wrapping under HashiCorp Vault transit instead
+
+`HashiCorpVaultTransitKeyWrapperImpl` (artifact `hkdfguard-keywrapping-hashicorpvault`) is a
+`KeyWrapper` over one key in a HashiCorp Vault transit secrets engine. Use it in place of
+`NativeHkdfKeyWrapperV1Impl` wherever a wrapper is taken. The key never leaves Vault; every call is
+a request to Vault's HTTP API, authorized by the token's policy and recorded in Vault's audit log:
+
+```java
+var token = new StaticVaultTokenSource(System.getenv("VAULT_TOKEN"));   // or your own VaultTokenSource
+var wrapper = new HashiCorpVaultTransitKeyWrapperImpl(
+        URI.create("https://vault.example.com:8200"),
+        "myapp-kek",
+        token,
+        "com.example.myapp");
+```
+
+- `wrapAsync` calls `transit/encrypt/{key}` and `unwrapAsync` calls `transit/decrypt/{key}`.
+  Without a context, `generateAndWrapAsync` calls `transit/datakey/wrapped/{key}` with
+  `{"bits":256}`, so the plaintext DEK never leaves Vault; with one (which `datakey/wrapped` would
+  ignore) it generates the DEK in the process, wraps it with `encrypt` and zeroes it.
+- The key is pinned by its path, and a ciphertext carries only its key version, so a key file
+  wrapped under another key is refused. Vault's key rotation keeps the name: key files keep revealing
+  while their version is at or above the key's `min_decryption_version`. Use a non-derived AEAD key,
+  such as the default `aes256-gcm96`.
+- The optional context is bound into every wrapped DEK as Vault's `associated_data`, and must be
+  given again, exactly, to reveal it. An answer whose warnings say Vault ignored a parameter (a Vault
+  too old for `associated_data`) is refused, so a context is never silently dropped. It isn't
+  secret.
+- A wrapped DEK is Vault's ciphertext as it returns it, `vault:v{n}:{base64}`, in ASCII, byte for
+  byte the .NET `HashiCorpVaultTransitKeyWrapper`'s, so a key file made by either is read by the
+  other, given the same key and context. It is about 89 bytes.
+- The token comes from a `VaultTokenSource`, which copies it into a `char[]` the wrapper owns and
+  zeroes; logging in and renewing are the source's job. `StaticVaultTokenSource` holds one you
+  already have.
+- The address must be https, except on loopback. The wrapper's own `HttpClient` follows no
+  redirects, and a supplied one that does is refused unless `allowRedirects` is set. A request that
+  gets no answer, loses its connection, times out, or is answered 429 or a 5xx other than 501 is
+  retried (3-10 times, 200 ms doubling, plus jitter); options set the mount, a Vault Enterprise
+  namespace, the per-attempt timeout and an `HttpClient` trusting a private CA.
+- Failures complete the future with a `CryptographicException` naming Vault's status and errors
+  (for example `Vault answered 403 Forbidden: permission denied`), with a `VaultRequestException`
+  (or, when Vault couldn't be reached, the `IOException`) as its cause; argument errors throw from
+  the call. Each call runs on a virtual thread of its own; cancelling the returned future abandons
+  the request. A failed unwrap zeroes the caller's buffer.
+- No DEK ever becomes a `String`: the `encrypt` request body is sent from an array the wrapper
+  owns, through a body publisher that doesn't copy it, Vault's answer is read straight off the
+  response stream into another and parsed by hand, and every one is zeroed. The token's header
+  value is the one copy that can't be: `java.net.http` takes a header only as a `String`. Below
+  `java.net.http`'s API, its own buffers (TLS, HTTP/2 framing, socket reads and writes) can't be
+  reached either.
+- Key files are read through `hkdfguard-securefile`, by the same rules as for AWS KMS.
+
+**Dependencies.** None beyond the JDK and HkdfGuard's own modules: HashiCorp publishes no Java SDK,
+and the community driver decodes every answer into `String`s, so the wrapper calls Vault's HTTP API
+through `java.net.http`, as the Vault cache does. The module has a descriptor,
+`io.github.runsecure.hkdfguard.keywrapping.hashicorpvault`. Close the wrapper to release its
+connections. There is no Spring Boot auto-configuration for it: declare the wrapper as your
+`KeyWrapper` bean.
+
+[Wrap keys with HashiCorp Vault transit](docs/how-to/use-hashicorp-vault-transit.md) walks through
+creating the key, the policy for each role, the token, and creating key files.
+[Run the HashiCorp Vault transit integration tests](docs/how-to/run-hashicorp-vault-transit-integration-tests.md)
+sets up a dev server for `HashiCorpVaultTransitIntegrationTest`, which is otherwise reported as
+skipped.
+
+## Caching secrets from a secret store
+
+Four caches read secrets from a remote store on demand: `AwsSecretsManagerSecretCacheImpl`,
+`AzureKeyVaultSecretCacheImpl`, `GoogleSecretManagerSecretCacheImpl` and
+`HashiCorpVaultSecretCacheImpl`. Each is a `ProtectedReadOnlyCache`. Nothing is fetched up front:
+the first `decrypt` or `findMaxDecryptedLength` for a name reads that one secret, encrypts it under
+the ring's current key bound to its name, and caches only the ciphertext; later lookups never call
+the store. None of them ever lists secrets, so the application needs only read access to the
+secrets it uses. A cached value isn't refreshed: a new secret version is picked up by a new cache.
+
+A secret that doesn't exist, or is empty, returns 0 and is looked up again next time; any other
+failure (access denied, the store unreachable) throws the SDK's exception. A name the store can't
+hold, such as the configuration path `ConnectionStrings:Admin`, returns 0 without a call, so a
+cache can go last in a `ProtectedCacheCollectionImpl` behind other sources.
+
+**A secret never becomes a `String`.** Each cache takes the value out below the SDK, before the
+SDK can parse it into one: the AWS and Azure caches read the raw response body into an array of
+their own, hand the value to the cache as bytes (`SecretJsonBody`), and give the SDK the body with
+the value blanked; the Vault cache reads its response the same way, with no SDK above it; the
+Google cache reads gRPC's message into an array of its own instead of gRPC's reused thread-local
+buffer, and zeroes it and the payload once the payload is encrypted. Every array that held a value
+is zeroed. Out of reach are the HTTP stack's own buffers (TLS decryption, socket reads, Netty's
+pools) and, as everywhere on the JVM, copies a compacting collector left behind.
+
+### AWS Secrets Manager
+
+```java
+// The application builds, configures and closes the client, as for AWS KMS.
+var client = SecretsManagerAsyncClient.create();
+var secrets = new AwsSecretsManagerSecretCacheImpl(client, ring, null);
+
+var buffer = new char[256];
+int written = secrets.decrypt("prod/Db-Password", buffer); // 0 if the secret doesn't exist
+```
+
+`GetSecretValue` reads the secret's `AWSCURRENT` version; the principal needs only
+`secretsmanager:GetSecretValue` (plus `kms:Decrypt` on a customer managed key that encrypts it).
+Names match exactly, as Secrets Manager's do: anything but 1-512 ASCII letters, digits and
+`/_+=.@-` returns 0 without a call, so look secrets up by name, not ARN. A `SecretString` is cached
+as its UTF-8 bytes and a `SecretBinary` as its bytes. The capture is attached to each request as a
+per-request plugin, so the application's client is left as it is and can be shared.
+
+### Azure Key Vault
+
+```java
+var builder = new SecretClientBuilder()
+        .vaultUrl("https://myvault.vault.azure.net/")
+        .credential(new DefaultAzureCredentialBuilder().build());
+var secrets = new AzureKeyVaultSecretCacheImpl(builder, ring);
+```
+
+`GetSecret` reads the secret's current version; the application needs only the **Key Vault
+Secrets User** role (`get`), never `list`. Names are 1-127 ASCII letters, digits and hyphens,
+compared ignoring case as Key Vault compares them. The cache builds its own `SecretClient` from the
+builder you pass - set the HTTP client, retry options and so on there - and changes that builder:
+it adds its capture policy, clears any `HttpPipeline` set on it (which would replace that policy),
+and sets HTTP log options that never log bodies (the environment's level, with `BODY` becoming
+`NONE` and `BODY_AND_HEADERS` becoming `HEADERS`), since the logging policy sees the response before
+the capture does.
+
+### Google Cloud Secret Manager
+
+```java
+try (var secrets = GoogleSecretManagerSecretCacheImpl.create("my-project", ring, null)) { // ADC
+    int written = secrets.decrypt("Db-Password", buffer);
+}
+```
+
+`AccessSecretVersion` reads the secret's `latest` version; the application needs only the
+**Secret Manager Secret Accessor** role. Secret IDs match exactly: anything but 1-255 ASCII
+letters, digits, hyphens and underscores returns 0 without a call. A payload whose CRC32C doesn't
+match the checksum Google returns, or a response naming another secret, is refused with a
+`CryptographicException`. For your own credentials or endpoint, pass `SecretManagerServiceSettings`
+to the constructor: its transport must be an `InstantiatingGrpcChannelProvider` (the default),
+which the cache keeps as configured and adds its interceptor to. The cache owns the client it
+builds, so close it.
+
+### HashiCorp Vault
+
+```java
+var tokenProtector = ring.createProtector(HashiCorpVaultSecretCacheImpl.TOKEN_PURPOSE);
+try (var secrets = new HashiCorpVaultSecretCacheImpl(
+        URI.create("https://vault.example.com:8200"),
+        StaticVaultToken.protect(tokenProtector, System.getenv("VAULT_TOKEN")), // held encrypted
+        tokenProtector,
+        ring,
+        HashiCorpVaultSecretCacheOptions.builder().mountPath("secret").build(), // KV version 2 unless set to V1
+        null)) {
+    int written = secrets.decrypt("myapp/db#password", buffer); // 0 if there's no such secret or key
+}
+```
+
+A Vault secret holds several keys, so a name is the secret's path with the key after `#`; a name
+without one reads `defaultKey` (`value` unless set). The token's policy needs only `read`.
+Authentication is left to a `VaultTokenProvider`, asked on every fetch, so a provider can log in
+and renew however it likes; it hands the token over encrypted by the token protector, and a fetch
+given anything else fails with `IllegalStateException` without calling Vault. The token is
+decrypted into a `char[]` that is zeroed, but `java.net.http` takes a header only as a `String`,
+which Java can't zero: one is made for each request and dropped once it is sent. The address must
+be https except on loopback, and the cache's own client follows no redirects, which would carry the
+token elsewhere; a client you supply that follows redirects is refused unless `allowRedirects` is
+set. A failure that isn't "not found" throws `VaultRequestException` with Vault's status and
+errors, never the token. Transient failures (no answer, a timed-out attempt, 429, a 5xx other than
+501) are retried `retryCount` times (3-10), backing off from `retryDelay` up to 10 seconds plus a
+random 0-100 ms.
+
+### Secrets holding several keys
+
+Every cache reads one key of a secret holding a JSON object - an AWS key/value secret, a JSON
+object kept in a Key Vault secret or Google payload, any Vault KV secret - as `secret#key`:
+
+```java
+int written = secrets.decrypt("prod/app#api-credential-21", buffer);
+written = secrets.decrypt("prod/app#port", buffer);  // "5432"
+written = secrets.decrypt("prod/app", buffer);       // the whole JSON text
+```
+
+The first lookup of any key fetches the secret once and caches its whole value and every key,
+each encrypted on its own and bound to its own name; concurrent lookups of different keys share
+that fetch. A string member is cached as its UTF-8 bytes; a number, `true` or `false` as its JSON
+text; `null`, an object, an array, an empty string, or a member whose name isn't a key (1-256
+printable ASCII characters other than space, `!` and `#`) is left out. A value that isn't exactly
+one JSON object is cached whole only; an object naming a member twice is refused with
+`InvalidSecretDataException`. Keys match exactly, even in Key Vault. A key the secret doesn't hold
+returns 0 and costs a fetch each time it is asked for.
+
+### Reading asynchronously
+
+Every `ProtectedReadOnlyCache` also has `decryptAsync` (into a `byte[]` or `char[]`) and
+`findMaxDecryptedLengthAsync`, returning `CompletableFuture`. On a secret-store cache they fetch a
+missing secret without blocking the caller: through the SDK's asynchronous call for AWS and Google,
+and on a virtual thread for Azure and Vault. `decrypt` blocks until the store answers.
+`ProtectedCacheCollectionImpl` asks each source in turn the same way. Every other cache gets them
+from the interface, where they call the synchronous members.
+
+Synchronous and asynchronous lookups of the same uncached secret share one fetch. Cancelling a
+lookup's future stops it waiting, and cancels the fetch itself only if that lookup started it; a
+lookup whose fetch was cancelled by another starts a new one rather than failing.
+
+### Another secret store
+
+All four derive from `RemoteSecretCache` (in `hkdfguard-cache`), which owns fetching, caching,
+encryption, name matching and telemetry. Another store needs only a subclass:
+
+```java
+public final class MySecretStoreCache extends RemoteSecretCache {
+    private final MyClient client;
+
+    public MySecretStoreCache(MyClient client, KeyRing ring) {
+        super(ring, SecretNameMatching.EXACT, null);
+        this.client = client;
+    }
+
+    @Override
+    protected boolean isValidName(String name) {
+        return name.chars().allMatch(Character::isLetterOrDigit);
+    }
+
+    // Hand the value to the sink, or return without doing so if the secret doesn't exist.
+    @Override
+    protected void fetch(String name, SecretValueSink value) {
+        var secret = client.get(name); // bytes, never a String
+        if (secret != null)
+            value.setBytes(secret);    // zeroed once encrypted
+    }
+}
+```
+
+Override `fetchAsync` too if the client is asynchronous; without it, `decryptAsync` runs `fetch`
+on a virtual thread.
 
 ## Building
 

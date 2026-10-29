@@ -49,6 +49,8 @@
     <module>hkdfguard-diagnostics</module>
     <module>hkdfguard-abstractions</module>
     <module>hkdfguard-cryptoprovider-aesgcm256</module>
+    <!-- Internal: the JSON reader and Vault rules shared by hkdfguard-cache and the Vault modules. -->
+    <module>hkdfguard-remote-common</module>
     <!-- Internal: the OS calls and path checks shared by the two modules after it. -->
     <module>hkdfguard-platform</module>
     <module>hkdfguard-keywrapping-v1</module>
@@ -56,10 +58,15 @@
     <module>hkdfguard-keywrapping-awskms</module>
     <module>hkdfguard-keywrapping-azurekeyvault</module>
     <module>hkdfguard-keywrapping-googlekms</module>
+    <module>hkdfguard-keywrapping-hashicorpvault</module>
     <!-- Test-only helpers shared by other modules' tests; never published (see its POM). -->
     <module>hkdfguard-test-support</module>
     <module>hkdfguard-dataencryptionkey</module>
     <module>hkdfguard-cache</module>
+    <module>hkdfguard-cache-awssecretsmanager</module>
+    <module>hkdfguard-cache-azurekeyvault</module>
+    <module>hkdfguard-cache-googlesecretmanager</module>
+    <module>hkdfguard-cache-hashicorpvault</module>
     <module>hkdfguard-options</module>
     <module>hkdfguard-spring-boot-starter</module>
   </modules>
@@ -69,8 +76,9 @@
          Long Term Support release, so applications still on 21 can use the cryptographic core
          (diagnostics, abstractions, the AES-GCM provider, key rings and caches). Only
          hkdfguard-platform, hkdfguard-keywrapping-v1 and hkdfguard-securefile (with
-         hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault and
-         hkdfguard-keywrapping-googlekms, which read key files through it) need Java 25 and override
+         hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
+         hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, which read key
+         files through it) need Java 25 and override
          this: their native calls use the Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
          enforcer's requireJavaVersion) because those modules are part of every build. -->
     <maven.compiler.release>21</maven.compiler.release>
@@ -83,16 +91,20 @@
     <opentelemetry.version>1.67.0</opentelemetry.version>
     <slf4j.version>2.0.20</slf4j.version>
     <junit.version>6.1.3</junit.version>
-    <!-- hkdfguard-keywrapping-awskms. One BOM version pins every AWS SDK module together. -->
+    <!-- hkdfguard-keywrapping-awskms and hkdfguard-cache-awssecretsmanager. One BOM version pins
+         every AWS SDK module together. -->
     <awssdk.version>2.57.3</awssdk.version>
-    <!-- hkdfguard-keywrapping-azurekeyvault. The Azure SDK BOM pins every com.azure library together. -->
+    <!-- hkdfguard-keywrapping-azurekeyvault and hkdfguard-cache-azurekeyvault. The Azure SDK BOM
+         pins every com.azure library together. -->
     <azuresdk.version>1.3.9</azuresdk.version>
-    <!-- hkdfguard-keywrapping-googlekms. Google's libraries BOM pins the Cloud KMS client with the
-         gax, gRPC, Protobuf and auth versions it was released and tested with. -->
+    <!-- hkdfguard-keywrapping-googlekms and hkdfguard-cache-googlesecretmanager. Google's libraries
+         BOM pins the Cloud KMS and Secret Manager clients with the gax, gRPC, Protobuf and auth
+         versions they were released and tested with. -->
     <googlecloud.version>26.90.0</googlecloud.version>
     <!-- Newer than libraries-bom 26.90.0's 33.6.0-jre, which has GHSA-xxph-c9ww-hj94 (CVE-2026-102554:
-         deserializing some Guava collections can force a huge allocation). The Cloud KMS client is
-         the only module that brings Guava; drop this once the BOM's own version is 33.7.2 or later. -->
+         deserializing some Guava collections can force a huge allocation). The Cloud KMS and Secret
+         Manager clients are the only modules that bring Guava; drop this once the BOM's own version
+         is 33.7.2 or later. -->
     <guava.version>33.7.2-jre</guava.version>
 
     <!-- The KeyWrapping module calls the native KMS library through the FFM API, a restricted
@@ -115,6 +127,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-remote-common</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -149,12 +166,37 @@
       </dependency>
       <dependency>
         <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-keywrapping-hashicorpvault</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-dataencryptionkey</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cache</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache-awssecretsmanager</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache-azurekeyvault</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache-googlesecretmanager</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache-hashicorpvault</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
