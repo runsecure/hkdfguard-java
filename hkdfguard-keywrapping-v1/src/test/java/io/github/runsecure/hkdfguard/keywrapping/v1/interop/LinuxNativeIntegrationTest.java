@@ -6,10 +6,14 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
+import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.ServiceNames;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeHkdfKeyWrapperV1Impl;
@@ -20,7 +24,9 @@ import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -32,6 +38,7 @@ import java.util.HexFormat;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
@@ -290,6 +297,190 @@ class LinuxNativeIntegrationTest {
                 assertTrue(result.get());
         }
     }
+
+    // --- Key files, read through hkdfguard_open_file ---------------------------------------------
+    // Each gets a fresh private folder from NativeTestEnvironment.createTempDirectory, which skips
+    // the test (as the .NET port's NeedsKeyFileDirectory does) when no directory the library would
+    // trust can be made. Every key file is written 0600 through NativeTestEnvironment.writeKeyFile.
+
+    // Any valid name: reading a file never touches a KEK.
+    private static final NativeHkdfKeyWrapperV1Impl READER = new NativeHkdfKeyWrapperV1Impl("hkdfguard.keyfile.reader");
+
+    private static Path write(Path directory, String name, byte[] contents) throws IOException {
+        return NativeTestEnvironment.writeKeyFile(directory.resolve(name), contents);
+    }
+
+    private static Throwable readFailure(NativeHkdfKeyWrapperV1Impl reader, Path path) {
+        var future = reader.readKeyFileAsync(path);
+        assertTrue(future.isDone(), "native calls complete synchronously");
+        return assertThrows(ExecutionException.class, future::get).getCause();
+    }
+
+    /** That reading {@code path} fails with exactly {@code type}, naming {@code status}. */
+    private static <T extends Throwable> T refused(Class<T> type, Path path, int status) {
+        var failure = readFailure(READER, path);
+        assertEquals(type, failure.getClass(), () -> path + ": " + failure);
+        assertTrue(failure.getMessage().contains("status " + status + " ("), failure.getMessage());
+        return type.cast(failure);
+    }
+
+    @Test
+    void aKeyFile_ReadsBackExactlyAsWritten() throws Exception {
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-open-");
+        try {
+            var wrapped = wrap(randomDek());
+
+            assertArrayEquals(wrapped, READER.readKeyFileAsync(write(directory, "key.bin", wrapped)).get());
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    @Test
+    void aKeyFileOfTheWrongSize_IsRefused_AsTooShortOrTooLong() throws IOException {
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-open-");
+        try {
+            var wrapped = wrap(randomDek());
+            int[][] cases = {
+                {0, AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_SHORT},
+                {100, AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_SHORT},
+                {wrapped.length - 1, AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_SHORT},
+                {wrapped.length + 1, AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_LONG},
+                {4096, AbstractHkdfGuardKmsLibrary.ERR_FILE_TOO_LONG},
+            };
+            for (var c : cases) {
+                var size = c[0];
+                var contents = new byte[size];
+                System.arraycopy(wrapped, 0, contents, 0, Math.min(size, wrapped.length));
+                refused(InvalidKeyFileException.class, write(directory, "size-" + size + ".bin", contents), c[1]);
+            }
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    static Stream<String> plaintextKeyForms() {
+        return Stream.of("raw", "hex", "lower-hex", "base64", "base64-with-newline");
+    }
+
+    @ParameterizedTest
+    @MethodSource("plaintextKeyForms")
+    void aFileHoldingWhatLooksLikeAnUnwrappedDek_IsRefusedAsAKeyExposure(String form) throws IOException {
+        var dek = randomDek();
+        var contents = switch (form) {
+            case "raw" -> dek;
+            case "hex" -> HexFormat.of().withUpperCase().formatHex(dek).getBytes(StandardCharsets.US_ASCII);
+            case "lower-hex" -> HexFormat.of().formatHex(dek).getBytes(StandardCharsets.US_ASCII);
+            case "base64" -> Base64.getEncoder().encodeToString(dek).getBytes(StandardCharsets.US_ASCII);
+            default -> (Base64.getEncoder().encodeToString(dek) + "\n").getBytes(StandardCharsets.US_ASCII);
+        };
+
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-open-");
+        try {
+            refused(InvalidKeyFileException.class, write(directory, "plaintext-" + form + ".bin", contents), AbstractHkdfGuardKmsLibrary.ERR_FILE_PLAINTEXT_KEY);
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    @Test
+    void aChangeToThePayloadsStructure_IsRefusedWhenRead_ButAChangedTagOnlyAtUnwrap() throws Exception {
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-open-");
+        try {
+            var wrapped = wrap(randomDek());
+
+            // The version byte and a byte mid-payload are checked when the file is read; the AEAD
+            // tag can only be checked with the KEK, so a changed tag reads fine and fails unwrap.
+            for (var position : new int[] {0, wrapped.length / 2}) {
+                var tampered = wrapped.clone();
+                tampered[position] ^= 0x01;
+                refused(InvalidKeyFileException.class, write(directory, "structure-" + position + ".bin", tampered), AbstractHkdfGuardKmsLibrary.ERR_FILE_MALFORMED);
+            }
+
+            var tag = wrapped.clone();
+            tag[tag.length - 1] ^= 0x01;
+            var read = READER.readKeyFileAsync(write(directory, "tag.bin", tag)).get();
+            var destination = filled(DEK_LENGTH);
+            var unwrap = new NativeHkdfKeyWrapperV1Impl(service).unwrapAsync(read, destination);
+            assertInstanceOf(CryptographicException.class, assertThrows(ExecutionException.class, unwrap::get).getCause());
+            assertZero(destination, "the destination after a changed tag");
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    @Test
+    void aMissingFileOrFolder_IsNotFound_AndAFolderIsNotAKeyFile() throws IOException {
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-open-");
+        try {
+            refused(NoSuchFileException.class, directory.resolve("missing.bin"), AbstractHkdfGuardKmsLibrary.ERR_FILE_NOT_FOUND);
+            refused(NoSuchFileException.class, directory.resolve("missing").resolve("key.bin"), AbstractHkdfGuardKmsLibrary.ERR_FILE_NOT_FOUND);
+            refused(IOException.class, directory, AbstractHkdfGuardKmsLibrary.ERR_FILE_IO);
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    @Test
+    void aLink_IsFollowed_OnlyWhereItLeadsIsTrustedToo() throws Exception {
+        // The library judges where a link leads, not the link: within private folders it is
+        // followed; into /tmp (sticky, world-writable) it is refused, as is /tmp itself.
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-open-");
+        try {
+            var wrapped = wrap(randomDek());
+            var key = write(directory, "key.bin", wrapped);
+            var fileLink = Files.createSymbolicLink(directory.resolve("file-link.bin"), key);
+            var folderLink = Files.createSymbolicLink(directory.resolve("folder-link"), directory);
+
+            assertArrayEquals(wrapped, READER.readKeyFileAsync(fileLink).get());
+            assertArrayEquals(wrapped, READER.readKeyFileAsync(folderLink.resolve("key.bin")).get());
+
+            var shared = Files.createTempDirectory(Path.of("/tmp"), "hkdfguard-shared-");
+            try {
+                assertTrue(shared.toRealPath().startsWith(Path.of("/tmp")), shared + " is not under /tmp");
+                var exposed = write(shared, "key.bin", wrapped);
+                var intoShared = Files.createSymbolicLink(directory.resolve("into-tmp.bin"), exposed);
+                var sharedFolderLink = Files.createSymbolicLink(directory.resolve("tmp-folder"), shared);
+
+                refused(AccessDeniedException.class, exposed, AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED);
+                refused(AccessDeniedException.class, intoShared, AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED);
+                refused(AccessDeniedException.class, sharedFolderLink.resolve("key.bin"), AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED);
+            } finally {
+                NativeTestEnvironment.deleteRecursively(shared);
+            }
+        } finally {
+            // Files.walk does not follow links: the links are removed, never what they lead to.
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    @Test
+    void aKeyFileAnotherAccountCouldRewrite_IsRefused_WhileOwnerOnlyAndGroupReadAreNot() throws Exception {
+        // A group- or other-writable key file could be replaced by another account, so the library
+        // refuses it (-39) whatever the folders above it. Group read is fine: hkdfguard wrap
+        // --group hands a key file to a service's group as 0640.
+        var directory = NativeTestEnvironment.createTempDirectory("hkdfguard-mode-");
+        try {
+            var path = write(directory, "key.bin", wrap(randomDek()));
+            var reader = new NativeHkdfKeyWrapperV1Impl(service);
+
+            for (var mode : new String[] {"rw-rw-r--", "rw-r--rw-"}) {
+                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(mode));
+
+                var failure = assertInstanceOf(AccessDeniedException.class, readFailure(reader, path), mode);
+                assertTrue(failure.getMessage().contains("status " + AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED), mode + ": " + failure.getMessage());
+            }
+
+            for (var mode : new String[] {"rw-------", "rw-r-----", "rw-r--r--"}) {
+                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(mode));
+                assertTrue(reader.readKeyFileAsync(path).get().length > 0, mode);
+            }
+        } finally {
+            NativeTestEnvironment.deleteRecursively(directory);
+        }
+    }
+
+    // --- The provisioning tool ---------------------------------------------------------------------
 
     @Test
     void aKeyFileWrappedByTheProvisioningTool_RevealsItsDekThroughTheWrapper() throws Exception {

@@ -60,7 +60,7 @@ class NativeKeyFileTest {
     }
 
     private Path write(String name, byte[] contents) throws IOException {
-        return Files.write(directory.resolve(name), contents);
+        return NativeTestEnvironment.writeKeyFile(directory.resolve(name), contents);
     }
 
     private static Throwable readFailure(Path path) {
@@ -140,7 +140,7 @@ class NativeKeyFileTest {
         var wrapped = file.wrapped();
         // The version byte: first on Linux and Windows; on macOS the suite id, after the 32-byte KEK fingerprint.
         wrapped[NativeTestEnvironment.isMacOs() ? 32 : 0] ^= (byte) 0xFF;
-        Files.write(file.path(), wrapped);
+        NativeTestEnvironment.writeKeyFile(file.path(), wrapped);
 
         var failure = assertInstanceOf(InvalidKeyFileException.class, readFailure(file.path()));
 

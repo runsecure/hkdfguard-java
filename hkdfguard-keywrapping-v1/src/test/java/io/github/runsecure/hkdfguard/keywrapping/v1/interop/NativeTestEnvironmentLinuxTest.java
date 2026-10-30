@@ -47,9 +47,14 @@ class NativeTestEnvironmentLinuxTest {
                 assertFalse(directory.startsWith(sticky), directory + " is under " + sticky);
             assertNull(NativeTestEnvironment.linuxUntrustedReason(directory, uid()));
 
-            // A key file written there is the user's alone.
-            var file = Files.write(directory.resolve("key.bin"), new byte[132]);
+            // A key file written there is the user's alone, whatever the umask - and rewriting an
+            // existing one, as the tamper tests do, puts its mode back to rw-------.
+            var file = NativeTestEnvironment.writeKeyFile(directory.resolve("key.bin"), new byte[132]);
             assertTrue(Files.isRegularFile(file));
+            assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-rw-r--"));
+            NativeTestEnvironment.writeKeyFile(file, new byte[132]);
+            assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
         } finally {
             NativeTestEnvironment.deleteRecursively(directory);
         }
