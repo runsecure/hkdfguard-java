@@ -84,7 +84,7 @@
     <slf4j.version>2.0.20</slf4j.version>
     <junit.version>6.1.3</junit.version>
     <!-- hkdfguard-keywrapping-awskms. One BOM version pins every AWS SDK module together. -->
-    <awssdk.version>2.57.3</awssdk.version>
+    <awssdk.version>2.57.4</awssdk.version>
     <!-- hkdfguard-keywrapping-azurekeyvault. The Azure SDK BOM pins every com.azure library together. -->
     <azuresdk.version>1.3.9</azuresdk.version>
     <!-- hkdfguard-keywrapping-googlekms. Google's libraries BOM pins the Cloud KMS client with the
