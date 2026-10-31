@@ -38,6 +38,7 @@ class KmsLibraryContractTest {
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_MALFORMED, -10),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_AUTH_FAILED, -11),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_UNSUPPORTED, -12),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_VERSION_REFUSED, -13),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_FINGERPRINT_MISMATCH, -16),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_NOT_FOUND, -17),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED, -18),
@@ -137,6 +138,14 @@ class KmsLibraryContractTest {
 
         assertTrue(description.contains("hkdfguard provision"));
         assertFalse(description.contains("v1-initialize"));
+    }
+
+    @Test
+    void windows_NamesThePolicyThatSelectsThePayloadVersion() {
+        var library = new WindowsHkdfGuardKmsLibrary();
+
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_VERSION_REFUSED).contains("ClassicalMode"));
+        assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_PROVIDER_UNAVAILABLE).contains("ClassicalMode"));
     }
 
     @Test

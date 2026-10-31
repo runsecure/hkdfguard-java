@@ -329,12 +329,13 @@ number for number, and every failure message names the status and what it means:
 | -10 | PAYLOAD_MALFORMED | | -64 | WIN_GROUP_INVALID |
 | -11 | PAYLOAD_AUTH_FAILED | | -96 | MAC_ACCESS_CONTROL_CREATION_FAILED |
 | -12 | PAYLOAD_UNSUPPORTED | | -97 | MAC_KEY_GENERATION_FAILED |
-| -16 | KEK_FINGERPRINT_MISMATCH | | -98 | MAC_KEYCHAIN_WRITE_FAILED |
-| -17 | KEK_NOT_FOUND | | -99 | MAC_KEK_VERIFICATION_FAILED |
-| -18 | KEK_ACCESS_DENIED | | -100 | MAC_KEYCHAIN_READ_FAILED |
+| -13 | PAYLOAD_VERSION_REFUSED | | -98 | MAC_KEYCHAIN_WRITE_FAILED |
+| -16 | KEK_FINGERPRINT_MISMATCH | | -99 | MAC_KEK_VERIFICATION_FAILED |
+| -17 | KEK_NOT_FOUND | | -100 | MAC_KEYCHAIN_READ_FAILED |
+| -18 | KEK_ACCESS_DENIED | | | |
 | -19 | KEK_INVALID | | | |
 
-Every other negative code (-7, -13..-15, -21..-31, -40..-63, ...) is reserved.
+Every other negative code (-7, -14..-15, -21..-31, -40..-63, ...) is reserved.
 
 ## Process hardening
 

@@ -24,7 +24,7 @@ public abstract class AbstractHkdfGuardKmsLibrary {
 
     // Status codes, exactly as every platform's hkdfguard.h defines them (HKDFGUARD_OK and
     // HKDFGUARD_ERR_*). Each platform band refines one of the common codes above it. Codes not
-    // listed here (-7, -13..-15, -21..-31, -40..-63, ...) are reserved.
+    // listed here (-7, -14..-15, -21..-31, -40..-63, ...) are reserved.
 
     /** The call succeeded. */
     public static final int OK = 0;
@@ -45,6 +45,7 @@ public abstract class AbstractHkdfGuardKmsLibrary {
     public static final int ERR_PAYLOAD_MALFORMED = -10;
     public static final int ERR_PAYLOAD_AUTH_FAILED = -11;
     public static final int ERR_PAYLOAD_UNSUPPORTED = -12;
+    public static final int ERR_PAYLOAD_VERSION_REFUSED = -13;
 
     // KEK and process (-16..-31)
     public static final int ERR_KEK_FINGERPRINT_MISMATCH = -16;
@@ -99,9 +100,10 @@ public abstract class AbstractHkdfGuardKmsLibrary {
             case ERR_INTERNAL_ERROR -> "an unexpected internal failure in the native library";
             case ERR_INVALID_SERVICE_NAME -> "the service name is null, empty, too long, or has a character other than an ASCII letter, digit or '.'";
             case ERR_POLICY_INVALID -> "the machine's HkdfGuard policy is invalid";
-            case ERR_PAYLOAD_MALFORMED -> "the wrapped payload is not a valid WrappedDekV1";
+            case ERR_PAYLOAD_MALFORMED -> "the wrapped payload is not a valid wrapped DEK";
             case ERR_PAYLOAD_AUTH_FAILED -> "AES-GCM authentication failed: the wrapped payload was altered";
             case ERR_PAYLOAD_UNSUPPORTED -> "the wrapped payload's version or suite is not one this native library understands";
+            case ERR_PAYLOAD_VERSION_REFUSED -> "the wrapped payload's version is one this native library understands, but this host's policy does not use";
             case ERR_KEK_FINGERPRINT_MISMATCH -> "the payload was wrapped under a different KEK than this service's current one";
             case ERR_KEK_NOT_FOUND -> "no KEK is provisioned for this service; run hkdfguard provision";
             case ERR_KEK_ACCESS_DENIED -> "the KEK exists, but this account is not authorized to use it";

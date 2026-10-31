@@ -48,7 +48,7 @@ class NativeHkdfKeyWrapperV1ImplTest {
 
     @ParameterizedTest
     // Reserved codes: no platform returns them, so there is no meaning to add.
-    @ValueSource(ints = {-7, -13, -40})
+    @ValueSource(ints = {-7, -14, -40})
     void wrapAsync_WhenTheLibraryFails_FailsWithACryptographicExceptionNamingTheStatus(int status) {
         var library = new FakeHkdfGuardKmsLibrary();
         library.wrapDekStatus = status;
@@ -103,7 +103,7 @@ class NativeHkdfKeyWrapperV1ImplTest {
 
     @ParameterizedTest
     // Reserved codes: no platform returns them, so there is no meaning to add.
-    @ValueSource(ints = {-7, -13, -40})
+    @ValueSource(ints = {-7, -14, -40})
     void unwrapAsync_WhenTheLibraryFails_FailsAndZeroesTheResultBuffer(int status) {
         var library = new FakeHkdfGuardKmsLibrary();
         library.unwrapDekStatus = status;
@@ -137,7 +137,7 @@ class NativeHkdfKeyWrapperV1ImplTest {
 
     @ParameterizedTest
     // Reserved codes: no platform returns them, so there is no meaning to add.
-    @ValueSource(ints = {-7, -13, -40})
+    @ValueSource(ints = {-7, -14, -40})
     void generateAndWrapAsync_WhenTheLibraryFails_FailsWithACryptographicException(int status) {
         var library = new FakeHkdfGuardKmsLibrary();
         library.generateAndWrapDekStatus = status;
