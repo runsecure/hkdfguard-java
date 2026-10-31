@@ -84,7 +84,7 @@ class NativeEndToEndTest {
             try {
                 var wrapped = new byte[WrappedKeyLimits.MAX_BYTES];
                 int length = new NativeHkdfKeyWrapperV1Impl(service).wrapAsync(dek, wrapped).get();
-                var path = Files.write(directory.resolve("wrapped-dek-v" + KEY_FILE_VERSION + ".bin"), Arrays.copyOf(wrapped, length));
+                var path = NativeTestEnvironment.writeKeyFile(directory.resolve("wrapped-dek-v" + KEY_FILE_VERSION + ".bin"), Arrays.copyOf(wrapped, length));
                 return new Release(path, configuration);
             } finally {
                 ArrayUtility.zeroMemory(dek);
@@ -141,10 +141,13 @@ class NativeEndToEndTest {
 
     @Test
     void aTamperedKeyFile_RefusesToBuild() throws Exception {
+        // The last byte is part of the AEAD tag, which no platform's library can check without the
+        // KEK, so the file reads back fine and the build fails at unwrap. (A change to the payload's
+        // structure is refused earlier, when the file is read, as an InvalidKeyFileException.)
         var release = runPipeline("Secret", "value");
         var bytes = Files.readAllBytes(release.keyFile());
-        bytes[bytes.length / 2] ^= 0x01;
-        Files.write(release.keyFile(), bytes);
+        bytes[bytes.length - 1] ^= 0x01;
+        NativeTestEnvironment.writeKeyFile(release.keyFile(), bytes);
 
         assertFailsWith(CryptographicException.class, ringBuilder(service).withKeyFile(KEY_FILE_VERSION, release.keyFile()).buildAsync());
     }
