@@ -360,6 +360,25 @@ class HkdfGuardAutoConfigurationTest {
     }
 
     @Test
+    void protectedConfigurationIsWiredForAnApplicationsOwnRing_NotOnlyTheBuiltOne() {
+        runner.withConfiguration(AutoConfigurations.of(HkdfGuardEncryptedConfigurationAutoConfiguration.class))
+                .withBean(KeyRing.class, () -> new SingleKeyRing(new CorruptKey()))
+                .run(context -> assertThat(context).hasSingleBean(ProtectedEnvironment.class));
+    }
+
+    @Test
+    void protectedConfigurationIsWiredForTheBuiltRing() {
+        configured.withConfiguration(AutoConfigurations.of(HkdfGuardEncryptedConfigurationAutoConfiguration.class))
+                .run(context -> assertThat(context).hasSingleBean(ProtectedEnvironment.class));
+    }
+
+    @Test
+    void withoutAnyRingNoProtectedConfigurationIsWired() {
+        runner.withConfiguration(AutoConfigurations.of(HkdfGuardEncryptedConfigurationAutoConfiguration.class))
+                .run(context -> assertThat(context).doesNotHaveBean(ProtectedEnvironment.class));
+    }
+
+    @Test
     void healthCoversAnApplicationsOwnRing() {
         runner.withBean(KeyRing.class, () -> new SingleKeyRing(new FailedClosedKey()))
                 .run(context -> assertThat(context.getBean(HkdfGuardHealthIndicator.class).health().getStatus()).isEqualTo(Status.DOWN));

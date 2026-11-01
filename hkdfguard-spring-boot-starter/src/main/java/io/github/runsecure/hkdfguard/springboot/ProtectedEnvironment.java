@@ -2,8 +2,11 @@ package io.github.runsecure.hkdfguard.springboot;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.DataProtector;
+import io.github.runsecure.hkdfguard.abstractions.EncryptedFormatProvider;
+import io.github.runsecure.hkdfguard.abstractions.KeyRing;
 import io.github.runsecure.hkdfguard.abstractions.ProtectedConfigurationPurpose;
 import io.github.runsecure.hkdfguard.abstractions.ProtectedReadOnlyCache;
+import io.github.runsecure.hkdfguard.dataencryptionkey.DataProtectors;
 import io.github.runsecure.hkdfguard.dataencryptionkey.KeyRingImpl;
 import io.github.runsecure.hkdfguard.diagnostics.AttributeNames;
 import io.github.runsecure.hkdfguard.diagnostics.ComponentTelemetry;
@@ -17,6 +20,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.OptionalInt;
 import org.springframework.core.env.PropertyResolver;
 
@@ -44,16 +48,37 @@ public final class ProtectedEnvironment implements ProtectedReadOnlyCache {
     private static final AttributeKey<String> NAME = AttributeKey.stringKey(AttributeNames.NAME);
 
     private final PropertyResolver environment;
-    private final KeyRingImpl keyRing;
+    private final Function<String, DataProtector> protectors;
 
     /**
      * @param environment the configuration to read protected values from, usually the
      *                    application's {@code Environment}
-     * @param keyRing     the ring holding every key version the values were encrypted under
+     * @param keyRing     the ring holding every key version the values were encrypted under; its own
+     *                    format provider parses them
      */
     public ProtectedEnvironment(PropertyResolver environment, KeyRingImpl keyRing) {
         this.environment = Objects.requireNonNull(environment, "environment");
-        this.keyRing = Objects.requireNonNull(keyRing, "keyRing");
+        Objects.requireNonNull(keyRing, "keyRing");
+        this.protectors = keyRing::createProtector;
+    }
+
+    /**
+     * Over any {@link KeyRing}, such as an application's own.
+     *
+     * @param environment    the configuration to read protected values from, usually the
+     *                       application's {@code Environment}
+     * @param keyRing        the ring holding every key version the values were encrypted under. A
+     *                       {@link KeyRingImpl} parses them with its own format provider, as
+     *                       {@link #ProtectedEnvironment(PropertyResolver, KeyRingImpl)} does
+     * @param formatProvider parses the values, for any other ring
+     */
+    public ProtectedEnvironment(PropertyResolver environment, KeyRing keyRing, EncryptedFormatProvider formatProvider) {
+        this.environment = Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(keyRing, "keyRing");
+        Objects.requireNonNull(formatProvider, "formatProvider");
+        this.protectors = keyRing instanceof KeyRingImpl ring
+                ? ring::createProtector
+                : name -> DataProtectors.create(keyRing, name, formatProvider);
     }
 
     /**
@@ -138,7 +163,7 @@ public final class ProtectedEnvironment implements ProtectedReadOnlyCache {
 
     // Bound to this one property, so a value copied in from another fails its tag check.
     private DataProtector protectorFor(String name) {
-        return keyRing.createProtector(ProtectedConfigurationPurpose.forKey(name));
+        return protectors.apply(ProtectedConfigurationPurpose.forKey(name));
     }
 
     // Encodes straight into the caller's buffer: no intermediate byte[] that would need zeroing.

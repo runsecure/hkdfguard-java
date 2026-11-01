@@ -3,6 +3,7 @@ package io.github.runsecure.hkdfguard.dataencryptionkey;
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.DataProtector;
 import io.github.runsecure.hkdfguard.abstractions.EncryptedFormatProvider;
+import io.github.runsecure.hkdfguard.abstractions.KeyRing;
 import io.github.runsecure.hkdfguard.abstractions.KeyTrackingValue;
 import io.github.runsecure.hkdfguard.abstractions.Utf8Utility;
 import io.github.runsecure.hkdfguard.diagnostics.AttributeNames;
@@ -13,8 +14,9 @@ import io.opentelemetry.api.common.Attributes;
 import java.util.Objects;
 
 /**
- * The default {@link DataProtector}. Package-private: only {@link KeyRingImpl#createProtector}
- * constructs one, so every instance is bound to a real key ring. The name is UTF-8-encoded once
+ * The default {@link DataProtector}. Package-private: only {@link DataProtectors#create} (which
+ * {@link KeyRingImpl#createProtector} calls) constructs one, so every instance is bound to a key
+ * ring and its name has passed the reserved-prefix checks. The name is UTF-8-encoded once
  * into the AAD used for every encrypt/decrypt, so a value protected under one name fails to decrypt
  * under another. Encrypt resolves the ring's current key on every call, so it always protects new
  * data with the latest rotation; decrypt resolves whichever version the formatted value names, so
@@ -26,7 +28,7 @@ final class DataProtectorImpl implements DataProtector {
     private static final AttributeKey<Long> ENCRYPTED_LENGTH = AttributeKey.longKey(AttributeNames.ENCRYPTED_LENGTH);
 
     private final String name;
-    private final KeyRingImpl keyRing;
+    private final KeyRing keyRing;
     private final EncryptedFormatProvider formatProvider;
     private final byte[] aad;
 
@@ -34,7 +36,7 @@ final class DataProtectorImpl implements DataProtector {
      * @throws IllegalArgumentException name is not valid UTF-16: lenient encoding would give two
      *                                  different names (an unpaired surrogate each) the same AAD
      */
-    DataProtectorImpl(String name, KeyRingImpl keyRing, EncryptedFormatProvider formatProvider) {
+    DataProtectorImpl(String name, KeyRing keyRing, EncryptedFormatProvider formatProvider) {
         this.name = name;
         this.keyRing = keyRing;
         this.formatProvider = formatProvider;

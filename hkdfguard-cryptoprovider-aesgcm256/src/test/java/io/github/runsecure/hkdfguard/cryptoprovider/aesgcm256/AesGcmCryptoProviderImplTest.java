@@ -89,6 +89,42 @@ class AesGcmCryptoProviderImplTest {
         assertEquals("KEK unavailable", failure.getMessage());
     }
 
+    @Test
+    void createAsync_CancelledWhileTheKeyIsRevealed_ZeroesTheRevealedKeyWhenItArrives() throws Exception {
+        var revealedInto = new CompletableFuture<byte[]>();
+        var gate = new CompletableFuture<Void>();
+        var key = FakeKeyWrapper.randomKey();
+        KeyWrapper wrapper = new FakeKeyWrapper() {
+            @Override
+            public CompletableFuture<Integer> unwrapAsync(byte[] wrapped, byte[] result) {
+                revealedInto.complete(result);
+                return gate.thenApplyAsync(ignored -> {
+                    System.arraycopy(key, 0, result, 0, key.length);
+                    return key.length;
+                });
+            }
+        };
+
+        var creating = AesGcmCryptoProviderImpl.createAsync(wrapper, wrapped(), 60);
+        var revealed = revealedInto.get(10, TimeUnit.SECONDS);
+        assertTrue(creating.cancel(true));
+        gate.complete(null); // the key wrapper answers after the caller gave up
+
+        // The first session was never handed to a provider: its key is zeroed rather than left for GC.
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!ArrayUtilityProbe.isZero(revealed) && System.nanoTime() < deadline)
+            Thread.sleep(10);
+        assertTrue(ArrayUtilityProbe.isZero(revealed), "the revealed key was left in memory");
+    }
+
+    @Test
+    void createAsync_ThatCompletes_KeepsTheFirstSessionInUse() {
+        try (var provider = create(new FakeKeyWrapper(), 60)) {
+            var ciphertext = provider.encrypt(utf8("still usable"), new byte[64]);
+            assertTrue(ciphertext > 0);
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {0, -1, 301})
     void createAsync_WithExpirySecondsOutOfRange_Throws(int expirySeconds) {

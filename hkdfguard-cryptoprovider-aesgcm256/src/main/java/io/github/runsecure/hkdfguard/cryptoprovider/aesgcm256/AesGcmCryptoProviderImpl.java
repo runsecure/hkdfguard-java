@@ -158,9 +158,18 @@ public final class AesGcmCryptoProviderImpl implements CryptoProvider {
         validate(expirySeconds, maxRefreshFailures);
         var effectiveLogger = logger != null ? logger : LoggerFactory.getLogger(AesGcmCryptoProviderImpl.class);
 
-        return revealAsync(keyWrapper, wrapped, budget, effectiveLogger)
-                .thenApply(first -> new AesGcmCryptoProviderImpl(keyWrapper, wrapped, expirySeconds, maxRefreshFailures,
-                        first.budget(), first, effectiveLogger));
+        var reveal = revealAsync(keyWrapper, wrapped, budget, effectiveLogger);
+        var created = reveal.thenApply(first -> new AesGcmCryptoProviderImpl(keyWrapper, wrapped, expirySeconds, maxRefreshFailures,
+                first.budget(), first, effectiveLogger));
+        // If no provider ever takes the first session - the caller cancelled (or completed) the
+        // returned future while the key was being revealed, or the constructor failed - nothing else
+        // would close it, and the revealed key would stay in memory until garbage collection. Close it
+        // as soon as it arrives instead. A provider that was created owns it, and closes it itself.
+        created.whenComplete((provider, error) -> {
+            if (provider == null)
+                reveal.thenAccept(AesGcmCryptoSession::close);
+        });
+        return created;
     }
 
     /**
