@@ -93,7 +93,9 @@ int length = protector.decrypt(encrypted, result);
   it stays in the heap until the collector reuses that memory. Process hardening, which blocks core
   dumps and debugger attachment, is what keeps such copies out of reach.
 - **Logging**: a null logger means the class's own SLF4J logger. .NET's Critical level is ERROR
-  with the `CRITICAL` marker; the event id travels as the `hkdfguard.event_id` key-value.
+  with the `CRITICAL` marker; the event id travels as the `hkdfguard.event_id` key-value. Event 11,
+  `BackgroundTaskTerminated`, is Java's own, so the key-file age events the other ports number 11
+  (`KeyFileAgeWarning`) and 12 (`KeyFileExpired`) are 12 and 13 here.
 - **Telemetry** goes to `GlobalOpenTelemetry` (read without latching a no-op), or to the instance
   given to `HkdfGuardTelemetry.setOpenTelemetry`.
 
@@ -101,7 +103,8 @@ int length = protector.decrypt(encrypted, result);
 
 With random 96-bit nonces, AES-GCM is safe for about 2^32 encryptions under one key (NIST
 SP 800-38D). Each crypto provider counts the encryptions under its key, warns at 2^28, and
-refuses to encrypt past 2^31 (`AesGcmCryptoProviderImpl.MAX_ENCRYPTIONS_PER_KEY`). Decryption is never limited.
+refuses to encrypt past 2^31 (`AesGcmCryptoProviderImpl.MAX_ENCRYPTIONS_PER_KEY`) with
+`EncryptionLimitReachedException`. Decryption is never limited.
 
 That count is kept per process, by design. It is exact for the key an application should encrypt
 with at runtime: an ephemeral key, generated at startup and held only in that process's memory, so
@@ -116,7 +119,17 @@ exits, which suits caches and other in-process data; never persist it.
 
 If an application does encrypt values that must outlive the process under a key file, its
 encryptions under that file are not counted together across instances and restarts. Bound them by
-deploying a new key file at a higher version regularly.
+deploying a new key file at a higher version regularly. `keyFileMaxAgeDays` (365 days by default)
+enforces this: a current key file stops encrypting at that age, and decryption under it never stops.
+
+Rotate at least yearly. AES-GCM is only safe for a limited number of encryptions under one key,
+and a key file outlives the process that counts them. So a key file stops encrypting 365 days
+after it was last written (`KeyRingBuilder.withKeyFileMaxAgeDays`, or `keyFileMaxAgeDays` in
+`HkdfGuardOptions` - `KeyFileMaxAgeDays` in `appsettings.json`, `hkdfguard.key-file-max-age-days`
+in Spring - sets anywhere from 1 to 3650). A warning is logged at 90% of that age. After it,
+encrypting throws `EncryptionLimitReachedException`, and values under that key file still decrypt.
+The age is the file's modification time, so copy key files with their timestamps kept (`cp -p`,
+`rsync -t`). A plain copy resets the clock.
 
 ## Configuration
 
@@ -125,7 +138,10 @@ binder such as Spring's `@ConfigurationProperties` or Jackson fills it directly;
 `HkdfGuardOptions.fromMap` reads a parsed section, matching keys ignoring case, `_` and `-`, so a
 .NET `appsettings.json` `HkdfGuard` section reads unchanged. An unknown key is an error, unlike
 .NET's binder, so a misspelt setting can't silently fall back to a default. `requireValid()`
-reports every problem at once, and `applyTo` copies the settings onto a builder:
+reports every problem at once, and `applyTo` copies the settings onto a builder. The fields are
+`serviceName`, `keyRefreshInterval`, `maxRefreshFailures`, `failOpenOnRefreshFailure`,
+`ephemeralKeyRotationHours`, `disableEphemeralKeyRotation`, `ephemeralKeyRetentionHours`,
+`keyFileMaxAgeDays` (1-3650, 365 when unset), `keyFiles` and `ephemeralKeys`:
 
 ```java
 var options = HkdfGuardOptions.fromMap(settings).requireValid();

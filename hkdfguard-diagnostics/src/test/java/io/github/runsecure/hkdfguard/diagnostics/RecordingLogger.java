@@ -1,7 +1,9 @@
 package io.github.runsecure.hkdfguard.diagnostics;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.slf4j.Marker;
 import org.slf4j.event.Level;
 import org.slf4j.event.LoggingEvent;
@@ -14,7 +16,7 @@ import org.slf4j.spi.LoggingEventAware;
  * Thread-safe. When disabled, every level reports disabled and nothing is recorded.
  */
 final class RecordingLogger extends LegacyAbstractLogger implements LoggingEventAware {
-    record Entry(Level level, Integer eventId, String message, Throwable exception, List<Marker> markers) {
+    record Entry(Level level, Integer eventId, String message, Throwable exception, List<Marker> markers, Map<String, Object> keyValues) {
     }
 
     private final List<Entry> entries = new ArrayList<>();
@@ -36,20 +38,23 @@ final class RecordingLogger extends LegacyAbstractLogger implements LoggingEvent
     @Override
     public synchronized void log(LoggingEvent event) {
         Integer eventId = null;
+        var keyValues = new LinkedHashMap<String, Object>();
         if (event.getKeyValuePairs() != null)
-            for (var pair : event.getKeyValuePairs())
+            for (var pair : event.getKeyValuePairs()) {
+                keyValues.put(pair.key, pair.value);
                 if (HkdfGuardLog.EVENT_ID_KEY.equals(pair.key))
                     eventId = (Integer) pair.value;
+            }
 
         var message = MessageFormatter.basicArrayFormat(event.getMessage(), event.getArgumentArray());
         var markers = event.getMarkers() == null ? List.<Marker>of() : List.copyOf(event.getMarkers());
-        entries.add(new Entry(event.getLevel(), eventId, message, event.getThrowable(), markers));
+        entries.add(new Entry(event.getLevel(), eventId, message, event.getThrowable(), markers, Map.copyOf(keyValues)));
     }
 
     @Override
     protected synchronized void handleNormalizedLoggingCall(Level level, Marker marker, String messagePattern, Object[] arguments, Throwable throwable) {
         var markers = marker == null ? List.<Marker>of() : List.of(marker);
-        entries.add(new Entry(level, null, MessageFormatter.basicArrayFormat(messagePattern, arguments), throwable, markers));
+        entries.add(new Entry(level, null, MessageFormatter.basicArrayFormat(messagePattern, arguments), throwable, markers, Map.of()));
     }
 
     @Override

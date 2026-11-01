@@ -1,6 +1,6 @@
 package io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256;
 
-import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
+import io.github.runsecure.hkdfguard.abstractions.EncryptionLimitReachedException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import org.bouncycastle.crypto.CryptoServicesRegistrar;
@@ -87,13 +87,13 @@ final class EncryptionBudget {
      * Reserves one encryption. Returns true exactly once, for the reservation that reaches the
      * warning threshold, so the caller can raise a single warning.
      *
-     * @throws CryptographicException the limit has been reached; the key must be rotated
+     * @throws EncryptionLimitReachedException the limit has been reached; the key must be rotated
      */
     boolean consume() {
         var reserved = count.incrementAndGet();
         if (reserved > limit) {
             count.decrementAndGet();
-            throw new CryptographicException(
+            throw new EncryptionLimitReachedException(
                     "This key has reached its AES-GCM encryption limit of " + limit + " and must be rotated; decryption still works.");
         }
 

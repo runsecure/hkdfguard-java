@@ -18,6 +18,7 @@ public final class AttributeNames {
     public static final String ENCRYPTION_COUNT = "hkdfguard.encryption_count";
     public static final String ENCRYPTION_LIMIT = "hkdfguard.encryption_limit";
     public static final String CONSECUTIVE_FAILURES = "hkdfguard.consecutive_failures";
+    public static final String KEY_FILE_PATH = "hkdfguard.key_file.path";
 
     private AttributeNames() {
     }

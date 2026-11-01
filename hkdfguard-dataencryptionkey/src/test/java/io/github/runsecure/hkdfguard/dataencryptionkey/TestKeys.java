@@ -9,6 +9,11 @@ import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProvid
 import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardTelemetry;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -127,6 +132,38 @@ final class TestKeys {
         private CryptoProvider record(CryptoProvider provider) {
             createdProviders.add(provider);
             return provider;
+        }
+    }
+
+    /** A UTC clock that stands still until a test moves it. Thread-safe. */
+    static final class MutableClock extends Clock {
+        private volatile Instant now;
+
+        MutableClock(Instant now) {
+            this.now = now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        void set(Instant instant) {
+            now = instant;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            throw new UnsupportedOperationException();
         }
     }
 

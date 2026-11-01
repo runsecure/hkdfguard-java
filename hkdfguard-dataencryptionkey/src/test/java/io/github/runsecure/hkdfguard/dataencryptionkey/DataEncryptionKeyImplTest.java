@@ -4,13 +4,25 @@ import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.await;
 import static io.github.runsecure.hkdfguard.dataencryptionkey.TestKeys.utf8;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.abstractions.AuthenticationTagMismatchException;
 import io.github.runsecure.hkdfguard.abstractions.CryptoProvider;
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
+import io.github.runsecure.hkdfguard.abstractions.EncryptionLimitReachedException;
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProviderImpl;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class DataEncryptionKeyImplTest {
@@ -132,6 +144,103 @@ class DataEncryptionKeyImplTest {
     void encrypt_WhenTheProviderOverAllocates_TrimsToWhatWasWritten() {
         try (var key = new DataEncryptionKeyImpl(new OverAllocatingProvider())) {
             assertArrayEquals(utf8("abc"), key.encrypt(utf8("abc")));
+        }
+    }
+
+    // --- Deadline -------------------------------------------------------------------------------
+
+    private static DataEncryptionKeyImpl keyWithDeadline(EncryptionDeadline deadline, java.time.Clock clock) {
+        var provider = await(AesGcmCryptoProviderImpl.createAsync(new TestKeys.FakeKeyWrapper(TestKeys.randomKey()), utf8("wrapped"), 60));
+        return new DataEncryptionKeyImpl(provider, deadline, clock);
+    }
+
+    @Test
+    void encrypt_StopsAtItsDeadline_ZeroingThePlaintext_ButKeepsDecrypting() {
+        var calls = Collections.synchronizedList(new ArrayList<String>());
+        var now = Instant.now();
+        var clock = new TestKeys.MutableClock(now);
+        var deadline = new EncryptionDeadline(now.plusSeconds(1), now.plusSeconds(2), "rotate me", () -> calls.add("warn"), () -> calls.add("expired"));
+        try (var key = keyWithDeadline(deadline, clock)) {
+            var ciphertext = key.encrypt(utf8("before"));
+            assertFalse(key.checkDeadline(now));
+            assertEquals(List.of(), calls);
+
+            clock.set(now.plusMillis(1500));
+            key.encrypt(utf8("warned"));
+            key.encrypt(utf8("warned again"));
+            assertEquals(List.of("warn"), calls);
+
+            clock.set(now.plusSeconds(2));
+            var plaintext = utf8("refused");
+            var refused = assertThrows(EncryptionLimitReachedException.class, () -> key.encrypt(plaintext));
+            assertEquals("rotate me", refused.getMessage());
+            assertTrue(CryptographicException.class.isInstance(refused));
+            assertArrayEquals(new byte[plaintext.length], plaintext);
+            assertThrows(EncryptionLimitReachedException.class, () -> key.encrypt(utf8("refused again")));
+            assertEquals(List.of("warn", "expired"), calls);
+
+            var result = new byte[6];
+            key.decrypt(ciphertext, result);
+            assertArrayEquals(utf8("before"), result);
+        }
+    }
+
+    @Test
+    void checkDeadline_AnnouncesExpiryOnce_EvenWhenTheWarningWasSkipped_AndIgnoresAThrowingCallback() {
+        var expired = new AtomicInteger();
+        var deadline = new EncryptionDeadline(Instant.EPOCH, Instant.EPOCH.plusMillis(1), "old",
+                () -> {
+                    throw new IllegalStateException("never called");
+                },
+                () -> {
+                    expired.incrementAndGet();
+                    throw new IllegalStateException("bad logger");
+                });
+        try (var key = new DataEncryptionKeyImpl(await(AesGcmCryptoProviderImpl.createAsync(
+                new TestKeys.FakeKeyWrapper(TestKeys.randomKey()), utf8("wrapped"), 60)), deadline)) {
+            assertThrows(EncryptionLimitReachedException.class, () -> key.encrypt(utf8("x")));
+            assertThrows(EncryptionLimitReachedException.class, () -> key.encrypt(utf8("x")));
+            assertEquals(1, expired.get());
+        }
+    }
+
+    @Test
+    void checkDeadline_UnderConcurrentEncrypts_AnnouncesEachOnlyOnce() throws InterruptedException {
+        var warnings = new AtomicInteger();
+        var expiries = new AtomicInteger();
+        var now = Instant.now();
+        var clock = new TestKeys.MutableClock(now.plusMillis(1500));
+        var deadline = new EncryptionDeadline(now.plusSeconds(1), now.plusSeconds(2), "late", warnings::incrementAndGet, expiries::incrementAndGet);
+        try (var key = keyWithDeadline(deadline, clock)) {
+            for (var stage = 0; stage < 2; stage++) {
+                var start = new CountDownLatch(1);
+                var threads = new ArrayList<Thread>();
+                for (var i = 0; i < 8; i++)
+                    threads.add(Thread.ofPlatform().start(() -> {
+                        try {
+                            start.await();
+                            for (var j = 0; j < 50; j++)
+                                key.checkDeadline(clock.instant());
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }));
+                start.countDown();
+                for (var thread : threads)
+                    thread.join();
+                clock.advance(Duration.ofSeconds(1));
+            }
+            assertEquals(1, warnings.get());
+            assertEquals(1, expiries.get());
+        }
+    }
+
+    @Test
+    void encrypt_WithoutADeadline_IsNotLimited() {
+        try (var key = TestKeys.newKey()) {
+            assertNull(key.getDeadline());
+            assertFalse(key.checkDeadline(Instant.MAX));
+            assertEquals(5 + 28, key.encrypt(utf8("hello")).length);
         }
     }
 
