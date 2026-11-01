@@ -314,8 +314,8 @@ platform.
 its key wrapper (`KeyWrapper.readKeyFileAsync`). `NativeHkdfKeyWrapperV1Impl` reads it with the
 native library's `hkdfguard_open_file`, which returns the bytes still wrapped (it never unwraps or
 touches a KEK) and refuses a file that is missing, unreadable, the wrong size for a wrapped DEK,
-not a valid wrapped payload, or that holds what looks like an unwrapped key (32 raw bytes, or their
-hex or base64) - and a file whose location isn't trusted: a symbolic link, junction or other
+not a valid wrapped payload, or that holds what looks like an unwrapped key (32 raw bytes, optionally
+followed by one line ending (LF or CRLF), or their hex or base64) - and a file whose location isn't trusted: a symbolic link, junction or other
 reparse point, an 8.3 short name, a UNC, mapped or SUBST drive, or a file or folder another account
 could write or replace. Each refusal names the path and the native status, and is an
 `IllegalArgumentException` for -1 (invalid argument) and otherwise an `IOException`:

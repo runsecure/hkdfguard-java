@@ -360,7 +360,7 @@ class LinuxNativeIntegrationTest {
     }
 
     static Stream<String> plaintextKeyForms() {
-        return Stream.of("raw", "hex", "lower-hex", "base64", "base64-with-newline");
+        return Stream.of("raw", "raw-with-lf", "raw-with-crlf", "hex", "lower-hex", "base64", "base64-with-newline");
     }
 
     @ParameterizedTest
@@ -369,6 +369,17 @@ class LinuxNativeIntegrationTest {
         var dek = randomDek();
         var contents = switch (form) {
             case "raw" -> dek;
+            case "raw-with-lf" -> {
+                var lf = java.util.Arrays.copyOf(dek, 33);
+                lf[32] = '\n';
+                yield lf;
+            }
+            case "raw-with-crlf" -> {
+                var crlf = java.util.Arrays.copyOf(dek, 34);
+                crlf[32] = '\r';
+                crlf[33] = '\n';
+                yield crlf;
+            }
             case "hex" -> HexFormat.of().withUpperCase().formatHex(dek).getBytes(StandardCharsets.US_ASCII);
             case "lower-hex" -> HexFormat.of().formatHex(dek).getBytes(StandardCharsets.US_ASCII);
             case "base64" -> Base64.getEncoder().encodeToString(dek).getBytes(StandardCharsets.US_ASCII);
