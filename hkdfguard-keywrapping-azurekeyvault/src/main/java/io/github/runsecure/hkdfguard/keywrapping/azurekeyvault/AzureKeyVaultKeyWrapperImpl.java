@@ -55,7 +55,9 @@ import java.util.function.Supplier;
  * <p>
  * The wrapper builds one Key Vault client per key version it uses, and keeps it: each caches the
  * public key it verifies with, and a key ring's refresh unwraps under the same versions every
- * interval. Each method returns as soon as the first request is sent. Argument errors throw from
+ * interval. A client is kept only once a call through it has succeeded - Key Vault answered and the
+ * answer passed the wrapper's checks (for a verify, the signature is valid) - so a wrapped DEK naming
+ * a key version Key Vault refuses, or a signature that doesn't verify, leaves nothing behind. Each method returns as soon as the first request is sent. Argument errors throw from
  * the call itself; everything else - a Key Vault refusal, an unreachable vault, a signature that
  * doesn't verify, a result too small - completes the future exceptionally. Cancelling a returned
  * future cancels the Key Vault request in flight.
@@ -192,20 +194,27 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
         // once the call has completed.
         var buffer = plaintext.clone();
         var calls = new Calls();
-        var wrap = calls.send(() -> client(wrappingKey).wrapKey(KeyWrapAlgorithm.RSA_OAEP_256, buffer), "wrap", wrappingKey)
+        var wrapClient = new Lease(wrappingKey);
+        var wrap = calls.send(() -> wrapClient.client().wrapKey(KeyWrapAlgorithm.RSA_OAEP_256, buffer), "wrap", wrappingKey)
                 .whenComplete((wrapped, error) -> ArrayUtility.zeroMemory(buffer));
 
         return calls.cancelling(wrap.thenCompose(wrapped -> {
-            var unsigned = WrappedDekEnvelope.buildUnsigned(versionOf(wrapped.getKeyId(), wrappingKey, "wrap"), wrapped.getEncryptedKey());
+            var wrappedBy = versionOf(wrapped.getKeyId(), wrappingKey, "wrap");
+            wrapClient.succeeded();
+            var unsigned = WrappedDekEnvelope.buildUnsigned(wrappedBy, wrapped.getEncryptedKey());
             var length = unsigned.length + WrappedDekEnvelope.KEY_VERSION_LENGTH + WrappedDekEnvelope.SIGNATURE_LENGTH;
             if (length > WrappedKeyLimits.MAX_BYTES)
                 throw new CryptographicException("The wrapped DEK would be " + length + " bytes; a wrapped DEK is at most "
                         + WrappedKeyLimits.MAX_BYTES + ". Use a 2048- or 3072-bit RSA key for '" + wrappingKey.name() + "'.");
 
             var signed = WrappedDekEnvelope.signedData(unsigned, unsigned.length, context);
-            return calls.send(() -> client(signingKey).signData(SignatureAlgorithm.ES256, signed), "sign", signingKey)
-                    .thenApply(signature -> WrappedDekEnvelope.write(unsigned, versionOf(signature.getKeyId(), signingKey, "sign"),
-                            signature.getSignature(), result));
+            var signClient = new Lease(signingKey);
+            return calls.send(() -> signClient.client().signData(SignatureAlgorithm.ES256, signed), "sign", signingKey)
+                    .thenApply(signature -> {
+                        var signedBy = versionOf(signature.getKeyId(), signingKey, "sign");
+                        signClient.succeeded();
+                        return WrappedDekEnvelope.write(unsigned, signedBy, signature.getSignature(), result);
+                    });
         }));
     }
 
@@ -241,15 +250,23 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
         var signedBy = signingKey.withVersion(parts.signingKeyVersion());
         var calls = new Calls();
         var failed = new AtomicBoolean();
-        var unwrap = calls.send(() -> client(signedBy).verifyData(SignatureAlgorithm.ES256, signed, parts.signature()), "verify", signingKey)
+        // Both versions come from the wrapped DEK, so neither client is kept until Key Vault has
+        // accepted a call through it: a forged version leaves no client behind.
+        var verifyClient = new Lease(signedBy);
+        var unwrap = calls.send(() -> verifyClient.client().verifyData(SignatureAlgorithm.ES256, signed, parts.signature()), "verify", signingKey)
                 .thenCompose(verify -> {
                     if (!Boolean.TRUE.equals(verify.isValid()))
                         throw new CryptographicException("The wrapped DEK's signature doesn't verify under '" + signingKey.name() + "' version "
                                 + parts.signingKeyVersion() + ": it was tampered with, wrapped under a different context, or not made by "
                                 + "a principal allowed to sign.");
+                    verifyClient.succeeded();
 
-                    var wrappedBy = wrappingKey.withVersion(parts.wrappingKeyVersion());
-                    return calls.send(() -> client(wrappedBy).unwrapKey(KeyWrapAlgorithm.RSA_OAEP_256, parts.wrappedDek()), "unwrap", wrappingKey);
+                    var unwrapClient = new Lease(wrappingKey.withVersion(parts.wrappingKeyVersion()));
+                    return calls.send(() -> unwrapClient.client().unwrapKey(KeyWrapAlgorithm.RSA_OAEP_256, parts.wrappedDek()), "unwrap", wrappingKey)
+                            .thenApply(revealed -> {
+                                unwrapClient.succeeded();
+                                return revealed;
+                            });
                 })
                 .thenApply(revealed -> {
                     synchronized (failed) {
@@ -327,8 +344,40 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
         };
     }
 
-    private KeyVaultKeyClient client(KeyVaultKeyId key) {
-        return clients.computeIfAbsent(key.toString(), clientFactory);
+    /** The number of Key Vault clients kept, for tests. */
+    int cachedClientCount() {
+        return clients.size();
+    }
+
+    /**
+     * The client one call is made through: the one kept for its key identifier, or else a new one,
+     * kept only once {@link #succeeded} says the call through it succeeded. Should another call have
+     * kept one for the same identifier first, that one stays and the new one is dropped. (Clients
+     * hold nothing that needs closing, so a dropped one is simply left to be collected.)
+     */
+    private final class Lease {
+        private final String keyId;
+        private volatile KeyVaultKeyClient client;
+        private volatile boolean kept;
+
+        Lease(KeyVaultKeyId key) {
+            this.keyId = key.toString();
+        }
+
+        /** The client; a factory that throws throws from here, inside the call it was for. */
+        KeyVaultKeyClient client() {
+            var cached = clients.get(keyId);
+            kept = cached != null;
+            client = cached != null ? cached : clientFactory.apply(keyId);
+            return client;
+        }
+
+        /** The call through {@link #client} succeeded: keep the client, unless one is kept already. */
+        void succeeded() {
+            var made = client;
+            if (!kept && made != null)
+                clients.putIfAbsent(keyId, made);
+        }
     }
 
     // The version of the key Key Vault reports having used, refusing an answer from any other key.
