@@ -84,7 +84,9 @@ a cloud IAM role).
 
 ## 3. Give the process a token
 
-Every request is made with a token from a `VaultTokenSource`. Logging in, renewing and replacing
+Every request is made with a token from a `VaultTokenSource` (package
+`io.github.runsecure.hkdfguard.integration.hashicorpvault`, from `hkdfguard-integration-hashicorpvault`,
+which the wrapper brings in). Logging in, renewing and replacing
 the token is the source's job, so any auth method can sit behind the wrapper. The source copies the
 token into a `char[]` the wrapper owns and zeroes once the call is done, rather than handing it over
 as a `String`.
@@ -93,7 +95,7 @@ as a `String`.
 file. Nothing renews it, so once it expires every request fails with 403. Close it to zero its copy:
 
 ```java
-import io.github.runsecure.hkdfguard.keywrapping.hashicorpvault.StaticVaultTokenSource;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.StaticVaultTokenSource;
 
 var token = new StaticVaultTokenSource(System.getenv("VAULT_TOKEN"));
 ```
@@ -115,8 +117,10 @@ The wrapper waits for the source's future for at most its timeout, and cancels i
 to `destination` only before completing the future. A source's failure fails the call as it is, and
 isn't retried.
 
-> **Note:** this is not the cache's `VaultTokenProvider`. That one hands over a token protected by
-> the key ring; a key wrapper runs before there is a key ring, so it can't.
+> **Note:** this is not `VaultTokenProvider`, which the secret cache and `VaultClient` take. That one
+> hands over a token protected by the key ring; a key wrapper runs before there is a key ring, so it
+> can't. To log in with `VaultClient` first and hand the wrapper the token it got, see
+> [Call Vault's API with the HashiCorp Vault client](use-hashicorp-vault-client.md).
 
 ## 4. Create the wrapper
 
@@ -171,24 +175,45 @@ Options (`HashiCorpVaultTransitKeyWrapperOptions`) set a mount other than `trans
 Enterprise namespace, the per-attempt timeout (30 seconds, covering the token and the whole
 response), and retries: a request that gets no answer, loses its connection, times out, or is
 answered 429 or a 5xx other than 501 is retried 3 times by default, waiting 200 ms and doubling,
-plus up to 100 ms of jitter. To trust a private CA, supply an `HttpClient` with an `SSLContext` that
-trusts it and `followRedirects(HttpClient.Redirect.NEVER)`:
+plus up to 100 ms of jitter.
+
+To trust a private CA, or to present a client certificate to a Vault that requires mutual TLS, set
+`tls` to a `VaultTlsOptions`. It takes PEM files, or a password-protected PKCS#12 or JKS trust store
+and client key store. Each store's password is held only encrypted, by a protector on your key ring
+created for `VaultTlsOptions.PASSWORD_PURPOSE`. It is decrypted into a `char[]` only while the store
+is read, then zeroed. Encrypt the password once, for example when you provision the application,
+and keep only the result in configuration:
 
 ```java
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTlsOptions;
 import io.github.runsecure.hkdfguard.keywrapping.hashicorpvault.HashiCorpVaultTransitKeyWrapperOptions;
-import java.net.http.HttpClient;
+import java.nio.file.Path;
 
-var client = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NEVER)
-        .sslContext(sslContextTrustingYourCa)
+var passwordProtector = keyRing.createProtector(VaultTlsOptions.PASSWORD_PURPOSE);
+// Once: VaultTlsOptions.protectPassword(passwordProtector, password), then zero password.
+String protectedPassword = configuration.get("Vault:KeyStorePassword");
+
+var tls = VaultTlsOptions.builder()
+        .trustStoreFile(Path.of("/etc/myapp/vault-ca.p12"))
+        .trustStorePassword(protectedPassword)
+        .clientKeyStoreFile(Path.of("/etc/myapp/vault-client.p12"))
+        .clientKeyStorePassword(protectedPassword)
+        .passwordProtector(passwordProtector)
         .build();
 var options = HashiCorpVaultTransitKeyWrapperOptions.builder()
         .mountPath("transit/team-a")
         .namespace("team-a/prod")
-        .httpClient(client)
+        .tls(tls)
         .build();
 var wrapper = new HashiCorpVaultTransitKeyWrapperImpl(address, "myapp-kek", token, "com.example.myapp", null, options);
 ```
+
+The stores are read when the wrapper is created. A store that can't be read, a wrong password, or a
+password not encrypted by `passwordProtector` throws `IllegalArgumentException` then. If the
+client key store holds more than one private key, name the one to present with
+`clientKeyStoreAlias`. `tls` applies to the wrapper's own `HttpClient`. To use your own, supply it
+as `httpClient` with its own `SSLContext` and `followRedirects(HttpClient.Redirect.NEVER)`.
+Giving both is refused.
 
 ### What is zeroed, and what can't be
 

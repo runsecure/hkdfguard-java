@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.dataencryptionkey.KeyRingImpl;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.StaticVaultToken;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.http.HttpClient;

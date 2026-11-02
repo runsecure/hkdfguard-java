@@ -21,24 +21,29 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-diagnostics`               | HkdfGuard.Diagnostics                | `HkdfGuardTelemetry`, span/attribute/event/metric names, `HkdfGuardLog` |
 | `hkdfguard-abstractions`              | HkdfGuard.Abstractions               | `CryptoProvider`, `KeyWrapper`, `KeyRing`, `DataProtector`, ... ; `ProtectedCacheBase`, `ServiceNames`, `ProtectedConfigurationPurpose` |
 | `hkdfguard-cryptoprovider-aesgcm256`  | HkdfGuard.CryptoProvider.AesGcm256   | `AesGcmCryptoProviderImpl`, `AesGcmCryptoProviderFactoryImpl`, `AesGcmPipelineDataProtectorImpl` |
-| `hkdfguard-remote-common`             | -                                    | Internal: the strict JSON reader `hkdfguard-cache` takes secrets out of response bodies with, and the address, path, token and retry rules the two HashiCorp Vault modules share. Not an API for applications |
+| `hkdfguard-remote-common`             | -                                    | Internal: the strict JSON reader `hkdfguard-cache` and the HashiCorp Vault modules take secrets out of response bodies with. Not an API for applications |
+| `hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a port of vault-client-go generated from Vault's OpenAPI spec for the endpoints HkdfGuard needs (logins and tokens, KV, cubbyhole, transit, a few of `sys/`), holding tokens only protected by a key ring; and what the two HashiCorp Vault modules share: `VaultTokenProvider`, `StaticVaultToken`, `VaultTokenSource`, `StaticVaultTokenSource`, `VaultRequestException`, `VaultHttp` |
 | `hkdfguard-platform`                  | -                                    | Internal: the OS calls and path checks `hkdfguard-keywrapping-v1` and `hkdfguard-securefile` share - Windows security descriptors and SIDs, Linux and macOS file status, the symbolic-link-following path walk (Java 25+). Not an API for applications |
 | `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
 | `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java (Java 25+) |
 | `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
 | `hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault  | `AzureKeyVaultKeyWrapperImpl` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through the Azure SDK for Java (Java 25+) |
 | `hkdfguard-keywrapping-googlekms`     | HkdfGuard.KeyWrapping.GoogleKms      | `GoogleKmsKeyWrapperImpl` over one symmetric Google Cloud KMS key, through the Google Cloud client for Cloud KMS (Java 25+) |
-| `hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `HashiCorpVaultTransitKeyWrapperImpl` over one key in a HashiCorp Vault transit secrets engine, through `java.net.http`; `VaultTokenSource`, `StaticVaultTokenSource` (Java 25+) |
+| `hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `HashiCorpVaultTransitKeyWrapperImpl` over one key in a HashiCorp Vault transit secrets engine, through `java.net.http`, with a `VaultTokenSource` (Java 25+) |
 | `hkdfguard-dataencryptionkey`         | HkdfGuard.DataEncryptionKey          | `KeyRingImpl`, `KeyRingBuilder`, `DataEncryptionKeyImpl`, `DefaultFormatProviderImpl` |
 | `hkdfguard-cache`                     | HkdfGuard.Cache                      | `ProtectedCacheImpl`, `ProtectedCacheCollectionImpl`; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody`: the shared base of the secret-store caches below |
 | `hkdfguard-cache-awssecretsmanager`   | HkdfGuard.Cache.AwsSecretsManager    | `AwsSecretsManagerSecretCacheImpl` over AWS Secrets Manager, through the AWS SDK for Java 2.x |
 | `hkdfguard-cache-azurekeyvault`       | HkdfGuard.Cache.AzureKeyVault        | `AzureKeyVaultSecretCacheImpl` over one Azure Key Vault's secrets, through the Azure SDK for Java |
 | `hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager  | `GoogleSecretManagerSecretCacheImpl` over one Google Cloud project's Secret Manager |
-| `hkdfguard-cache-hashicorpvault`      | HkdfGuard.Cache.HashiCorpVault       | `HashiCorpVaultSecretCacheImpl` over one HashiCorp Vault KV secrets engine, through `java.net.http` |
+| `hkdfguard-cache-hashicorpvault`      | HkdfGuard.Cache.HashiCorpVault       | `HashiCorpVaultSecretCacheImpl` over one HashiCorp Vault KV secrets engine, through `java.net.http`, with a `VaultTokenProvider` |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
-The build has one more module, `hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
+The build has two more modules, never published. `tools/hkdfguard-integration-hashicorpvault-generator`
+generates `hkdfguard-integration-hashicorpvault`'s typed API from Vault's OpenAPI spec, and its tests
+fail whenever the checked-in code isn't what the spec generates (see
+[docs/how-to/use-hashicorp-vault-client.md](docs/how-to/use-hashicorp-vault-client.md)). And
+`hkdfguard-test-support`: `NativeTestEnvironment`, the helper the
 native integration tests of several modules share (which provisioned service they use, and where key
 files may be written), and `WindowsTempDirectory`, the folder the Windows key-file tests of
 hkdfguard-securefile and the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit
@@ -623,7 +628,8 @@ var wrapper = new HashiCorpVaultTransitKeyWrapperImpl(
   redirects, and a supplied one that does is refused unless `allowRedirects` is set. A request that
   gets no answer, loses its connection, times out, or is answered 429 or a 5xx other than 501 is
   retried (3-10 times, 200 ms doubling, plus jitter); options set the mount, a Vault Enterprise
-  namespace, the per-attempt timeout and an `HttpClient` trusting a private CA.
+  namespace, the per-attempt timeout, and TLS (`VaultTlsOptions`: a private CA or a client
+  certificate, as PEM or a password-protected key store whose password the key ring encrypts).
 - Failures complete the future with a `CryptographicException` naming Vault's status and errors
   (for example `Vault answered 403 Forbidden: permission denied`), with a `VaultRequestException`
   (or, when Vault couldn't be reached, the `IOException`) as its cause; argument errors throw from
@@ -649,6 +655,41 @@ creating the key, the policy for each role, the token, and creating key files.
 [Run the HashiCorp Vault transit integration tests](docs/how-to/run-hashicorp-vault-transit-integration-tests.md)
 sets up a dev server for `HashiCorpVaultTransitIntegrationTest`, which is otherwise reported as
 skipped.
+
+## Calling Vault's API
+
+`VaultClient` (`hkdfguard-integration-hashicorpvault`, Java 21+) calls HashiCorp Vault's HTTP API
+from Java: logging in with any auth method, managing tokens, the KV and cubbyhole secrets engines,
+the transit engine, and through generic methods anything else. It's a port of HashiCorp's
+vault-client-go - the same options and environment variables, retries, namespaces, MFA, response
+wrapping and replication headers - generated from the same OpenAPI spec, but only for the endpoints
+`generator.json` names - the same endpoints and models as .NET's `HkdfGuard.Integration.HashiCorpVault`.
+It holds tokens the way the rest of HkdfGuard does: only protected by a data protector on the key
+ring, decrypted only as each request is sent. A token in a response (a login's, a wrapping token) is
+protected straight from the response's bytes, so never becomes a `String`.
+
+```java
+var vault = new VaultClient(keyRing.createProtector(VaultClient.TOKEN_PURPOSE),
+        VaultClientOptions.builder().address(URI.create("https://vault.example.com:8200")).build());
+var login = vault.auth().appRoleLoginAsync(new AppRoleLoginRequest().setRoleId(roleId).setSecretId(secretId)).join();
+vault.setToken(login.auth().clientToken());
+var config = vault.secrets().kvV2ReadAsync("myapp/config", VaultRequestOptions.builder().mountPath("secret").build()).join();
+```
+
+It differs from vault-client-go where the JVM does: no Unix domain sockets (`java.net.http` can't
+connect to one), and redirects are refused unless `followRedirects` is set. To read a secret into
+memory your application uses, prefer `HashiCorpVaultSecretCacheImpl`, which never makes it a
+`String`; `VaultClient` returns data as ordinary `String`s and `JsonValue`s, like any API client.
+
+The cache and the transit key wrapper don't make their requests through `VaultClient` - each reads
+its secret or DEK straight into an array of its own - but follow the same rules, through the same
+code: `VaultHttp` (the address, path and token checks, the deadline over a whole response, retries
+and their backoff, Vault's error responses), the token types and `VaultRequestException`, all in
+this module.
+
+[Call Vault's API with the HashiCorp Vault client](docs/how-to/use-hashicorp-vault-client.md) covers
+creating a client, logging in, the generated methods and the generic ones, wrapping, errors, and
+regenerating the API from a newer spec.
 
 ## Caching secrets from a secret store
 
@@ -751,7 +792,8 @@ decrypted into a `char[]` that is zeroed, but `java.net.http` takes a header onl
 which Java can't zero: one is made for each request and dropped once it is sent. The address must
 be https except on loopback, and the cache's own client follows no redirects, which would carry the
 token elsewhere; a client you supply that follows redirects is refused unless `allowRedirects` is
-set. A failure that isn't "not found" throws `VaultRequestException` with Vault's status and
+set. A private CA or a client certificate is set with `tls`, the same `VaultTlsOptions` the
+transit key wrapper takes. A failure that isn't "not found" throws `VaultRequestException` with Vault's status and
 errors, never the token. Transient failures (no answer, a timed-out attempt, 429, a 5xx other than
 501) are retried `retryCount` times (3-10), backing off from `retryDelay` up to 10 seconds plus a
 random 0-100 ms.

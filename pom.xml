@@ -49,8 +49,13 @@
     <module>hkdfguard-diagnostics</module>
     <module>hkdfguard-abstractions</module>
     <module>hkdfguard-cryptoprovider-aesgcm256</module>
-    <!-- Internal: the JSON reader and Vault rules shared by hkdfguard-cache and the Vault modules. -->
+    <!-- Internal: the strict JSON reader shared by hkdfguard-cache and the Vault modules. -->
     <module>hkdfguard-remote-common</module>
+    <!-- The Vault client, and the HTTP rules, token types and errors the two Vault modules share. -->
+    <module>hkdfguard-integration-hashicorpvault</module>
+    <!-- Not shipped: generates hkdfguard-integration-hashicorpvault's API from Vault's OpenAPI spec,
+         and checks in its tests that the checked-in code is what it generates. -->
+    <module>tools/hkdfguard-integration-hashicorpvault-generator</module>
     <!-- Internal: the OS calls and path checks shared by the two modules after it. -->
     <module>hkdfguard-platform</module>
     <module>hkdfguard-keywrapping-v1</module>
@@ -132,6 +137,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-remote-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-integration-hashicorpvault</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -487,6 +497,7 @@
               <!-- Test-only, never published (it also sets skipPublishing itself). -->
               <excludeArtifacts>
                 <excludeArtifact>hkdfguard-test-support</excludeArtifact>
+                <excludeArtifact>hkdfguard-integration-hashicorpvault-generator</excludeArtifact>
               </excludeArtifacts>
             </configuration>
           </plugin>

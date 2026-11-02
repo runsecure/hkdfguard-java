@@ -1,5 +1,7 @@
 package io.github.runsecure.hkdfguard.cache.hashicorpvault;
 
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTlsOptions;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Objects;
@@ -11,13 +13,13 @@ import java.util.Objects;
  */
 public final class HashiCorpVaultSecretCacheOptions {
     /** The fewest retries {@link #retryCount()} allows. */
-    public static final int MIN_RETRY_COUNT = 3;
+    public static final int MIN_RETRY_COUNT = VaultHttp.MIN_RETRY_COUNT;
 
     /** The most retries {@link #retryCount()} allows. */
-    public static final int MAX_RETRY_COUNT = 10;
+    public static final int MAX_RETRY_COUNT = VaultHttp.MAX_RETRY_COUNT;
 
     /** The longest wait between retries, before the random 0-100 ms each adds. */
-    public static final Duration MAX_RETRY_DELAY = Duration.ofSeconds(10);
+    public static final Duration MAX_RETRY_DELAY = VaultHttp.MAX_RETRY_DELAY;
 
     private final String mountPath;
     private final VaultKvVersion kvVersion;
@@ -28,6 +30,7 @@ public final class HashiCorpVaultSecretCacheOptions {
     private final Duration retryDelay;
     private final HttpClient httpClient;
     private final boolean allowRedirects;
+    private final VaultTlsOptions tls;
 
     private HashiCorpVaultSecretCacheOptions(Builder builder) {
         mountPath = builder.mountPath;
@@ -39,6 +42,7 @@ public final class HashiCorpVaultSecretCacheOptions {
         retryDelay = builder.retryDelay;
         httpClient = builder.httpClient;
         allowRedirects = builder.allowRedirects;
+        tls = builder.tls;
     }
 
     /** A builder holding the defaults. */
@@ -57,7 +61,8 @@ public final class HashiCorpVaultSecretCacheOptions {
                 .retryCount(retryCount)
                 .retryDelay(retryDelay)
                 .httpClient(httpClient)
-                .allowRedirects(allowRedirects);
+                .allowRedirects(allowRedirects)
+                .tls(tls);
     }
 
     /** Where the KV secrets engine is mounted, e.g. "secret" (the default) or "kv/team-a". */
@@ -140,6 +145,18 @@ public final class HashiCorpVaultSecretCacheOptions {
         return allowRedirects;
     }
 
+    /**
+     * Which CA certificates Vault's certificate must chain to, and which client certificate the
+     * cache's own HttpClient presents to a Vault requiring mutual TLS: PEM, or password-protected
+     * key stores whose passwords are protected by a protector on the key ring (see
+     * {@link VaultTlsOptions}). Read when the cache is created. Null (the default) for the JDK's
+     * default trust store and no client certificate. Can't be combined with {@link #httpClient()},
+     * whose own SSLContext decides.
+     */
+    public VaultTlsOptions tls() {
+        return tls;
+    }
+
     /** Builds a {@link HashiCorpVaultSecretCacheOptions}; every value starts at its default. */
     public static final class Builder {
         private String mountPath = "secret";
@@ -151,6 +168,7 @@ public final class HashiCorpVaultSecretCacheOptions {
         private Duration retryDelay = Duration.ofMillis(200);
         private HttpClient httpClient;
         private boolean allowRedirects;
+        private VaultTlsOptions tls;
 
         private Builder() {
         }
@@ -218,6 +236,12 @@ public final class HashiCorpVaultSecretCacheOptions {
         /** See {@link HashiCorpVaultSecretCacheOptions#allowRedirects()}. */
         public Builder allowRedirects(boolean allowRedirects) {
             this.allowRedirects = allowRedirects;
+            return this;
+        }
+
+        /** See {@link HashiCorpVaultSecretCacheOptions#tls()}; null for the JDK's defaults. */
+        public Builder tls(VaultTlsOptions tls) {
+            this.tls = tls;
             return this;
         }
 

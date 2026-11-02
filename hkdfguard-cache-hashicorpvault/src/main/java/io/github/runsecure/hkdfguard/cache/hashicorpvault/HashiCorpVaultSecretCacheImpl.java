@@ -1,7 +1,5 @@
 package io.github.runsecure.hkdfguard.cache.hashicorpvault;
 
-import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
-import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.DataProtector;
 import io.github.runsecure.hkdfguard.abstractions.KeyRing;
 import io.github.runsecure.hkdfguard.cache.ErrorResponseBody;
@@ -9,24 +7,22 @@ import io.github.runsecure.hkdfguard.cache.RemoteSecretCache;
 import io.github.runsecure.hkdfguard.cache.SecretJsonBody;
 import io.github.runsecure.hkdfguard.cache.SecretNameMatching;
 import io.github.runsecure.hkdfguard.cache.SecretValueSink;
-import io.github.runsecure.hkdfguard.remote.VaultHttp;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultRequestException;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenProvider;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
-import java.nio.CharBuffer;
 import java.time.Duration;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 
 /**
@@ -101,8 +97,6 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
      */
     public static final String TOKEN_PURPOSE = "HkdfGuard.Cache.HashiCorpVault.Token";
 
-    private static final String TOKEN_HEADER = "X-Vault-Token";
-
     private final HttpClient http;
     private final boolean ownsHttp;
     private final VaultTokenProvider tokenProvider;
@@ -135,8 +129,9 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
      *                                  credentials, a query or a fragment; or the mount path,
      *                                  default key or namespace isn't one; or the timeout isn't
      *                                  positive, the retry count isn't 3-10 or the retry delay
-     *                                  isn't zero to 10 seconds; or the HttpClient follows
-     *                                  redirects without allowRedirects
+     *                                  isn't zero to 10 seconds; the HttpClient follows
+     *                                  redirects without allowRedirects; or TLS options are given
+     *                                  with an HttpClient, or can't be read
      */
     public HashiCorpVaultSecretCacheImpl(URI address, VaultTokenProvider tokenProvider, DataProtector tokenProtector, KeyRing keyRing,
             HashiCorpVaultSecretCacheOptions options, Logger logger) {
@@ -147,26 +142,12 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
             options = HashiCorpVaultSecretCacheOptions.builder().build();
         var apiBase = VaultHttp.apiBase(address, "a token");
 
-        if (!VaultHttp.isValidPath(options.mountPath()))
-            throw new IllegalArgumentException("The mount path '" + options.mountPath() + "' isn't a Vault path.");
+        VaultHttp.checkSettings(options.mountPath(), options.namespace(), options.timeout(), options.retryCount(), options.retryDelay());
         if (!isValidKey(options.defaultKey()))
             throw new IllegalArgumentException("The default key '" + options.defaultKey() + "' isn't a key: 1-" + MAX_KEY_LENGTH
                     + " printable ASCII characters other than space, '!' and '#'.");
-        if (options.namespace() != null && !VaultHttp.isValidPath(options.namespace()))
-            throw new IllegalArgumentException("The namespace '" + options.namespace() + "' isn't a Vault path.");
-        if (options.timeout().isNegative() || options.timeout().isZero())
-            throw new IllegalArgumentException("The timeout must be positive; it is " + options.timeout() + ".");
-        if (options.retryCount() < HashiCorpVaultSecretCacheOptions.MIN_RETRY_COUNT
-                || options.retryCount() > HashiCorpVaultSecretCacheOptions.MAX_RETRY_COUNT)
-            throw new IllegalArgumentException("The retry count must be " + HashiCorpVaultSecretCacheOptions.MIN_RETRY_COUNT + "-"
-                    + HashiCorpVaultSecretCacheOptions.MAX_RETRY_COUNT + "; it is " + options.retryCount() + ".");
-        if (options.retryDelay().isNegative() || options.retryDelay().compareTo(HashiCorpVaultSecretCacheOptions.MAX_RETRY_DELAY) > 0)
-            throw new IllegalArgumentException("The retry delay must be zero to " + HashiCorpVaultSecretCacheOptions.MAX_RETRY_DELAY
-                    + "; it is " + options.retryDelay() + ".");
         var supplied = options.httpClient();
-        if (supplied != null && !options.allowRedirects() && supplied.followRedirects() != HttpClient.Redirect.NEVER)
-            throw new IllegalArgumentException("The HttpClient follows redirects, which would send the Vault token wherever they point. "
-                    + "Build it with followRedirects(HttpClient.Redirect.NEVER), or set allowRedirects if every redirect target may see the token.");
+        VaultHttp.checkRedirects(supplied, options.allowRedirects());
 
         this.timeout = options.timeout();
         this.timeoutNanos = VaultHttp.saturatedNanos(timeout);
@@ -182,10 +163,9 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
             this.dataPath = List.of("data");
         }
 
-        // A redirect would carry X-Vault-Token to wherever it points. Vault's standbys forward
-        // requests to the active node themselves, so a redirect is answered as an error instead.
+        // Follows no redirects: one would carry X-Vault-Token wherever it points.
         this.ownsHttp = supplied == null;
-        this.http = supplied != null ? supplied : HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        this.http = VaultHttp.httpClient(supplied, options.tls());
     }
 
     /**
@@ -195,15 +175,6 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
      */
     public static boolean isValidSecretName(String name) {
         return name != null && !name.isEmpty() && name.length() <= MAX_SECRET_NAME_LENGTH && VaultHttp.isValidPath(name);
-    }
-
-    /**
-     * The wait before retry number {@code retry} (0 for the first): baseDelay, doubled for each
-     * retry before it, at most {@link HashiCorpVaultSecretCacheOptions#MAX_RETRY_DELAY} - plus
-     * jitterMillis.
-     */
-    static Duration retryDelay(Duration baseDelay, int retry, int jitterMillis) {
-        return VaultHttp.retryDelay(baseDelay, retry, jitterMillis, HashiCorpVaultSecretCacheOptions.MAX_RETRY_DELAY);
     }
 
     /**
@@ -236,39 +207,12 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
 
         // Asked for once per fetch; a provider's failure is its own to retry, so isn't retried here.
         var protectedToken = getToken();
-        for (var retry = 0; ; retry++) {
-            RuntimeException failure;
-            try {
-                read(name, protectedToken, value);
-                return;
-            } catch (VaultRequestException e) {
-                if (!e.isTransient())
-                    throw e;
-                failure = e;
-            } catch (IOException e) {
-                failure = new UncheckedIOException(e);
-            } catch (UncheckedIOException e) {
-                failure = e;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw cancelled();
-            }
-
-            // A body read that was interrupted fails as an IOException, the interrupt status set.
-            if (Thread.currentThread().isInterrupted())
-                throw cancelled();
-            if (retry >= retryCount || closed)
-                throw failure;
-
-            // A failed attempt has handed nothing to value: the body is read whole before anything
-            // is parsed out of it, and a parse failure isn't transient.
-            try {
-                Thread.sleep(retryDelay(retryDelay, retry, VaultHttp.jitterMillis()));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw cancelled();
-            }
-        }
+        // A failed attempt has handed nothing to value: the body is read whole before anything is
+        // parsed out of it, and a parse failure isn't transient.
+        VaultHttp.withRetries(retryCount, retryDelay, () -> closed, () -> {
+            read(name, protectedToken, value);
+            return null;
+        }, HashiCorpVaultSecretCacheImpl::cancelled);
     }
 
     // The protected token the provider hands over, waited for within the timeout.
@@ -286,35 +230,18 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
     // One attempt: one request, and Vault's whole response, within the attempt's timeout.
     private void read(String path, String protectedToken, SecretValueSink value) throws IOException, InterruptedException {
         var deadline = System.nanoTime() + timeoutNanos;
-        var response = http.send(request(path, protectedToken), HttpResponse.BodyHandlers.ofInputStream());
-
-        try (var body = response.body()) {
-            // HttpRequest's timeout ends once the headers arrive; this one covers the whole body.
-            var expired = new AtomicBoolean();
-            var watchdog = VaultHttp.watchDeadline(deadline, body, expired);
-            try {
-                readResponse(path, response.statusCode(), body, value);
-            } catch (IOException | UncheckedIOException e) {
-                if (expired.get())
-                    throw new HttpTimeoutException("Vault's response to the read of '" + path + "' took longer than " + timeout + ".");
-                throw e;
-            } finally {
-                watchdog.interrupt();
-            }
-        }
+        VaultHttp.send(http, request(path, protectedToken), deadline, response -> {
+            readResponse(path, response.statusCode(), response.body(), value);
+            return null;
+        }, () -> "Vault's response to the read of '" + path + "' took longer than " + timeout + ".");
     }
 
-    // The request for path's secret, carrying the token protectedToken holds. That token's String
-    // is referenced only by the request, so lives no longer than it, until collected.
+    // The request for path's secret, carrying the token protectedToken holds - refused unless the
+    // cache's token protector protected it and it is a token (VaultHttp.withToken). That token's
+    // String is referenced only by the request, so lives no longer than it, until collected.
     private HttpRequest request(String path, String protectedToken) {
-        var builder = HttpRequest.newBuilder(URI.create(readBase + path))
-                .timeout(timeout)
-                .GET()
-                .header("X-Vault-Request", "true");
-        if (namespace != null)
-            builder.header("X-Vault-Namespace", namespace);
-
-        return builder.header(TOKEN_HEADER, decryptToken(protectedToken)).build();
+        var builder = VaultHttp.newRequest(URI.create(readBase + path), timeout, namespace).GET();
+        return VaultHttp.withToken(builder, tokenProtector, protectedToken).build();
     }
 
     private void readResponse(String path, int status, InputStream body, SecretValueSink value) throws IOException {
@@ -333,46 +260,6 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
 
         var detail = errors != null && !errors.isEmpty() ? ": " + String.join("; ", errors) : "";
         throw new VaultRequestException("Vault refused to read '" + path + "': HTTP " + status + detail, status);
-    }
-
-    // The token protectedToken holds, as the String its header needs. Decrypted into a char array
-    // zeroed before returning; refused unless it is protected by the token protector - it parses,
-    // its key version is on the ring, and it authenticates under TOKEN_PURPOSE - and is a token.
-    // The protector's exceptions aren't chained: a parser handed an unprotected token could quote it.
-    private String decryptToken(String protectedToken) {
-        if (protectedToken == null || protectedToken.isEmpty())
-            throw new IllegalStateException("The Vault token provider returned no token.");
-
-        int maxLength;
-        try {
-            maxLength = tokenProtector.getMaxDecryptedLength(protectedToken);
-        } catch (IllegalArgumentException | CryptographicException | NoSuchElementException e) {
-            throw notProtected();
-        }
-        if (maxLength < 0)
-            throw notProtected();
-
-        var chars = new char[maxLength];
-        try {
-            int length;
-            try {
-                length = tokenProtector.decrypt(protectedToken, chars);
-            } catch (IllegalArgumentException | CryptographicException | NoSuchElementException e) {
-                throw notProtected();
-            }
-
-            if (!VaultHttp.isValidToken(CharBuffer.wrap(chars, 0, length)))
-                throw new IllegalStateException("The protected Vault token isn't a token: printable ASCII, with no spaces.");
-
-            return new String(chars, 0, length);
-        } finally {
-            ArrayUtility.zeroMemory(chars);
-        }
-    }
-
-    private static IllegalStateException notProtected() {
-        return new IllegalStateException("The Vault token provider returned a token that isn't protected by the cache's token protector: "
-                + "hand over tokenProtector.encrypt(token), never the token itself.");
     }
 
     private static CancellationException cancelled() {
