@@ -30,7 +30,10 @@ import java.util.concurrent.CompletableFuture;
  * on the class path).
  */
 public final class TrustedKeyFile {
-    /** The length of an unwrapped DEK; a file this size is probably a plaintext key. */
+    /**
+     * The length of an unwrapped DEK; a file this size, or this size plus one line ending (LF or
+     * CRLF), is probably a plaintext key.
+     */
     static final int PLAINTEXT_KEY_LENGTH = 32;
 
     // A 32-byte key as text is at most 64 hex digits; allow surrounding whitespace.
@@ -183,15 +186,23 @@ public final class TrustedKeyFile {
     }
 
     /**
-     * The native library's test for a plaintext key written to disk: exactly 32 bytes, or a 32-byte
-     * key as 64 hex digits or as base64 (standard or URL-safe, padded or not), with any surrounding
-     * whitespace.
+     * The native library's test for a plaintext key written to disk: 32 raw bytes, optionally
+     * followed by one line ending (LF or CRLF), or a 32-byte key as 64 hex digits or as base64
+     * (standard or URL-safe, padded or not), with any surrounding whitespace.
+     * <p>
+     * The raw form is decided by the length and the trailing line-ending bytes alone, never by
+     * trimming: the key's own last bytes may be whitespace values.
      *
      * @param contents the file's bytes
      * @param length   how many of them were read
      */
     static boolean looksLikePlaintextKey(byte[] contents, int length) {
         if (length == PLAINTEXT_KEY_LENGTH)
+            return true;
+        // 32 raw bytes and the line ending echo, an editor or "> file" adds: LF, or Windows' CRLF.
+        if (length == PLAINTEXT_KEY_LENGTH + 1 && contents[PLAINTEXT_KEY_LENGTH] == '\n')
+            return true;
+        if (length == PLAINTEXT_KEY_LENGTH + 2 && contents[PLAINTEXT_KEY_LENGTH] == '\r' && contents[PLAINTEXT_KEY_LENGTH + 1] == '\n')
             return true;
         if (length > PLAINTEXT_TEXT_SCAN_LIMIT)
             return false;

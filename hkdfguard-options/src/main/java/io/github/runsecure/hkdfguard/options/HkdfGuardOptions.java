@@ -18,8 +18,8 @@ import java.util.regex.Pattern;
 
 /**
  * Plain-data mirror of the settings {@link KeyRingBuilder} itself exposes: the service name, key
- * refresh interval, refresh-failure policy, ephemeral key rotation and retention, key files and
- * ephemeral keys. It carries no behavior: the key wrapper, crypto provider factory and format
+ * refresh interval, refresh-failure policy, ephemeral key rotation and retention, key-file maximum
+ * age, key files and ephemeral keys. It carries no behavior: the key wrapper, crypto provider factory and format
  * provider a real ring needs still come from the caller - {@link #applyTo(KeyRingBuilder)} copies
  * this data onto a builder the caller finishes and builds.
  *
@@ -49,7 +49,7 @@ public final class HkdfGuardOptions {
 
     private static final Pattern INTEGER = Pattern.compile("[+-]?\\d+");
     private static final List<String> FIELDS = List.of("serviceName", "keyRefreshInterval", "maxRefreshFailures", "failOpenOnRefreshFailure",
-            "ephemeralKeyRotationHours", "disableEphemeralKeyRotation", "ephemeralKeyRetentionHours", "keyFiles", "ephemeralKeys");
+            "ephemeralKeyRotationHours", "disableEphemeralKeyRotation", "ephemeralKeyRetentionHours", "keyFileMaxAgeDays", "keyFiles", "ephemeralKeys");
     private static final List<String> KEY_FILE_FIELDS = List.of("version", "path");
 
     private String serviceName;
@@ -59,6 +59,7 @@ public final class HkdfGuardOptions {
     private Integer ephemeralKeyRotationHours;
     private boolean disableEphemeralKeyRotation;
     private Integer ephemeralKeyRetentionHours;
+    private Integer keyFileMaxAgeDays;
     private List<KeyFileOptions> keyFiles = new ArrayList<>();
     private List<Integer> ephemeralKeys = new ArrayList<>();
 
@@ -170,6 +171,23 @@ public final class HkdfGuardOptions {
         this.ephemeralKeyRetentionHours = ephemeralKeyRetentionHours;
     }
 
+    /**
+     * Days (1 to {@link KeyRingBuilder#MAX_KEY_FILE_MAX_AGE_DAYS}) after a key file was last written
+     * that it stops encrypting. Its age is its last-modified time, so copy key files with their
+     * timestamps preserved. A warning is logged at 90% of the age; past it, encrypt throws
+     * {@code EncryptionLimitReachedException} and decryption still works.
+     *
+     * @return the days, or {@code null} to keep the builder's 365-day default
+     */
+    public Integer getKeyFileMaxAgeDays() {
+        return keyFileMaxAgeDays;
+    }
+
+    /** @param keyFileMaxAgeDays 1 to {@link KeyRingBuilder#MAX_KEY_FILE_MAX_AGE_DAYS}; {@code null} keeps the default */
+    public void setKeyFileMaxAgeDays(Integer keyFileMaxAgeDays) {
+        this.keyFileMaxAgeDays = keyFileMaxAgeDays;
+    }
+
     /** @return the versions whose wrapped DEK is read from a file on disk; a live, mutable list */
     public List<KeyFileOptions> getKeyFiles() {
         return keyFiles;
@@ -220,6 +238,11 @@ public final class HkdfGuardOptions {
 
         if (ephemeralKeyRetentionHours != null && ephemeralKeyRetentionHours < 1)
             failures.add("ephemeralKeyRetentionHours must be at least 1.");
+
+        if (keyFileMaxAgeDays != null
+                && (keyFileMaxAgeDays < KeyRingBuilder.MIN_KEY_FILE_MAX_AGE_DAYS || keyFileMaxAgeDays > KeyRingBuilder.MAX_KEY_FILE_MAX_AGE_DAYS))
+            failures.add("keyFileMaxAgeDays must be between " + KeyRingBuilder.MIN_KEY_FILE_MAX_AGE_DAYS + " and "
+                    + KeyRingBuilder.MAX_KEY_FILE_MAX_AGE_DAYS + ".");
 
         if (disableEphemeralKeyRotation && ephemeralKeyRotationHours != null)
             failures.add("disableEphemeralKeyRotation and ephemeralKeyRotationHours can't both be set: one turns rotation off, the other schedules it.");
@@ -316,6 +339,9 @@ public final class HkdfGuardOptions {
         if (ephemeralKeyRetentionHours != null)
             builder.withEphemeralKeyRetention(Duration.ofHours(ephemeralKeyRetentionHours));
 
+        if (keyFileMaxAgeDays != null)
+            builder.withKeyFileMaxAgeDays(keyFileMaxAgeDays);
+
         for (var keyFile : keyFiles)
             builder.withKeyFile(keyFile.getVersion(), keyFile.getPath());
 
@@ -355,6 +381,7 @@ public final class HkdfGuardOptions {
         options.ephemeralKeyRotationHours = reader.read("ephemeralKeyRotationHours", HkdfGuardOptions::integer);
         options.disableEphemeralKeyRotation = Boolean.TRUE.equals(reader.read("disableEphemeralKeyRotation", HkdfGuardOptions::bool));
         options.ephemeralKeyRetentionHours = reader.read("ephemeralKeyRetentionHours", HkdfGuardOptions::integer);
+        options.keyFileMaxAgeDays = reader.read("keyFileMaxAgeDays", HkdfGuardOptions::integer);
         options.setKeyFiles(reader.read("keyFiles", listOf(HkdfGuardOptions::keyFile)));
         options.setEphemeralKeys(reader.read("ephemeralKeys", listOf(HkdfGuardOptions::integer)));
         return options;
@@ -478,6 +505,7 @@ public final class HkdfGuardOptions {
                 && Objects.equals(ephemeralKeyRotationHours, that.ephemeralKeyRotationHours)
                 && disableEphemeralKeyRotation == that.disableEphemeralKeyRotation
                 && Objects.equals(ephemeralKeyRetentionHours, that.ephemeralKeyRetentionHours)
+                && Objects.equals(keyFileMaxAgeDays, that.keyFileMaxAgeDays)
                 && keyFiles.equals(that.keyFiles)
                 && ephemeralKeys.equals(that.ephemeralKeys);
     }
@@ -485,7 +513,7 @@ public final class HkdfGuardOptions {
     @Override
     public int hashCode() {
         return Objects.hash(serviceName, keyRefreshInterval, maxRefreshFailures, failOpenOnRefreshFailure, ephemeralKeyRotationHours,
-                disableEphemeralKeyRotation, ephemeralKeyRetentionHours, keyFiles, ephemeralKeys);
+                disableEphemeralKeyRotation, ephemeralKeyRetentionHours, keyFileMaxAgeDays, keyFiles, ephemeralKeys);
     }
 
     @Override
@@ -493,6 +521,6 @@ public final class HkdfGuardOptions {
         return "HkdfGuardOptions[serviceName=" + serviceName + ", keyRefreshInterval=" + keyRefreshInterval + ", maxRefreshFailures=" + maxRefreshFailures
                 + ", failOpenOnRefreshFailure=" + failOpenOnRefreshFailure + ", ephemeralKeyRotationHours=" + ephemeralKeyRotationHours
                 + ", disableEphemeralKeyRotation=" + disableEphemeralKeyRotation + ", ephemeralKeyRetentionHours=" + ephemeralKeyRetentionHours
-                + ", keyFiles=" + keyFiles + ", ephemeralKeys=" + ephemeralKeys + "]";
+                + ", keyFileMaxAgeDays=" + keyFileMaxAgeDays + ", keyFiles=" + keyFiles + ", ephemeralKeys=" + ephemeralKeys + "]";
     }
 }

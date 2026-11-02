@@ -25,6 +25,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 
@@ -61,7 +62,9 @@ import org.slf4j.Logger;
  * once, so a provider can log in, renew and replace tokens however it likes. A provider's failure
  * propagates as it is (a checked one wrapped: an IOException in an UncheckedIOException, anything
  * else in a CompletionException), and isn't retried; a provider that hasn't answered within the
- * timeout fails the fetch with a {@link CancellationException}. The token is handed over protected
+ * timeout fails the fetch with a {@link CompletionException} whose cause is a
+ * {@link TimeoutException} - a failure, not a cancellation, since nobody cancelled the fetch. The
+ * token is handed over protected
  * - encrypted by the cache's token protector, a protector on the key ring
  * ({@code keyRing.createProtector(TOKEN_PURPOSE)}) - and a fetch given one that isn't fails with
  * IllegalStateException. It is decrypted only as each request is built, into a char array that is
@@ -274,8 +277,9 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
         if (future == null)
             throw new IllegalStateException("The Vault token provider returned no token.");
 
+        // A failure, never a cancellation: nobody cancelled this fetch.
         return VaultHttp.await(future, timeoutNanos,
-                () -> new CancellationException("The Vault token provider returned no token within " + timeout + "."),
+                () -> new CompletionException(new TimeoutException("The Vault token provider returned no token within " + timeout + ".")),
                 HashiCorpVaultSecretCacheImpl::cancelled);
     }
 

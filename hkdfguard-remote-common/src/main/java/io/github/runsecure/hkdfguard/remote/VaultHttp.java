@@ -148,9 +148,13 @@ public final class VaultHttp {
      * (which is restored). A failure is rethrown as it is when unchecked, an IOException as an
      * UncheckedIOException, anything else in a CompletionException.
      *
-     * @throws CancellationException timedOut's, after the timeout; interrupted's, on an interrupt
+     * A timeout is a failure, not a cancellation: timedOut supplies what is thrown, and must not be a
+     * CancellationException, so that a caller counting failures (a refresh-failure policy) counts it.
+     *
+     * @throws RuntimeException timedOut's, after the timeout
+     * @throws CancellationException interrupted's, on an interrupt
      */
-    public static <T> T await(Future<T> future, long timeoutNanos, Supplier<CancellationException> timedOut,
+    public static <T> T await(Future<T> future, long timeoutNanos, Supplier<? extends RuntimeException> timedOut,
             Supplier<CancellationException> interrupted) {
         try {
             return future.get(timeoutNanos, TimeUnit.NANOSECONDS);
