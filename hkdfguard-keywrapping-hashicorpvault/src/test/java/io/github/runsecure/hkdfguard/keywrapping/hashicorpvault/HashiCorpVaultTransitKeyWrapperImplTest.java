@@ -40,7 +40,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -1031,12 +1031,17 @@ class HashiCorpVaultTransitKeyWrapperImplTest {
     }
 
     @Test
-    void aTokenSourceSlowerThanTheTimeout_IsCancelled() {
+    void aTokenSourceSlowerThanTheTimeout_IsCancelled_AndTheCallFailsRatherThanReportingACancellation() {
         var tokens = new FakeTokenSource();
         tokens.next = call -> new CompletableFuture<>();
         var wrapper = create(vault.address(), KEY_NAME, CONTEXT, tokens, null, options -> options.timeout(Duration.ofMillis(100)));
 
-        assertFailsWith(CancellationException.class, wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]));
+        var call = wrapper.generateAndWrapAsync(new byte[WrappedKeyLimits.MAX_BYTES]);
+        var e = assertFailsWith(CryptographicException.class, call);
+
+        assertTrue(e.getMessage().contains("supplied no token within"), e.getMessage());
+        assertInstanceOf(TimeoutException.class, e.getCause());
+        assertFalse(call.isCancelled());
 
         assertTrue(tokens.lastReturned.isCancelled());
         assertTrue(isZero(tokens.destinations().getFirst()));

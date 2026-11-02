@@ -298,7 +298,7 @@ future as it is; argument errors throw from the call.
 | `503 Service Unavailable` | Vault is sealed, or electing a leader, beyond the retries | Unseal Vault; check its HA status |
 | `no answer within` | No answer within the timeout, on every attempt | Check the address and network path |
 | `IllegalStateException` ... `token source` | The token source supplied no token, or one with spaces or non-ASCII characters | Check what the source reads |
-| `CancellationException` ... `supplied no token within` | The token source didn't answer within the timeout | Check the source's login |
+| `CryptographicException` ... `supplied no token within` | The token source didn't answer within the timeout | Check the source's login |
 
 Reading a key file fails before Vault is called; see
 [Wrap keys with AWS KMS](use-aws-kms.md#if-something-goes-wrong) for those errors.

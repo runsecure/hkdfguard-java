@@ -172,12 +172,14 @@ class HkdfGuardAutoConfigurationTest {
     @Test
     void bindsKebabCasePropertiesOntoTheOptions() {
         runner.withPropertyValues("hkdfguard.max-refresh-failures=4", "hkdfguard.ephemeral-key-rotation-hours=12",
-                        "hkdfguard.ephemeral-key-retention-hours=48", "hkdfguard.key-files[0].version=3", "hkdfguard.key-files[0].path=/etc/dek-v3.bin")
+                        "hkdfguard.ephemeral-key-retention-hours=48", "hkdfguard.key-file-max-age-days=730", "hkdfguard.key-files[0].version=3",
+                        "hkdfguard.key-files[0].path=/etc/dek-v3.bin")
                 .run(context -> {
                     var options = context.getBean(HkdfGuardOptions.class);
                     assertThat(options.getMaxRefreshFailures()).isEqualTo(4);
                     assertThat(options.getEphemeralKeyRotationHours()).isEqualTo(12);
                     assertThat(options.getEphemeralKeyRetentionHours()).isEqualTo(48);
+                    assertThat(options.getKeyFileMaxAgeDays()).isEqualTo(730);
                     assertThat(options.getKeyFiles()).containsExactly(new KeyFileOptions(3, "/etc/dek-v3.bin"));
                 });
     }
@@ -355,6 +357,25 @@ class HkdfGuardAutoConfigurationTest {
         configured.run(context -> ring[0] = context.getBean(KeyRing.class));
 
         assertThat(new HkdfGuardHealthIndicator(ring[0]).health().getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    @Test
+    void protectedConfigurationIsWiredForAnApplicationsOwnRing_NotOnlyTheBuiltOne() {
+        runner.withConfiguration(AutoConfigurations.of(HkdfGuardEncryptedConfigurationAutoConfiguration.class))
+                .withBean(KeyRing.class, () -> new SingleKeyRing(new CorruptKey()))
+                .run(context -> assertThat(context).hasSingleBean(ProtectedEnvironment.class));
+    }
+
+    @Test
+    void protectedConfigurationIsWiredForTheBuiltRing() {
+        configured.withConfiguration(AutoConfigurations.of(HkdfGuardEncryptedConfigurationAutoConfiguration.class))
+                .run(context -> assertThat(context).hasSingleBean(ProtectedEnvironment.class));
+    }
+
+    @Test
+    void withoutAnyRingNoProtectedConfigurationIsWired() {
+        runner.withConfiguration(AutoConfigurations.of(HkdfGuardEncryptedConfigurationAutoConfiguration.class))
+                .run(context -> assertThat(context).doesNotHaveBean(ProtectedEnvironment.class));
     }
 
     @Test

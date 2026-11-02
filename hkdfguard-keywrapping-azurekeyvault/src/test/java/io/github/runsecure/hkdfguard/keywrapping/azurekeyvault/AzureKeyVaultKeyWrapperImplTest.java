@@ -33,12 +33,15 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import javax.crypto.Cipher;
 import javax.crypto.spec.OAEPParameterSpec;
@@ -528,6 +531,121 @@ class AzureKeyVaultKeyWrapperImplTest {
 
         assertTrue(vault.calls.isEmpty(), vault.calls.toString());
         assertTrue(ArrayUtility.isNullOrEmpty(result));
+    }
+
+    /** A wrapper over the fake vault whose client factory counts the clients it makes. */
+    private AzureKeyVaultKeyWrapperImpl countingWrapper(AtomicInteger made) {
+        Function<String, KeyVaultKeyClient> clients = keyId -> {
+            made.incrementAndGet();
+            return vault.client(keyId);
+        };
+        return new AzureKeyVaultKeyWrapperImpl(FakeKeyVault.WRAPPING_KEY_ID, FakeKeyVault.SIGNING_KEY_ID, clients, CONTEXT, null);
+    }
+
+    /** {@code wrapped}, naming {@code signingKeyVersion} as the version that signed it. */
+    private static byte[] withSigningVersion(byte[] wrapped, String signingKeyVersion) {
+        var parts = WrappedDekEnvelope.parse(wrapped);
+        var forged = wrapped.clone();
+        System.arraycopy(HexFormat.of().parseHex(signingKeyVersion), 0, forged, parts.unsignedLength(), WrappedDekEnvelope.KEY_VERSION_LENGTH);
+        return forged;
+    }
+
+    @Test
+    void unwrap_UnderMadeUpSigningVersions_KeepsNoClient() {
+        var made = new AtomicInteger();
+        var wrapper = countingWrapper(made);
+        var wrapped = wrap(wrapper, random(32));
+        int cached = wrapper.cachedClientCount();
+
+        for (int i = 0; i < 20; i++) {
+            var forged = withSigningVersion(wrapped, HexFormat.of().formatHex(random(WrappedDekEnvelope.KEY_VERSION_LENGTH)));
+            var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(forged, new byte[64]));
+            assertTrue(exception.getMessage().contains("verify failed"), exception.getMessage());
+        }
+
+        assertEquals(cached, wrapper.cachedClientCount());
+        // Each forged version was given a client of its own, used once and dropped.
+        assertEquals(cached + 20, made.get());
+    }
+
+    @Test
+    void unwrap_WhenTheSignatureDoesNotVerify_KeepsNoClientForItsVersion() {
+        var made = new AtomicInteger();
+        var wrapper = countingWrapper(made);
+        var wrapped = wrap(wrapper, random(32));
+        int cached = wrapper.cachedClientCount();
+        // A real version, but not the one that signed it.
+        var forged = withSigningVersion(wrapped, vault.addVersion(FakeKeyVault.SIGNING_KEY_NAME, FakeKeyVault.p256()));
+
+        var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(forged, new byte[64]));
+
+        assertTrue(exception.getMessage().contains("doesn't verify"), exception.getMessage());
+        assertEquals(cached, wrapper.cachedClientCount());
+        assertEquals(cached + 1, made.get());
+    }
+
+    @Test
+    void unwrap_WhenKeyVaultRefusesTheUnwrap_KeepsOnlyTheVerifyingClient() {
+        var made = new AtomicInteger();
+        var wrapper = countingWrapper(made);
+        var wrapped = wrap(wrapper, random(32));
+        int cached = wrapper.cachedClientCount();
+        vault.failures.put("unwrap", FakeKeyVault.refusal(403, "Forbidden"));
+
+        assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(wrapped, new byte[64]));
+
+        assertEquals(cached + 1, wrapper.cachedClientCount());
+        assertEquals(cached + 2, made.get());
+    }
+
+    @Test
+    void wrap_WhenKeyVaultReportsAnotherKey_KeepsNoClient() {
+        var made = new AtomicInteger();
+        var wrapper = countingWrapper(made);
+        vault.reportedKeyId = keyId -> FakeKeyVault.VAULT + "/keys/someone-else/0123456789abcdef0123456789abcdef";
+
+        assertFailsWith(CryptographicException.class, wrapper.wrapAsync(new byte[32], new byte[WrappedKeyLimits.MAX_BYTES]));
+
+        assertEquals(0, wrapper.cachedClientCount());
+        assertEquals(1, made.get());
+    }
+
+    @Test
+    void aSuccessfulUnwrap_KeepsTheClientsItUsed() {
+        var made = new AtomicInteger();
+        var wrapper = countingWrapper(made);
+        var dek = random(32);
+        var wrapped = wrap(wrapper, dek);
+        // The wrapping and signing keys, as configured.
+        assertEquals(2, wrapper.cachedClientCount());
+
+        assertArrayEquals(dek, unwrap(wrapper, wrapped));
+        // And the versions the wrapped DEK names.
+        assertEquals(4, wrapper.cachedClientCount());
+        assertEquals(4, made.get());
+
+        assertArrayEquals(dek, unwrap(wrapper, wrapped));
+        assertArrayEquals(dek, unwrap(wrapper, wrap(wrapper, dek)));
+        assertEquals(4, made.get());
+        assertEquals(4, wrapper.cachedClientCount());
+    }
+
+    @Test
+    void concurrentUnwrapsUnderNewVersions_KeepOneClientPerVersion() {
+        var made = new AtomicInteger();
+        var wrapper = countingWrapper(made);
+        var dek = random(32);
+        var wrapped = wrap(wrapper, dek);
+        vault.deferred = true;
+
+        var unwraps = new ArrayList<CompletableFuture<Integer>>();
+        for (int i = 0; i < 8; i++)
+            unwraps.add(wrapper.unwrapAsync(wrapped, new byte[64]));
+        for (var unwrap : unwraps)
+            assertEquals(dek.length, await(unwrap));
+
+        assertEquals(4, wrapper.cachedClientCount());
+        assertTrue(made.get() > 4, "Each unwrap began before any had kept a client.");
     }
 
     /** Passes every call to another client; tests override the ones they replace. */

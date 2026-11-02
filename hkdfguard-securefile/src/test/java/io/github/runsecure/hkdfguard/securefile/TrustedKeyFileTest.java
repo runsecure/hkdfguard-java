@@ -154,6 +154,57 @@ class TrustedKeyFileTest {
         assertTrue(looksLikePlaintextKey(random(32)));
     }
 
+    private static byte[] concat(byte[] first, byte... second) {
+        var both = java.util.Arrays.copyOf(first, first.length + second.length);
+        System.arraycopy(second, 0, both, first.length, second.length);
+        return both;
+    }
+
+    @Test
+    void looksLikePlaintextKey_RawKeyAndALineEnding_IsDetected() {
+        assertTrue(looksLikePlaintextKey(concat(random(32), (byte) '\n')));
+        assertTrue(looksLikePlaintextKey(concat(random(32), (byte) '\r', (byte) '\n')));
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {0x0A, 0x20, 0x0D, 0x09})
+    void looksLikePlaintextKey_RawKeyEndingInWhitespaceAndALineEnding_IsDetected(byte last) {
+        // Decided by length and the line ending alone: trimming would mis-measure this key.
+        var key = random(32);
+        key[31] = last;
+
+        assertTrue(looksLikePlaintextKey(concat(key, (byte) '\n')));
+        assertTrue(looksLikePlaintextKey(concat(key, (byte) '\r', (byte) '\n')));
+    }
+
+    static Stream<byte[]> rawKeysWithSomethingElseAfter() {
+        return Stream.of(
+                concat(random(32), (byte) '\r'),                  // 33 bytes, but not LF
+                concat(random(32), (byte) '\n', (byte) '\n'),     // 34 bytes, but not CRLF
+                concat(random(32), (byte) '\n', (byte) '\r'),     // 34 bytes, LF CR
+                concat(random(32), (byte) ' ', (byte) '\n'),      // 34 bytes, not CRLF
+                // 31 bytes and LF (or 30 and CRLF) is 32 bytes, refused as a raw key already.
+                concat(random(30), (byte) '\n'),                  // 30 bytes and LF
+                concat(random(29), (byte) '\r', (byte) '\n'),     // 29 bytes and CRLF
+                concat(random(32), (byte) 'x', (byte) '\n'));     // 33 bytes and LF
+    }
+
+    @ParameterizedTest
+    @MethodSource("rawKeysWithSomethingElseAfter")
+    void looksLikePlaintextKey_RawBytesWithoutExactlyOneLineEnding_IsNotDetected(byte[] contents) throws IOException {
+        assertFalse(looksLikePlaintextKey(contents));
+        // Falls through to the rest of the checks, which this size passes.
+        assertArrayEquals(contents, readContents(contents));
+    }
+
+    @Test
+    void readContents_APlaintextKeyAndALineEnding_IsRefused_AsExposed() {
+        var lf = assertThrows(InvalidKeyFileException.class, () -> readContents(concat(random(32), (byte) '\n')));
+        assertTrue(lf.getMessage().contains("exposed"));
+        var crlf = assertThrows(InvalidKeyFileException.class, () -> readContents(concat(random(32), (byte) '\r', (byte) '\n')));
+        assertTrue(crlf.getMessage().contains("exposed"));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",   // one hex digit short

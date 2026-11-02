@@ -54,6 +54,12 @@
       "description": "Hours a superseded ephemeral key stays available for decryption. At least 1. Unset keeps 24 hours."
     },
     {
+      "name": "hkdfguard.key-file-max-age-days",
+      "type": "java.lang.Integer",
+      "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",
+      "description": "Days (1-3650) after a key file was last written that it stops encrypting; decryption under it still works. A warning is logged at 90%. Its age is its modification time, so copy key files with timestamps kept. Unset keeps 365 days."
+    },
+    {
       "name": "hkdfguard.key-files",
       "type": "java.util.List<io.github.runsecure.hkdfguard.options.KeyFileOptions>",
       "sourceType": "io.github.runsecure.hkdfguard.options.HkdfGuardOptions",

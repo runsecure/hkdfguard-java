@@ -32,6 +32,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -589,12 +591,15 @@ class HashiCorpVaultSecretCacheImplTest {
     }
 
     @Test
-    void aProviderSlowerThanTheTimeout_IsCancelled() {
+    void aProviderSlowerThanTheTimeout_IsCancelled_AndTheFetchFailsRatherThanReportingACancellation() {
         var tokens = new FakeTokenProvider(true);
         tokens.next = call -> new CompletableFuture<>();
         var cache = create(options -> options.timeout(Duration.ofMillis(100)), tokens);
 
-        assertThrows(CancellationException.class, () -> cache.decrypt("item", new byte[16]));
+        var e = assertThrows(CompletionException.class, () -> cache.decrypt("item", new byte[16]));
+
+        assertInstanceOf(TimeoutException.class, e.getCause());
+        assertTrue(e.getCause().getMessage().contains("returned no token within"), e.getCause().getMessage());
 
         assertTrue(tokens.lastGiven.isCancelled());
         assertEquals(List.of(), vault.reads());

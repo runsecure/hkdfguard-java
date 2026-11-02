@@ -33,6 +33,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Flow;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -507,9 +508,12 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         if (future == null)
             throw new IllegalStateException("The Vault token source returned no future.");
 
-        Integer length = VaultHttp.await(future, timeoutNanos,
-                () -> new CancellationException("The Vault token source supplied no token within " + timeout + "."),
-                HashiCorpVaultTransitKeyWrapperImpl::cancelled);
+        // A failure, never a cancellation: a hung token source must count towards the refresh-failure
+        // policy like any other failure to reveal the key.
+        Integer length = VaultHttp.await(future, timeoutNanos, () -> {
+            var message = "The Vault token source supplied no token within " + timeout + ".";
+            return new CryptographicException(message, new TimeoutException(message));
+        }, HashiCorpVaultTransitKeyWrapperImpl::cancelled);
 
         if (length == null || length <= 0 || length > token.length || !VaultHttp.isValidToken(CharBuffer.wrap(token, 0, length)))
             throw new IllegalStateException("The Vault token source supplied no token, or one that isn't a token: printable ASCII, with no spaces.");

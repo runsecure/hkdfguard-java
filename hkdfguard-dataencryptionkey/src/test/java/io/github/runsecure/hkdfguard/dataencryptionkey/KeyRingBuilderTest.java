@@ -5,19 +5,27 @@ import static io.github.runsecure.hkdfguard.dataencryptionkey.Futures.assertFail
 import static io.github.runsecure.hkdfguard.dataencryptionkey.TestKeys.utf8;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.abstractions.CryptoProvider;
+import io.github.runsecure.hkdfguard.abstractions.EncryptionLimitReachedException;
 import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProviderFactoryImpl;
+import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardLog;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -26,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.event.Level;
 
 class KeyRingBuilderTest {
     @TempDir
@@ -199,11 +208,11 @@ class KeyRingBuilderTest {
     }
 
     @Test
-    void build_WithAKeyFileAboveEveryEphemeralVersion_AndRotationOff_KeepsTheKeyFileCurrent() {
+    void build_WithAKeyFileAboveEveryEphemeralVersion_AndRotationOff_KeepsTheKeyFileCurrent() throws IOException {
         var factory = new TestKeys.RecordingCryptoProviderFactory();
 
         try (var ring = await(new KeyRingBuilder().withKeyWrapper(new ReadingKeyWrapper()).withCryptoProviderFactory(factory)
-                .withKeyRefreshInterval(60).withKeyFile(3, directory.resolve("v3.bin")).withEphemeralKey(2)
+                .withKeyRefreshInterval(60).withKeyFile(3, keyFile("v3.bin", utf8("on disk"))).withEphemeralKey(2)
                 .withoutEphemeralKeyRotation().buildAsync())) {
             assertEquals(3, ring.getCurrentVersion());
             assertNull(ring.getEphemeralKeyRotationInterval());
@@ -261,7 +270,7 @@ class KeyRingBuilderTest {
 
     // --- Key files are read through the key wrapper ---------------------------------------------
 
-    /** A wrapper that reads its own "key files" - none of which exist on disk. */
+    /** A wrapper that reads its own "key files" - never the bytes on disk, which are there only for their age. */
     private static final class ReadingKeyWrapper extends TestKeys.FakeKeyWrapper {
         final List<Path> reads = new CopyOnWriteArrayList<>();
         volatile IOException failure;
@@ -281,22 +290,22 @@ class KeyRingBuilderTest {
     }
 
     @Test
-    void build_ReadsEveryKeyFileThroughTheKeyWrapper_NotItsOwnFileIo() {
+    void build_ReadsEveryKeyFileThroughTheKeyWrapper_NotItsOwnFileIo() throws IOException {
         var wrapper = new ReadingKeyWrapper();
         var factory = new TestKeys.RecordingCryptoProviderFactory();
-        var v1 = directory.resolve("not-on-disk-v1.bin");
-        var v2 = directory.resolve("not-on-disk-v2.bin");
+        var v1 = keyFile("not-read-v1.bin", utf8("on disk"));
+        var v2 = keyFile("not-read-v2.bin", utf8("on disk"));
 
         try (var ignored = await(new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory).withKeyRefreshInterval(60)
                 .withKeyFile(2, v2).withKeyFile(1, v1).buildAsync())) {
             assertEquals(List.of(v1, v2), wrapper.reads);
-            assertArrayEquals(utf8("wrapped:not-on-disk-v1.bin"), factory.createdWrapped.get(0));
-            assertArrayEquals(utf8("wrapped:not-on-disk-v2.bin"), factory.createdWrapped.get(1));
+            assertArrayEquals(utf8("wrapped:not-read-v1.bin"), factory.createdWrapped.get(0));
+            assertArrayEquals(utf8("wrapped:not-read-v2.bin"), factory.createdWrapped.get(1));
         }
     }
 
     @Test
-    void build_WhenTheKeyWrapperRefusesAKeyFile_FailsWithItsException_AndClosesWhatItCreated() {
+    void build_WhenTheKeyWrapperRefusesAKeyFile_FailsWithItsException_AndClosesWhatItCreated() throws IOException {
         var wrapper = new ReadingKeyWrapper();
         wrapper.failingPath = directory.resolve("v2.bin");
         wrapper.failure = new InvalidKeyFileException("Key file 'v2.bin' was refused by the native library with status -37 (...).");
@@ -304,12 +313,143 @@ class KeyRingBuilderTest {
 
         var thrown = assertFailsWith(InvalidKeyFileException.class, new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory)
                 .withKeyRefreshInterval(60).withEphemeralKey(5)
-                .withKeyFile(1, directory.resolve("v1.bin"))
+                .withKeyFile(1, keyFile("v1.bin", utf8("on disk")))
                 .withKeyFile(2, wrapper.failingPath)
                 .buildAsync());
 
         assertSame(wrapper.failure, thrown);
         assertEquals(1, factory.createdProviders.size());
         assertClosed(factory.createdProviders.getFirst());
+    }
+
+    // --- Key-file maximum age -------------------------------------------------------------------
+
+    private static final DateTimeFormatter ISO_MILLIS = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
+
+    /** A key file last written {@code ageDays} days ago. */
+    private Path agedKeyFile(String name, int ageDays) throws IOException {
+        var path = keyFile(name, utf8("wrapped-" + name));
+        Files.setLastModifiedTime(path, FileTime.from(Instant.now().minus(Duration.ofDays(ageDays))));
+        return path;
+    }
+
+    private static List<RecordingLogger.Entry> withEventId(RecordingLogger logger, int eventId) {
+        return logger.entries().stream().filter(e -> e.eventId() != null && e.eventId() == eventId).toList();
+    }
+
+    private static String roundTrip(io.github.runsecure.hkdfguard.abstractions.DataProtector protector, String value) {
+        var result = new char[value.length()];
+        return new String(result, 0, protector.decrypt(protector.encrypt(value), result));
+    }
+
+    @Test
+    void keyFileMaxAgeDays_Defaults365_AcceptsOneTo3650_AndRejectsTheRest() {
+        assertEquals(365, new KeyRingBuilder().getKeyFileMaxAgeDays());
+        assertEquals(1, new KeyRingBuilder().withKeyFileMaxAgeDays(1).getKeyFileMaxAgeDays());
+        assertEquals(3650, new KeyRingBuilder().withKeyFileMaxAgeDays(3650).getKeyFileMaxAgeDays());
+
+        for (var days : new int[] {0, -1, 3651}) {
+            var thrown = assertThrows(IllegalArgumentException.class, () -> new KeyRingBuilder().withKeyFileMaxAgeDays(days));
+            assertEquals("keyFileMaxAgeDays must be between 1 and 3650; it is " + days + ".", thrown.getMessage());
+        }
+    }
+
+    @Test
+    void build_LimitsEachKeyFileToItsAgeFromWhenItWasLastWritten_365DaysByDefault() throws IOException {
+        var path = keyFile("v1.bin", utf8("wrapped"));
+        var written = Files.getLastModifiedTime(path).toInstant();
+
+        for (var days : new Integer[] {null, 30}) {
+            var builder = configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path);
+            if (days != null)
+                builder.withKeyFileMaxAgeDays(days);
+            var expectedDays = days == null ? 365 : days;
+
+            try (var ring = await(builder.buildAsync())) {
+                var deadline = ((DataEncryptionKeyImpl) ring.get(1)).getDeadline();
+                assertEquals(written.plus(Duration.ofDays(expectedDays)), deadline.refuseAt());
+                assertEquals(written.plusMillis(Math.round(expectedDays * 24 * 60 * 60 * 1000L * 0.9)), deadline.warnAt());
+                assertEquals("Key file '" + path + "' (version 1) was last written " + ISO_MILLIS.format(written) + ", more than " + expectedDays
+                        + " days ago (keyFileMaxAgeDays), so it no longer encrypts: AES-GCM is only safe for a bounded number of encryptions under "
+                        + "one key. Deploy a new key file at a higher version; values under this one still decrypt.", deadline.reason());
+            }
+        }
+    }
+
+    @Test
+    void build_ReportsACurrentKeyFileNearingItsAgeAtStartup_Once_AndKeepsEncrypting() throws IOException {
+        var logger = new RecordingLogger();
+        var path = agedKeyFile("v1.bin", 340);
+
+        try (var ring = await(configured(new AesGcmCryptoProviderFactoryImpl()).withKeyFile(1, path).withLogger(logger).buildAsync())) {
+            var warnings = withEventId(logger, HkdfGuardLog.KEY_FILE_AGE_WARNING);
+            assertEquals(1, warnings.size());
+            assertEquals(Level.WARN, warnings.getFirst().level());
+            var refuseAt = ((DataEncryptionKeyImpl) ring.get(1)).getDeadline().refuseAt();
+            assertEquals("Key file '" + path + "' (version 1) stops encrypting at " + ISO_MILLIS.format(refuseAt)
+                    + ", when it reaches its maximum age; deploy a new key file at a higher version before then.", warnings.getFirst().message());
+
+            assertEquals("still fine", roundTrip(ring.createProtector("aging"), "still fine"));
+            assertEquals(1, withEventId(logger, HkdfGuardLog.KEY_FILE_AGE_WARNING).size());
+            assertTrue(withEventId(logger, HkdfGuardLog.KEY_FILE_EXPIRED).isEmpty());
+        }
+    }
+
+    @Test
+    void build_RefusesToEncryptUnderACurrentKeyFilePastItsAge_ReportingItAtStartup_ButStillDecrypts() throws IOException {
+        var path = agedKeyFile("v1.bin", 20);
+        var clock = new TestKeys.MutableClock(Instant.now());
+        var wrapper = new TestKeys.FakeKeyWrapper(TestKeys.randomKey());
+        var factory = new AesGcmCryptoProviderFactoryImpl();
+
+        try (var before = await(new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory).withKeyRefreshInterval(60)
+                .withKeyFile(1, path).withKeyFileMaxAgeDays(30).withClockForTesting(clock).buildAsync())) {
+            var protector = before.createProtector("expiring");
+            var formatted = protector.encrypt("written in time");
+
+            clock.advance(Duration.ofDays(15)); // now 35 days old
+            assertThrows(EncryptionLimitReachedException.class, () -> protector.encrypt("too late"));
+            var result = new char[15];
+            assertEquals("written in time", new String(result, 0, protector.decrypt(formatted, result)));
+
+            var logger = new RecordingLogger();
+            try (var after = await(new KeyRingBuilder().withKeyWrapper(wrapper).withCryptoProviderFactory(factory).withKeyRefreshInterval(60)
+                    .withKeyFile(1, path).withKeyFileMaxAgeDays(30).withClockForTesting(clock).withLogger(logger).buildAsync())) {
+                var expired = withEventId(logger, HkdfGuardLog.KEY_FILE_EXPIRED);
+                assertEquals(1, expired.size());
+                assertEquals(Level.ERROR, expired.getFirst().level());
+                assertTrue(expired.getFirst().markers().contains(HkdfGuardLog.CRITICAL));
+                assertEquals("Key file '" + path + "' (version 1) has passed its maximum age and no longer encrypts; values under it still decrypt. "
+                        + "Deploy a new key file at a higher version.", expired.getFirst().message());
+                assertTrue(withEventId(logger, HkdfGuardLog.KEY_FILE_AGE_WARNING).isEmpty());
+
+                var thrown = assertThrows(EncryptionLimitReachedException.class, () -> after.createProtector("expiring").encrypt("too late"));
+                assertTrue(thrown.getMessage().contains(path.toString()));
+                assertEquals("written in time", new String(result, 0, after.createProtector("expiring").decrypt(formatted, result)));
+                assertEquals(1, withEventId(logger, HkdfGuardLog.KEY_FILE_EXPIRED).size());
+            }
+        }
+    }
+
+    @Test
+    void build_NeverReportsASupersededKeyFile_WhichNeverEncrypts() throws IOException {
+        var logger = new RecordingLogger();
+
+        try (var ring = await(configured(new AesGcmCryptoProviderFactoryImpl())
+                .withKeyFile(1, agedKeyFile("old.bin", 400)).withKeyFile(2, agedKeyFile("new.bin", 0)).withLogger(logger).buildAsync())) {
+            assertEquals(2, ring.getCurrentVersion());
+            assertEquals(List.of(), logger.entries());
+            assertEquals("fine", roundTrip(ring.createProtector("rotated"), "fine"));
+        }
+    }
+
+    @Test
+    void build_PutsNoAgeLimitOnEphemeralKeys() {
+        try (var ring = await(configured(new AesGcmCryptoProviderFactoryImpl()).withEphemeralKey(1).withoutEphemeralKeyRotation()
+                .withKeyFileMaxAgeDays(1).buildAsync())) {
+            var key = (DataEncryptionKeyImpl) ring.get(1);
+            assertNull(key.getDeadline());
+            assertFalse(key.checkDeadline(Instant.MAX));
+        }
     }
 }
