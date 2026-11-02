@@ -12,6 +12,8 @@ import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.data.LongPointData;
 import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader;
 import org.junit.jupiter.api.Test;
+import java.time.Instant;
+import java.util.Map;
 import org.slf4j.event.Level;
 
 class CacheMetricsAndLoggerTest {
@@ -164,6 +166,37 @@ class CacheMetricsAndLoggerTest {
     }
 
     @Test
+    void keyFileAgeWarning_WritesAWarningNamingTheFileVersionAndDeadline() {
+        var logger = new RecordingLogger();
+
+        HkdfGuardLog.keyFileAgeWarning(logger, 3, "/etc/dek-v3.bin", Instant.parse("2027-01-02T03:04:05Z"));
+
+        var entry = single(logger);
+        assertEquals(Level.WARN, entry.level());
+        assertEquals(12, entry.eventId());
+        assertEquals("Key file '/etc/dek-v3.bin' (version 3) stops encrypting at 2027-01-02T03:04:05.000Z, when it reaches its maximum age; "
+                + "deploy a new key file at a higher version before then.", entry.message());
+        assertEquals(Map.of(HkdfGuardLog.EVENT_ID_KEY, 12, AttributeNames.KEY_VERSION, 3, AttributeNames.KEY_FILE_PATH, "/etc/dek-v3.bin"),
+                entry.keyValues());
+    }
+
+    @Test
+    void keyFileExpired_WritesAnErrorEntryMarkedCritical() {
+        var logger = new RecordingLogger();
+
+        HkdfGuardLog.keyFileExpired(logger, 3, "/etc/dek-v3.bin");
+
+        var entry = single(logger);
+        assertEquals(Level.ERROR, entry.level());
+        assertTrue(entry.markers().contains(HkdfGuardLog.CRITICAL));
+        assertEquals(13, entry.eventId());
+        assertEquals("Key file '/etc/dek-v3.bin' (version 3) has passed its maximum age and no longer encrypts; values under it still decrypt. "
+                + "Deploy a new key file at a higher version.", entry.message());
+        assertEquals(Map.of(HkdfGuardLog.EVENT_ID_KEY, 13, AttributeNames.KEY_VERSION, 3, AttributeNames.KEY_FILE_PATH, "/etc/dek-v3.bin"),
+                entry.keyValues());
+    }
+
+    @Test
     void logMessages_WhenTheLevelIsDisabled_WriteNothing() {
         var logger = new RecordingLogger(false);
 
@@ -174,6 +207,8 @@ class CacheMetricsAndLoggerTest {
         HkdfGuardLog.keyAccessResumed(logger, 1);
         HkdfGuardLog.ephemeralKeyRotated(logger, 1);
         HkdfGuardLog.ephemeralKeyRotationFailed(logger, 1, new IllegalStateException());
+        HkdfGuardLog.keyFileAgeWarning(logger, 1, "k.bin", Instant.EPOCH);
+        HkdfGuardLog.keyFileExpired(logger, 1, "k.bin");
 
         assertTrue(logger.entries().isEmpty());
     }
@@ -182,6 +217,7 @@ class CacheMetricsAndLoggerTest {
     void logMessages_WithANullLogger_DoNothing() {
         assertDoesNotThrow(() -> HkdfGuardLog.keyAccessSuspended(null, 1));
         assertDoesNotThrow(() -> HkdfGuardLog.operationFailed(null, "op", new IllegalStateException()));
+        assertDoesNotThrow(() -> HkdfGuardLog.keyFileExpired(null, 1, "k.bin"));
     }
 
     private static RecordingLogger.Entry single(RecordingLogger logger) {

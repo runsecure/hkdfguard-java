@@ -1,5 +1,8 @@
 package io.github.runsecure.hkdfguard.diagnostics;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import org.slf4j.Logger;
 import org.slf4j.Marker;
 import org.slf4j.MarkerFactory;
@@ -34,6 +37,12 @@ public final class HkdfGuardLog {
     public static final int EPHEMERAL_KEY_RETIREMENT_FAILED = 9;
     public static final int ENCRYPTION_BUDGET_WARNING = 10;
     public static final int BACKGROUND_TASK_TERMINATED = 11;
+    // The Node port numbers these 11 and 12; 11 was already BACKGROUND_TASK_TERMINATED here.
+    public static final int KEY_FILE_AGE_WARNING = 12;
+    public static final int KEY_FILE_EXPIRED = 13;
+
+    // ISO-8601 UTC to the millisecond, as every port writes a timestamp into a message.
+    private static final DateTimeFormatter ISO_MILLIS = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
 
     private HkdfGuardLog() {
     }
@@ -175,5 +184,38 @@ public final class HkdfGuardLog {
                 .addKeyValue(EVENT_ID_KEY, BACKGROUND_TASK_TERMINATED)
                 .setCause(exception)
                 .log("The {} stopped unexpectedly and will not run again until the process restarts. {}", taskName, consequence);
+    }
+
+    /**
+     * Warn: the current key file is nearing its maximum age, after which it stops encrypting.
+     * Logged once per key.
+     */
+    public static void keyFileAgeWarning(Logger logger, int keyVersion, String path, Instant refuseAt) {
+        if (logger == null)
+            return;
+
+        logger.atWarn()
+                .addKeyValue(EVENT_ID_KEY, KEY_FILE_AGE_WARNING)
+                .addKeyValue(AttributeNames.KEY_VERSION, keyVersion)
+                .addKeyValue(AttributeNames.KEY_FILE_PATH, path)
+                .log("Key file '{}' (version {}) stops encrypting at {}, when it reaches its maximum age; deploy a new key file at a higher version before then.",
+                        path, keyVersion, ISO_MILLIS.format(refuseAt));
+    }
+
+    /**
+     * Error, marked {@link #CRITICAL}: the current key file has passed its maximum age and no longer
+     * encrypts; decryption still works. Logged once per key.
+     */
+    public static void keyFileExpired(Logger logger, int keyVersion, String path) {
+        if (logger == null)
+            return;
+
+        logger.atError()
+                .addMarker(CRITICAL)
+                .addKeyValue(EVENT_ID_KEY, KEY_FILE_EXPIRED)
+                .addKeyValue(AttributeNames.KEY_VERSION, keyVersion)
+                .addKeyValue(AttributeNames.KEY_FILE_PATH, path)
+                .log("Key file '{}' (version {}) has passed its maximum age and no longer encrypts; values under it still decrypt. Deploy a new key file at a higher version.",
+                        path, keyVersion);
     }
 }

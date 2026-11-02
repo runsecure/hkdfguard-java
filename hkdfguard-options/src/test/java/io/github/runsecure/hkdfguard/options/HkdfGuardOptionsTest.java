@@ -136,6 +136,14 @@ class HkdfGuardOptionsTest {
             assertEquals(KeyRingBuilder.DEFAULT_MAX_REFRESH_FAILURES, builder.getMaxRefreshFailures());
             assertEquals(Duration.ofHours(24), builder.getEphemeralKeyRotationInterval());
             assertEquals(KeyRingBuilder.DEFAULT_EPHEMERAL_KEY_RETENTION, builder.getEphemeralKeyRetention());
+            assertEquals(KeyRingBuilder.DEFAULT_KEY_FILE_MAX_AGE_DAYS, builder.getKeyFileMaxAgeDays());
+        }
+
+        @Test
+        void keyFileMaxAgeDaysSetsTheMaximumAge() {
+            var options = new HkdfGuardOptions();
+            options.setKeyFileMaxAgeDays(30);
+            assertEquals(30, options.applyTo(new KeyRingBuilder()).getKeyFileMaxAgeDays());
         }
 
         @Test
@@ -400,6 +408,26 @@ class HkdfGuardOptionsTest {
             assertTrue(anyFailure(options, "ephemeralKeyRetentionHours"));
         }
 
+        @ParameterizedTest
+        @ValueSource(ints = {1, 365, 3650})
+        void keyFileMaxAgeDaysWithinRangeSucceed(int days) {
+            var options = validOptions();
+            options.setKeyFileMaxAgeDays(days);
+
+            assertEquals(List.of(), options.validate());
+            assertEquals(days, options.applyTo(new KeyRingBuilder()).getKeyFileMaxAgeDays());
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {0, -1, 3651})
+        void keyFileMaxAgeDaysOutOfRangeFail(int days) {
+            var options = validOptions();
+            options.setKeyFileMaxAgeDays(days);
+
+            assertEquals(List.of("keyFileMaxAgeDays must be between 1 and 3650."), options.validate());
+            assertThrows(IllegalArgumentException.class, () -> options.applyTo(new KeyRingBuilder()));
+        }
+
         @Test
         void disablingRotationWhileSchedulingItFails() {
             var options = validOptions();
@@ -523,6 +551,7 @@ class HkdfGuardOptionsTest {
                     "MaxRefreshFailures", 3,
                     "EphemeralKeyRotationHours", 12,
                     "EphemeralKeyRetentionHours", 48,
+                    "KeyFileMaxAgeDays", 730,
                     "KeyFiles", List.of(Map.of("Version", 1, "Path", "/etc/myapp/wrapped-dek-v1.bin")),
                     "EphemeralKeys", List.of(2));
 
@@ -534,6 +563,7 @@ class HkdfGuardOptionsTest {
             expected.setMaxRefreshFailures(3);
             expected.setEphemeralKeyRotationHours(12);
             expected.setEphemeralKeyRetentionHours(48);
+            expected.setKeyFileMaxAgeDays(730);
             expected.setKeyFiles(List.of(new KeyFileOptions(1, "/etc/myapp/wrapped-dek-v1.bin")));
             expected.setEphemeralKeys(List.of(2));
             assertEquals(expected, options);

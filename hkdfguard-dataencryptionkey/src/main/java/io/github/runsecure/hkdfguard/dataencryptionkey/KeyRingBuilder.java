@@ -9,9 +9,15 @@ import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.RefreshFailurePolicy;
 import io.github.runsecure.hkdfguard.abstractions.ServiceNames;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
+import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardLog;
 import io.github.runsecure.hkdfguard.dataencryptionkey.formatprovider.DefaultFormatProviderImpl;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -43,6 +49,10 @@ import org.slf4j.LoggerFactory;
  * highest ephemeral version above every key file - otherwise the first rotation would supersede the
  * key file and new values would be encrypted under a key that does not survive a restart; build
  * refuses that layout unless rotation is turned off with {@link #withoutEphemeralKeyRotation()}.
+ * <p>
+ * Each key file stops encrypting {@link #getKeyFileMaxAgeDays()} days after it was last written
+ * (365 unless configured otherwise), so deploy a new one at a higher version before then; values
+ * under an old key file always still decrypt.
  */
 public final class KeyRingBuilder {
     /** How often a ring with ephemeral keys adds a fresh one as its current version, unless configured otherwise. */
@@ -75,6 +85,27 @@ public final class KeyRingBuilder {
      */
     public static final int DEFAULT_MAX_REFRESH_FAILURES = RefreshFailurePolicy.DEFAULT_MAX_REFRESH_FAILURES;
 
+    /**
+     * How many days after it was last written a key file stops encrypting, unless configured
+     * otherwise. AES-GCM with random nonces is safe for about 2^32 encryptions under one key in
+     * total, and a key file outlives the process that counts them, so it is bounded by age instead:
+     * rotate key files by deploying a new one at a higher version. Decryption under an old key file
+     * never stops.
+     */
+    public static final int DEFAULT_KEY_FILE_MAX_AGE_DAYS = 365;
+
+    /** The shortest key-file age {@link #withKeyFileMaxAgeDays} accepts, in days. */
+    public static final int MIN_KEY_FILE_MAX_AGE_DAYS = 1;
+
+    /** The longest key-file age {@link #withKeyFileMaxAgeDays} accepts, in days. */
+    public static final int MAX_KEY_FILE_MAX_AGE_DAYS = 3650;
+
+    /** The fraction of the maximum age after which a warning is logged: 90%, about five weeks of a year. */
+    public static final double KEY_FILE_AGE_WARNING_FRACTION = 0.9;
+
+    // ISO-8601 UTC to the millisecond, as every port writes a timestamp into a message.
+    private static final DateTimeFormatter ISO_MILLIS = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
+
     private final TreeMap<Integer, Path> keyFiles = new TreeMap<>();
     private final List<Integer> ephemeralVersions = new ArrayList<>();
     private KeyWrapper keyWrapper;
@@ -86,6 +117,8 @@ public final class KeyRingBuilder {
     private Integer maxRefreshFailures = DEFAULT_MAX_REFRESH_FAILURES;
     private Duration ephemeralKeyRotationInterval = DEFAULT_EPHEMERAL_KEY_ROTATION_INTERVAL;
     private Duration ephemeralKeyRetention = DEFAULT_EPHEMERAL_KEY_RETENTION;
+    private int keyFileMaxAgeDays = DEFAULT_KEY_FILE_MAX_AGE_DAYS;
+    private Clock clock = Clock.systemUTC();
 
     /** A builder with nothing registered yet, and every default in place. */
     public KeyRingBuilder() {
@@ -124,6 +157,41 @@ public final class KeyRingBuilder {
      */
     public Duration getEphemeralKeyRetention() {
         return ephemeralKeyRetention;
+    }
+
+    /**
+     * Days after a key file was last written that it stops encrypting. Defaults to
+     * {@link #DEFAULT_KEY_FILE_MAX_AGE_DAYS}.
+     */
+    public int getKeyFileMaxAgeDays() {
+        return keyFileMaxAgeDays;
+    }
+
+    /**
+     * Sets how many days (1-3650) after a key file was last written it stops encrypting. Its age is
+     * its last-modified time, so copy key files with their timestamps preserved ({@code cp -p},
+     * {@code rsync -t}); a plain copy resets the clock. A warning is logged at 90% of the age
+     * ({@link #KEY_FILE_AGE_WARNING_FRACTION}); past it, encrypt throws
+     * {@link io.github.runsecure.hkdfguard.abstractions.EncryptionLimitReachedException} and
+     * decryption still works. Only the current version ever encrypts, so only it is reported.
+     * Ephemeral keys have no age limit.
+     *
+     * @throws IllegalArgumentException days is not between {@link #MIN_KEY_FILE_MAX_AGE_DAYS} and
+     *                                  {@link #MAX_KEY_FILE_MAX_AGE_DAYS}
+     */
+    public KeyRingBuilder withKeyFileMaxAgeDays(int days) {
+        if (days < MIN_KEY_FILE_MAX_AGE_DAYS || days > MAX_KEY_FILE_MAX_AGE_DAYS)
+            throw new IllegalArgumentException("keyFileMaxAgeDays must be between " + MIN_KEY_FILE_MAX_AGE_DAYS + " and " + MAX_KEY_FILE_MAX_AGE_DAYS
+                    + "; it is " + days + ".");
+
+        keyFileMaxAgeDays = days;
+        return this;
+    }
+
+    /** Tests only: the wall clock key-file deadlines are checked against. */
+    KeyRingBuilder withClockForTesting(Clock clock) {
+        this.clock = Objects.requireNonNull(clock, "clock");
+        return this;
     }
 
     /**
@@ -182,7 +250,8 @@ public final class KeyRingBuilder {
 
     /**
      * Receives an info entry for every ephemeral key rotation and retirement and an error for every
-     * failed one; null (the default) for {@link KeyRingImpl}'s own SLF4J logger.
+     * failed one, and a warning or critical error for a current key file nearing or past its
+     * maximum age; null (the default) for {@link KeyRingImpl}'s own SLF4J logger.
      */
     public KeyRingBuilder withLogger(Logger logger) {
         this.logger = logger;
@@ -336,7 +405,7 @@ public final class KeyRingBuilder {
         // A snapshot: changing the builder afterwards doesn't change a build in progress.
         var plan = new Plan(Map.copyOf(new TreeMap<>(keyFiles)), List.copyOf(ephemeralVersions), keyWrapper, cryptoProviderFactory,
                 formatProvider, logger != null ? logger : LoggerFactory.getLogger(KeyRingImpl.class), keyRefreshInterval,
-                maxRefreshFailures, ephemeralKeyRotationInterval, ephemeralKeyRetention);
+                maxRefreshFailures, ephemeralKeyRotationInterval, ephemeralKeyRetention, keyFileMaxAgeDays, clock);
 
         var result = new CompletableFuture<KeyRingImpl>();
         // A platform thread: the build calls the key wrapper, which may block in native code - that
@@ -353,29 +422,38 @@ public final class KeyRingBuilder {
 
     private record Plan(Map<Integer, Path> keyFiles, List<Integer> ephemeralVersions, KeyWrapper keyWrapper,
                         CryptoProviderFactory factory, EncryptedFormatProvider formatProvider, Logger logger,
-                        int keyRefreshInterval, Integer maxRefreshFailures, Duration rotationInterval, Duration retention) {
+                        int keyRefreshInterval, Integer maxRefreshFailures, Duration rotationInterval, Duration retention,
+                        int keyFileMaxAgeDays, Clock clock) {
 
         KeyRingImpl build() throws Exception {
             var ring = new KeyRingImpl(formatProvider);
             try {
                 for (var keyFile : new TreeMap<>(keyFiles).entrySet()) {
+                    var path = keyFile.getValue();
                     // Read through the key wrapper: a native KMS reads its own key files, with its
                     // own checks on who could have written them.
-                    var wrapped = await(keyWrapper.readKeyFileAsync(keyFile.getValue()));
+                    var wrapped = await(keyWrapper.readKeyFileAsync(path));
                     // Whatever the key wrapper, a wrapped key is never empty and never over the limit.
                     if (wrapped == null || wrapped.length == 0)
                         throw new InvalidKeyFileException("Key file '" + keyFile.getValue() + "' is empty.");
                     if (wrapped.length > WrappedKeyLimits.MAX_BYTES)
                         throw new InvalidKeyFileException("Key file '" + keyFile.getValue() + "' is larger than " + WrappedKeyLimits.MAX_BYTES
                                 + " bytes (WrappedKeyLimits.MAX_BYTES); a wrapped key never is.");
+                    // Its last-modified time is the key file's age.
+                    var modified = Files.getLastModifiedTime(path).toInstant();
                     var provider = await(factory.createAsync(keyWrapper, wrapped, keyRefreshInterval, maxRefreshFailures));
-                    addOwned(ring, keyFile.getKey(), provider);
+                    addOwned(ring, keyFile.getKey(), provider, keyFileDeadline(keyFile.getKey(), path, modified));
                 }
 
                 for (var version : ephemeralVersions) {
                     var provider = await(factory.createEphemeralAsync(keyWrapper, keyRefreshInterval, maxRefreshFailures));
-                    addOwned(ring, version, provider);
+                    addOwned(ring, version, provider, null);
                 }
+
+                // Report a current key file already nearing or past its age now, not at its first
+                // encrypt. A superseded key file never encrypts, so it is never reported.
+                if (ring.find(ring.getCurrentVersion()).orElse(null) instanceof DataEncryptionKeyImpl current)
+                    current.checkDeadline(clock.instant());
 
                 if (!ephemeralVersions.isEmpty() && rotationInterval != null) {
                     // Each rotation creates its key exactly as an ephemeral version above was created.
@@ -402,8 +480,22 @@ public final class KeyRingBuilder {
             }
         }
 
-        private static void addOwned(KeyRingImpl ring, int version, CryptoProvider provider) {
-            var key = new DataEncryptionKeyImpl(provider);
+        /** When the key file at {@code path}, last written at {@code modified}, stops encrypting, and who hears about it. */
+        private EncryptionDeadline keyFileDeadline(int version, Path path, Instant modified) {
+            var maxAge = Duration.ofDays(keyFileMaxAgeDays);
+            var refuseAt = modified.plus(maxAge);
+            // 90% of whole days is a whole number of milliseconds, so this is exact.
+            var warnAt = modified.plusMillis(Math.round(maxAge.toMillis() * KEY_FILE_AGE_WARNING_FRACTION));
+            var reason = "Key file '" + path + "' (version " + version + ") was last written " + ISO_MILLIS.format(modified) + ", more than "
+                    + keyFileMaxAgeDays + " days ago (keyFileMaxAgeDays), so it no longer encrypts: AES-GCM is only safe for a bounded number of "
+                    + "encryptions under one key. Deploy a new key file at a higher version; values under this one still decrypt.";
+            return new EncryptionDeadline(warnAt, refuseAt, reason,
+                    () -> HkdfGuardLog.keyFileAgeWarning(logger, version, path.toString(), refuseAt),
+                    () -> HkdfGuardLog.keyFileExpired(logger, version, path.toString()));
+        }
+
+        private void addOwned(KeyRingImpl ring, int version, CryptoProvider provider, EncryptionDeadline deadline) {
+            var key = new DataEncryptionKeyImpl(provider, deadline, clock);
             try {
                 ring.add(version, key);
             } catch (RuntimeException e) {

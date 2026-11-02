@@ -7,7 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.runsecure.hkdfguard.abstractions.AuthenticationTagMismatchException;
+import io.github.runsecure.hkdfguard.abstractions.DataEncryptionKey;
 import io.github.runsecure.hkdfguard.abstractions.EncryptedFormatException;
+import io.github.runsecure.hkdfguard.abstractions.KeyRing;
+import io.github.runsecure.hkdfguard.abstractions.VersionedKey;
 import io.github.runsecure.hkdfguard.abstractions.ProtectedConfigurationPurpose;
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmPipelineDataProtectorImpl;
 import io.github.runsecure.hkdfguard.dataencryptionkey.KeyRingImpl;
@@ -18,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -156,8 +160,47 @@ class ProtectedEnvironmentTest {
         }
     }
 
+    /** An application's own ring: not a KeyRingImpl, only the KeyRing interface over the same keys. */
+    private record ApplicationRing(KeyRing inner) implements KeyRing {
+        @Override
+        public int getCurrentVersion() {
+            return inner.getCurrentVersion();
+        }
+
+        @Override
+        public VersionedKey getCurrent() {
+            return inner.getCurrent();
+        }
+
+        @Override
+        public DataEncryptionKey get(int version) {
+            return inner.get(version);
+        }
+
+        @Override
+        public Optional<DataEncryptionKey> find(int version) {
+            return inner.find(version);
+        }
+    }
+
+    @Test
+    void overAnApplicationsOwnRing_DecryptsWhatTheRingsKeysProtected() {
+        protect("spring.datasource.password", "Server=db;Password=hunter2");
+        var own = new ProtectedEnvironment(environment, new ApplicationRing(ring), new DefaultFormatProviderImpl());
+
+        var result = new char[64];
+        var written = own.decrypt("spring.datasource.password", result);
+
+        assertEquals("Server=db;Password=hunter2", new String(result, 0, written));
+        // Still bound to each name: the same rules as a KeyRingImpl's own protectors.
+        values.put("other.name", values.get("spring.datasource.password"));
+        assertThrows(AuthenticationTagMismatchException.class, () -> own.decrypt("other.name", new char[64]));
+    }
+
     @Test
     void nullArgumentsAreRejected() {
+        assertThrows(NullPointerException.class, () -> new ProtectedEnvironment(environment, null, new DefaultFormatProviderImpl()));
+        assertThrows(NullPointerException.class, () -> new ProtectedEnvironment(environment, new ApplicationRing(ring), null));
         assertThrows(NullPointerException.class, () -> new ProtectedEnvironment(null, ring));
         assertThrows(NullPointerException.class, () -> new ProtectedEnvironment(environment, null));
         assertThrows(NullPointerException.class, () -> sut.decrypt(null, new char[1]));

@@ -397,7 +397,8 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
     }
 
     /**
-     * Creates a {@link DataProtector} bound to this ring - the only way to obtain one. Encrypt
+     * Creates a {@link DataProtector} bound to this ring ({@link DataProtectors#create} makes one
+     * over any other {@link io.github.runsecure.hkdfguard.abstractions.KeyRing}). Encrypt
      * resolves the current version on every call, and formats/parses via this ring's
      * {@link EncryptedFormatProvider}.
      *
@@ -411,14 +412,7 @@ public final class KeyRingImpl implements KeyRing, AutoCloseable {
      *                                  protected caches alone, or isn't valid UTF-16
      */
     public DataProtector createProtector(String name) {
-        Objects.requireNonNull(name, "name");
-        if (name.isEmpty())
-            throw new IllegalArgumentException("A protector name must not be empty.");
-        if (name.startsWith(ProtectedCacheBase.AAD_PREFIX))
-            throw new IllegalArgumentException("Protector names starting with '" + ProtectedCacheBase.AAD_PREFIX
-                    + "' are reserved for ProtectedCache's entries.");
-
-        return new DataProtectorImpl(name, this, formatProvider);
+        return DataProtectors.create(this, name, formatProvider);
     }
 
     /**

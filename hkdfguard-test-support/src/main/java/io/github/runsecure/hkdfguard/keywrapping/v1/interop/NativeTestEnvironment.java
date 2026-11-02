@@ -14,13 +14,17 @@ import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -502,6 +506,38 @@ public final class NativeTestEnvironment {
             return linuxPrivateDirectory(prefix, System.getenv(RUNTIME_DIRECTORY_VARIABLE), System.getenv("HOME"), linuxEffectiveUserId());
         return PrivateTempFiles.createDirectory(prefix).toRealPath();
     }
+
+    /**
+     * Writes a key file the way hkdfguard wrap does: readable and writable by its owner only
+     * (rw-------) where the file system has POSIX permissions, whatever the process's umask,
+     * replacing any existing file's contents and mode. The Linux native library refuses
+     * (HKDFGUARD_ERR_FILE_UNTRUSTED, -39) a key file another account could rewrite, and an Ubuntu
+     * desktop session's umask of 002 would otherwise leave a plain Files.write group-writable. On
+     * Windows the file inherits the private folder's ACL from {@link #createTempDirectory}.
+     *
+     * @param path the key file to write
+     * @param contents what to write
+     * @return path
+     * @throws IOException if it can't be written
+     */
+    public static Path writeKeyFile(Path path, byte[] contents) throws IOException {
+        var posix = path.getFileSystem().supportedFileAttributeViews().contains("posix");
+        var options = Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        try (var channel = posix
+                ? Files.newByteChannel(path, options, PosixFilePermissions.asFileAttribute(OWNER_ONLY_FILE))
+                : Files.newByteChannel(path, options)) {
+            var buffer = ByteBuffer.wrap(contents);
+            while (buffer.hasRemaining())
+                channel.write(buffer);
+        }
+
+        // The creation attribute applies only when the file is created; an existing one keeps its mode.
+        if (posix)
+            Files.setPosixFilePermissions(path, OWNER_ONLY_FILE);
+        return path;
+    }
+
+    private static final Set<PosixFilePermission> OWNER_ONLY_FILE = PosixFilePermissions.fromString("rw-------");
 
     /**
      * A new 0700 directory, by its real path, with no directory from it up to / that the Linux

@@ -19,6 +19,11 @@
       <groupId>io.github.runsecure</groupId>
       <artifactId>hkdfguard-abstractions</artifactId>
     </dependency>
+    <!-- JsonReader, shared with hkdfguard-keywrapping-hashicorpvault. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-remote-common</artifactId>
+    </dependency>
 
     <!-- Tests run the caches over a real key ring of AES-256-GCM keys. -->
     <dependency>

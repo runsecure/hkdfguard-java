@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>hkdfguard-cache-googlesecretmanager</artifactId>
+  <name>HkdfGuard Cache Google Secret Manager</name>
+  <description>
+    A protected read-only cache over one Google Cloud project's Secret Manager: each secret's latest
+    version is read on its first lookup, checked against its CRC32C, encrypted under the key ring's
+    current key and cached only as ciphertext, with the payload and gRPC's receive buffer zeroed.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache</artifactId>
+    </dependency>
+
+    <!-- The Google client has one transport built in (gRPC over a shaded copy of Netty, which puts
+         no Netty classes of its own on the class path), so nothing is excluded, as with
+         hkdfguard-keywrapping-googlekms. -->
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-secretmanager</artifactId>
+    </dependency>
+
+    <!-- The tests run a fake Secret Manager as an in-process gRPC server and call it through a real
+         SecretManagerServiceClient. They make no network calls, except the integration test's. -->
+    <dependency>
+      <groupId>com.google.api.grpc</groupId>
+      <artifactId>grpc-google-cloud-secretmanager-v1</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-inprocess</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- The tests encrypt under a real key ring of AES-256-GCM keys. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- No module descriptor: google-cloud-secretmanager, gax and the Secret Manager protos name no
+           module, as with hkdfguard-keywrapping-googlekms. The jar names its module, so an
+           application on the module path can still require it as an automatic module. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>io.github.runsecure.hkdfguard.cache.googlesecretmanager</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

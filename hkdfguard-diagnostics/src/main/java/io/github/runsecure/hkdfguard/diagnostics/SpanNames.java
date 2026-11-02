@@ -13,6 +13,7 @@ public final class SpanNames {
         public static final String ADD = "hkdfguard.cache.add";
         public static final String ADD_OR_UPDATE = "hkdfguard.cache.add_or_update";
         public static final String DECRYPT = "hkdfguard.cache.decrypt";
+        public static final String POPULATE = "hkdfguard.cache.populate";
 
         private Cache() {
         }
