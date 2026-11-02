@@ -6,10 +6,15 @@
 # Dependabot alerts and security updates must also be on (Settings > Code
 # security): those open a pull request as soon as an advisory names a version
 # pinned here, rather than waiting for the next scheduled check.
+#
+# Version updates target develop, which merges into main; a bump merged straight
+# into main drifts it from develop and conflicts the next release merge.
+# Security updates ignore target-branch and still open against main.
 version: 2
 updates:
   - package-ecosystem: maven
     directory: /
+    target-branch: develop
     schedule:
       interval: daily
     open-pull-requests-limit: 10
@@ -44,6 +49,7 @@ updates:
   # version comment beside it together.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     commit-message:
