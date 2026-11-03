@@ -7,8 +7,8 @@ log event ids are identical.
 
 Requires **Java 21** or later (the previous LTS) for every module except `hkdfguard-platform`,
 `hkdfguard-keywrapping-v1`, `hkdfguard-securefile`, `hkdfguard-keywrapping-awskms`,
-`hkdfguard-keywrapping-azurekeyvault`, `hkdfguard-keywrapping-googlekms` and
-`hkdfguard-keywrapping-hashicorpvault`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
+`hkdfguard-keywrapping-azurekeyvault`, `hkdfguard-keywrapping-googlekms`,
+`hkdfguard-keywrapping-hashicorpvault` and `hkdfguard-cache-filepersecret`, which require **Java 25** (the current LTS). Cryptography is BouncyCastle; telemetry is the OpenTelemetry API; logging is SLF4J; native KMS
 calls and the key-file checks use the Java FFM API, which is final only from Java 22 - hence those
 modules' higher minimum. On Java 21, use the library with a `KeyWrapper` of your own in place of the
 native one. Building the library needs JDK 25; CI also
@@ -25,7 +25,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a port of vault-client-go generated from Vault's OpenAPI spec for the endpoints HkdfGuard needs (logins and tokens, KV, cubbyhole, transit, a few of `sys/`), holding tokens only protected by a key ring; and what the two HashiCorp Vault modules share: `VaultTokenProvider`, `StaticVaultToken`, `VaultTokenSource`, `StaticVaultTokenSource`, `VaultRequestException`, `VaultHttp` |
 | `hkdfguard-platform`                  | -                                    | Internal: the OS calls and path checks `hkdfguard-keywrapping-v1` and `hkdfguard-securefile` share - Windows security descriptors and SIDs, Linux and macOS file status, the symbolic-link-following path walk (Java 25+). Not an API for applications |
 | `hkdfguard-keywrapping-v1`            | HkdfGuard.KeyWrapping.V1             | `NativeHkdfKeyWrapperV1Impl` over the native KMS library, `NativeProcessHardening` (Java 25+) |
-| `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java (Java 25+) |
+| `hkdfguard-securefile`                | HkdfGuard.SecureFile                 | `TrustedKeyFile`, `KeyFileTrust`: the native library's key-file location and content checks, in Java; `TrustedFile`: the same location checks for any other file (a secret's, a certificate), with a caller-given size limit and none of a key file's content rules (Java 25+) |
 | `hkdfguard-keywrapping-awskms`        | HkdfGuard.KeyWrapping.AwsKms         | `AwsKmsKeyWrapperImpl` over one symmetric AWS KMS key, through the AWS SDK for Java 2.x (Java 25+) |
 | `hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault  | `AzureKeyVaultKeyWrapperImpl` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through the Azure SDK for Java (Java 25+) |
 | `hkdfguard-keywrapping-googlekms`     | HkdfGuard.KeyWrapping.GoogleKms      | `GoogleKmsKeyWrapperImpl` over one symmetric Google Cloud KMS key, through the Google Cloud client for Cloud KMS (Java 25+) |
@@ -36,6 +36,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-cache-azurekeyvault`       | HkdfGuard.Cache.AzureKeyVault        | `AzureKeyVaultSecretCacheImpl` over one Azure Key Vault's secrets, through the Azure SDK for Java |
 | `hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager  | `GoogleSecretManagerSecretCacheImpl` over one Google Cloud project's Secret Manager |
 | `hkdfguard-cache-hashicorpvault`      | HkdfGuard.Cache.HashiCorpVault       | `HashiCorpVaultSecretCacheImpl` over one HashiCorp Vault KV secrets engine, through `java.net.http`, with a `VaultTokenProvider` |
+| `hkdfguard-cache-filepersecret`       | HkdfGuard.Cache (`FilePerSecretCache`) | `FilePerSecretCacheImpl` over a local folder of one already-encrypted file per secret, each read through `TrustedFile` on its first lookup and cached still encrypted, as the file holds it; each value bound to its file name through `ProtectedConfigurationPurpose`, and names that can't be a file name inside the folder reported missing. A module of its own because `TrustedFile` needs Java 25 and `hkdfguard-cache` targets 21 (Java 25+) |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
@@ -49,14 +50,14 @@ files may be written), and `WindowsTempDirectory`, the folder the Windows key-fi
 hkdfguard-securefile and the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit
 wrappers write to. It is
 test code only - a test-scope dependency of hkdfguard-dataencryptionkey, hkdfguard-cache,
-hkdfguard-securefile, hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
+hkdfguard-cache-filepersecret, hkdfguard-securefile, hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
 hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, compiled straight into hkdfguard-keywrapping-v1's tests (which it
 depends on) - and is never published, signed or shipped in a release.
 
 Naming: interfaces drop the .NET `I` prefix (`ICryptoProvider` -> `CryptoProvider`), and the classes
 implementing them end in `Impl` (.NET's `AwsKmsKeyWrapper` is `AwsKmsKeyWrapperImpl`).
 Plain data classes and static helpers that implement no interface (`HkdfGuardOptions`,
-`KeyFileOptions`, `KeyFileTrust`, `TrustedKeyFile`) keep their .NET names.
+`KeyFileOptions`, `KeyFileTrust`, `TrustedKeyFile`, `TrustedFile`) keep their .NET names.
 
 ## Example
 
@@ -215,7 +216,7 @@ hkdfguard:
 ## Native access
 
 `hkdfguard-keywrapping-v1` calls the native KMS library through FFM, a restricted API, and
-`hkdfguard-securefile` (which the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit wrappers read key files through) makes its
+`hkdfguard-securefile` (which the AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit wrappers read key files through, and `hkdfguard-cache-filepersecret` reads secret files through) makes its
 owner and permission checks through FFM too. The checks both share - security descriptors and SIDs
 on Windows, file status and the path walk on Linux and macOS - are made by `hkdfguard-platform`,
 which both depend on. On the class path, run with `--enable-native-access=ALL-UNNAMED`. On the module
@@ -690,6 +691,49 @@ this module.
 [Call Vault's API with the HashiCorp Vault client](docs/how-to/use-hashicorp-vault-client.md) covers
 creating a client, logging in, the generated methods and the generic ones, wrapping, errors, and
 regenerating the API from a newer spec.
+
+## Reading secrets from a folder, one file per secret
+
+`FilePerSecretCacheImpl` (module `hkdfguard-cache-filepersecret`) is a `ProtectedReadOnlyCache`
+over a local folder holding one file per secret: the file named `Db-Password` holds that secret's
+value, already encrypted and formatted (`enc::v3::...`). Nothing is read up front: the first lookup
+of a name reads that one file, checks its value authenticates, and caches it in memory still
+encrypted, exactly as the file holds it. Every later lookup is served from memory:
+
+```java
+var deployers = KeyFileTrust.ADMINISTRATORS_ONLY.withWindowsPrincipals("S-1-5-21-...-1005"); // the account that deploys secrets
+var secrets = new FilePerSecretCacheImpl(Path.of("C:\\HkdfGuardSecrets\\myapp"), deployers, ring, new DefaultFormatProviderImpl());
+
+var buffer = new char[256];
+int written = secrets.decrypt("Db-Password", buffer); // 0 if there's no such file
+```
+
+Each file must be encrypted for its own name, with the purpose
+`ProtectedConfigurationPurpose.forKey(name)`. That is what pipeline protection
+(`AesGcmPipelineDataProtectorImpl`) writes for the secret identifier `name`, and what
+`ring.createProtector(ProtectedConfigurationPurpose.forKey(name))` writes. A file copied under
+another name fails with a `CryptographicException` when it is loaded, and isn't cached, so a
+corrected file is read on the next lookup.
+
+Every file is read through `TrustedFile`, so it is refused, with an `UncheckedIOException` whose
+cause is an `AccessDeniedException`, unless it and every folder above it are owned and modifiable
+only by the operating system's administrators and the principals the `KeyFileTrust` adds. Add the
+account that deploys secrets, never the one the application runs as: one that can rewrite its own
+secrets can be made to roll one back. Like the key wrappers that read key files through
+`hkdfguard-securefile`, it needs Java 25 and native access for that module and `hkdfguard-platform`
+(see [Native access](#native-access)); it is a module of its own, not part of `hkdfguard-cache` as
+in .NET, so that `hkdfguard-cache` keeps running on Java 21.
+
+A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`, so it
+can't reach outside the folder. Any other name (for example `ConnectionStrings:Admin`), a missing
+or empty file and a missing folder all return 0, so the cache can sit in a
+`ProtectedCacheCollectionImpl` beside other sources - before any secret-store cache, since a
+collection asks its sources in order and a source that throws fails the lookup. A missing secret
+isn't remembered, so a file added later is found. Names match exactly. A file over 64 KB throws
+`InvalidSecretDataException`; any other read failure throws the `IOException` wrapped in an
+`UncheckedIOException`. A file is read on the thread that looks it up, as key files are, so
+`decryptAsync` reads it there too and returns a completed future. A cached value isn't refreshed:
+a changed file is picked up by a new cache instance.
 
 ## Caching secrets from a secret store
 
