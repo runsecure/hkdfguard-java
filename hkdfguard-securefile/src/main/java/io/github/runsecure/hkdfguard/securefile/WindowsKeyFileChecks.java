@@ -10,8 +10,8 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * Decides whether a key file on Windows can be trusted, by the native library's
- * ({@code hkdfguard_open_file}'s) rules:
+ * Decides whether a file on Windows - a key file, or any file {@link TrustedFile} reads - can be
+ * trusted, by the native library's ({@code hkdfguard_open_file}'s) rules:
  * <ul>
  * <li>The path names a file on a local fixed drive. UNC paths, device paths ({@code \\?\},
  * {@code \\.\}) and network drives are refused before anything is opened, so no server named in a
@@ -53,7 +53,7 @@ final class WindowsKeyFileChecks {
 
             if (NEVER_TRUSTED.contains(sid))
                 throw new IllegalArgumentException("KeyFileTrust.windowsPrincipals holds " + WindowsAccessRules.describePrincipal(sid, WindowsSecurity::accountName)
-                        + ", which every account (or every signed-in one) is in; trusting it would trust anyone to replace a key file.");
+                        + ", which every account (or every signed-in one) is in; trusting it would trust anyone to replace a trusted file.");
             trusted.add(sid);
         }
 
@@ -69,10 +69,10 @@ final class WindowsKeyFileChecks {
      */
     static void verifyPathForm(String fullPath, DriveType driveType) throws AccessDeniedException {
         if (fullPath.startsWith("\\\\") || fullPath.startsWith("//"))
-            throw untrusted(fullPath, "it is a UNC or device path; key files are only read from a local drive");
+            throw untrusted(fullPath, "it is a UNC or device path; trusted files are only read from a local drive");
 
         if (driveType != DriveType.FIXED)
-            throw untrusted(fullPath, "it is on a " + driveType + " drive; key files are only read from a local fixed drive");
+            throw untrusted(fullPath, "it is on a " + driveType + " drive; trusted files are only read from a local fixed drive");
     }
 
     /**
@@ -132,7 +132,7 @@ final class WindowsKeyFileChecks {
     }
 
     private static AccessDeniedException untrusted(String path, String why) {
-        return new AccessDeniedException(path, null, "Key file '" + path + "' is not trusted: " + why
-                + ". Keep key files in a folder of their own that only administrators (or a trusted deployer, see KeyFileTrust) can modify, with inherited permissions removed.");
+        return new AccessDeniedException(path, null, "'" + path + "' is not trusted: " + why
+                + ". Keep it in a folder of its own that only administrators (or a trusted deployer, see KeyFileTrust) can modify, with inherited permissions removed.");
     }
 }

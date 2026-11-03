@@ -175,10 +175,10 @@ final class WindowsNative {
             return new OpenFile(handle);
 
         throw switch (error) {
-            case ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND -> new NoSuchFileException(path, null, "Key file '" + path + "' was not found.");
-            case ERROR_ACCESS_DENIED -> new AccessDeniedException(path, null, "This account may not read key file '" + path + "'.");
-            case ERROR_SHARING_VIOLATION -> new IOException("Key file '" + path + "' is open for writing by another process.");
-            default -> new IOException("Could not open key file '" + path + "' (error " + error + ").");
+            case ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND -> new NoSuchFileException(path, null, "'" + path + "' was not found.");
+            case ERROR_ACCESS_DENIED -> new AccessDeniedException(path, null, "This account may not read '" + path + "'.");
+            case ERROR_SHARING_VIOLATION -> new IOException("'" + path + "' is open for writing by another process.");
+            default -> new IOException("Could not open '" + path + "' (error " + error + ").");
         };
     }
 
@@ -213,7 +213,7 @@ final class WindowsNative {
                 }
 
                 if (length == 0)
-                    throw new IOException("Could not read the opened key file's final path (error " + error + ").");
+                    throw new IOException("Could not read the opened file's final path (error " + error + ").");
                 if (path != null)
                     return path;
 
@@ -260,7 +260,7 @@ final class WindowsNative {
             }
 
             if (ok == 0)
-                throw new IOException("Could not read the key file (error " + error + ").");
+                throw new IOException("Could not read the file (error " + error + ").");
             return read;
         }
 

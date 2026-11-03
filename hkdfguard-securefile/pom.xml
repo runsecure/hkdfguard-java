@@ -15,7 +15,8 @@
   <description>
     Reads a key file only from where no untrusted account could have written or replaced it - the
     native library's hkdfguard_open_file rules, checked in Java - for key wrappers with no native
-    library to read through, such as a network KMS's.
+    library to read through, such as a network KMS's; and, to the same rules, any other file whose
+    contents must come from a trusted location, such as a secret's.
   </description>
 
   <!--

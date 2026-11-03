@@ -72,6 +72,8 @@
     <module>hkdfguard-cache-azurekeyvault</module>
     <module>hkdfguard-cache-googlesecretmanager</module>
     <module>hkdfguard-cache-hashicorpvault</module>
+    <!-- Java 25: reads its files through hkdfguard-securefile. -->
+    <module>hkdfguard-cache-filepersecret</module>
     <module>hkdfguard-options</module>
     <module>hkdfguard-spring-boot-starter</module>
   </modules>
@@ -83,7 +85,8 @@
          hkdfguard-platform, hkdfguard-keywrapping-v1 and hkdfguard-securefile (with
          hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
          hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, which read key
-         files through it) need Java 25 and override
+         files through it, and hkdfguard-cache-filepersecret, which reads secret files through it)
+         need Java 25 and override
          this: their native calls use the Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
          enforcer's requireJavaVersion) because those modules are part of every build. -->
     <maven.compiler.release>21</maven.compiler.release>
@@ -207,6 +210,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cache-hashicorpvault</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache-filepersecret</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

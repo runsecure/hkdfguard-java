@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-cache-filepersecret</artifactId>
+  <name>HkdfGuard Cache File Per Secret</name>
+  <description>
+    A protected read-only cache over a local folder of one already-encrypted file per secret: each
+    file is read on its first lookup, only from where no untrusted account could have written or
+    replaced it, authenticated against its name, and cached still encrypted.
+  </description>
+
+  <!--
+    A module of its own, not part of hkdfguard-cache (where .NET keeps FilePerSecretCache): it reads
+    every file through hkdfguard-securefile's TrustedFile, which needs Java 25 (FFM), and
+    hkdfguard-cache targets Java 21. Applications grant hkdfguard-securefile and hkdfguard-platform
+    native access, as for a key wrapper that reads key files through it.
+  -->
+
+  <properties>
+    <!-- Java 25, like hkdfguard-securefile, which reads the files through the FFM API. The
+         securefile and platform modules call the operating system, so they need native access in
+         this module's tests too. -->
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
+  </properties>
+
+  <dependencies>
+    <!-- ProtectedReadOnlyCache, and InvalidSecretDataException for a file that is too large. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-securefile</artifactId>
+    </dependency>
+
+    <!-- The tests write values with a real key ring of AES-256-GCM keys, in the default format. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory and PrivateTempFiles: folders the trust checks accept. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
