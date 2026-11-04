@@ -7,5 +7,9 @@ module io.github.runsecure.hkdfguard.remote {
     exports io.github.runsecure.hkdfguard.remote to
             io.github.runsecure.hkdfguard.cache,
             io.github.runsecure.hkdfguard.integration.hashicorpvault,
-            io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;
+            io.github.runsecure.hkdfguard.keywrapping.hashicorpvault,
+            io.github.runsecure.hkdfguard.pipeline,
+            io.github.runsecure.hkdfguard.pipeline.hashicorpvault,
+            io.github.runsecure.hkdfguard.pipeline.awssecretsmanager,
+            io.github.runsecure.hkdfguard.pipeline.azurekeyvault;
 }

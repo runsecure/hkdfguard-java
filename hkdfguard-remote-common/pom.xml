@@ -21,15 +21,17 @@
     One copy of code that hkdfguard-cache, hkdfguard-integration-hashicorpvault and
     hkdfguard-keywrapping-hashicorpvault all need but can't take from one another: a key wrapper sits
     below the key ring and caches, so it can't depend on hkdfguard-cache. A fix to the JSON reader
-    lands once for all three. The Vault rules this module once held as well are VaultHttp, in
+    lands once for all three - and for the pipeline writers (hkdfguard-pipeline and the HashiCorp
+    Vault, AWS Secrets Manager and Azure Key Vault writers), which read secrets out of response
+    bodies with it too. The Vault rules this module once held as well are VaultHttp, in
     hkdfguard-integration-hashicorpvault, which the Vault cache and key wrapper now share with the
     Vault client.
 
-    The module exports its package only to those three modules.
+    The module exports its package only to those modules.
   -->
 
   <properties>
-    <!-- Internal, exported only to three modules of this build: its public members are commented
+    <!-- Internal, exported only to the modules of this build that use it: its public members are commented
          like the package-private code they came from, not tag by tag like an application API.
          Every other doclint check stays on. -->
     <doclint>all,-missing</doclint>

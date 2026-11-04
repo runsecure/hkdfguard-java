@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-pipeline-googlesecretmanager</artifactId>
+  <name>HkdfGuard Pipeline Google Secret Manager</name>
+  <description>
+    A provisioning pipeline's writer over one Google Cloud project's Secret Manager: pulls each
+    secret's latest version, checked against its CRC32C, encrypts it at once with a pipeline data
+    protector, zeroing the payload and gRPC's receive buffer, and writes one encrypted file per
+    secret, with no key ring.
+  </description>
+
+  <properties>
+    <!-- Java 25, like hkdfguard-pipeline. -->
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-pipeline</artifactId>
+    </dependency>
+
+    <!-- The Google client has one transport built in (gRPC over a shaded copy of Netty), so nothing
+         is excluded, as with hkdfguard-cache-googlesecretmanager. -->
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-secretmanager</artifactId>
+    </dependency>
+
+    <!-- The tests run a fake Secret Manager as an in-process gRPC server and call it through a real
+         SecretManagerServiceClient, with no network. -->
+    <dependency>
+      <groupId>com.google.api.grpc</groupId>
+      <artifactId>grpc-google-cloud-secretmanager-v1</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-inprocess</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- The tests protect values with a real AES-256-GCM pipeline protector, in the default format. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- No module descriptor: google-cloud-secretmanager, gax and the Secret Manager protos name no
+           module, as with hkdfguard-cache-googlesecretmanager. The jar names its module, so an
+           application on the module path can still require it as an automatic module. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>io.github.runsecure.hkdfguard.pipeline.googlesecretmanager</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+      <!-- The contract every pipeline writer meets, compiled into this module's tests from
+           hkdfguard-pipeline's sources: one copy of the source, never shipped. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-contract-test-sources</id>
+            <phase>generate-test-sources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/../hkdfguard-pipeline/src/contract-test/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

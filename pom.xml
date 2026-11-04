@@ -74,6 +74,13 @@
     <module>hkdfguard-cache-hashicorpvault</module>
     <!-- Java 25: reads its files through hkdfguard-securefile. -->
     <module>hkdfguard-cache-filepersecret</module>
+    <!-- Java 25, for FilePerSecretCacheImpl's file-name rule: the provisioning pipeline's writers,
+         which pull secrets from a store and write the files hkdfguard-cache-filepersecret reads. -->
+    <module>hkdfguard-pipeline</module>
+    <module>hkdfguard-pipeline-awssecretsmanager</module>
+    <module>hkdfguard-pipeline-azurekeyvault</module>
+    <module>hkdfguard-pipeline-googlesecretmanager</module>
+    <module>hkdfguard-pipeline-hashicorpvault</module>
     <module>hkdfguard-options</module>
     <!-- ${...} templates resolved from the caches: a port of HkdfGuard.Integration.ConfigurationResolver,
          with the parts of ConfigurationResolver it uses. -->
@@ -88,7 +95,8 @@
          hkdfguard-platform, hkdfguard-keywrapping-v1 and hkdfguard-securefile (with
          hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
          hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, which read key
-         files through it, and hkdfguard-cache-filepersecret, which reads secret files through it)
+         files through it, hkdfguard-cache-filepersecret, which reads secret files through it, and
+         hkdfguard-pipeline and its four store writers, which follow that module's file-name rule)
          need Java 25 and override
          this: their native calls use the Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
          enforcer's requireJavaVersion) because those modules are part of every build. -->
@@ -102,13 +110,16 @@
     <opentelemetry.version>1.67.0</opentelemetry.version>
     <slf4j.version>2.0.20</slf4j.version>
     <junit.version>6.1.3</junit.version>
-    <!-- hkdfguard-keywrapping-awskms and hkdfguard-cache-awssecretsmanager. One BOM version pins
+    <!-- hkdfguard-keywrapping-awskms, hkdfguard-cache-awssecretsmanager and
+         hkdfguard-pipeline-awssecretsmanager. One BOM version pins
          every AWS SDK module together. -->
     <awssdk.version>2.57.7</awssdk.version>
-    <!-- hkdfguard-keywrapping-azurekeyvault and hkdfguard-cache-azurekeyvault. The Azure SDK BOM
+    <!-- hkdfguard-keywrapping-azurekeyvault, hkdfguard-cache-azurekeyvault and
+         hkdfguard-pipeline-azurekeyvault. The Azure SDK BOM
          pins every com.azure library together. -->
     <azuresdk.version>1.3.9</azuresdk.version>
-    <!-- hkdfguard-keywrapping-googlekms and hkdfguard-cache-googlesecretmanager. Google's libraries
+    <!-- hkdfguard-keywrapping-googlekms, hkdfguard-cache-googlesecretmanager and
+         hkdfguard-pipeline-googlesecretmanager. Google's libraries
          BOM pins the Cloud KMS and Secret Manager clients with the gax, gRPC, Protobuf and auth
          versions they were released and tested with. -->
     <googlecloud.version>26.91.0</googlecloud.version>
@@ -218,6 +229,31 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cache-filepersecret</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-pipeline</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-pipeline-awssecretsmanager</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-pipeline-azurekeyvault</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-pipeline-googlesecretmanager</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-pipeline-hashicorpvault</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

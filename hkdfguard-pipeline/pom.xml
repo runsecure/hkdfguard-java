@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-pipeline</artifactId>
+  <name>HkdfGuard Pipeline</name>
+  <description>
+    The shared base of the secret stores' pipeline writers: pulls a fixed list of secrets, encrypts
+    each at once with a pipeline data protector bound to its file name, keeps only the ciphertext,
+    and writes one file per secret - the folder layout FilePerSecretCacheImpl reads at runtime.
+  </description>
+
+  <!--
+    The writers never depend on the runtime caches, only on FilePerSecretCacheImpl's file-name rule
+    (isValidName, MAX_NAME_LENGTH), which is what the files they write must satisfy - as .NET's
+    HkdfGuard.Pipeline depends on HkdfGuard.Cache for FilePerSecretCache's. That rule lives in
+    hkdfguard-cache-filepersecret, which needs Java 25, so this module and the four store writers do
+    too. Nothing here calls hkdfguard-securefile, so no native access is needed to use them.
+
+    The contract every store's writer meets (SecretPipelineWriterContractTest) is in
+    src/contract-test/java, compiled into this module's tests and into each store writer's (see the
+    build-helper-maven-plugin execution there): one copy of the source, never shipped.
+  -->
+
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <!-- FilePerSecretCacheImpl.isValidName, and InvalidSecretDataException through hkdfguard-cache. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache-filepersecret</artifactId>
+    </dependency>
+    <!-- JsonReader: a secret's keys are read out of its JSON without making them Strings. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-remote-common</artifactId>
+    </dependency>
+
+    <!-- The tests protect values with a real AES-256-GCM pipeline protector, in the default format. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-contract-test-sources</id>
+            <phase>generate-test-sources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/src/contract-test/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
