@@ -38,6 +38,7 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-cache-hashicorpvault`      | HkdfGuard.Cache.HashiCorpVault       | `HashiCorpVaultSecretCacheImpl` over one HashiCorp Vault KV secrets engine, through `java.net.http`, with a `VaultTokenProvider` |
 | `hkdfguard-cache-filepersecret`       | HkdfGuard.Cache (`FilePerSecretCache`) | `FilePerSecretCacheImpl` over a local folder of one already-encrypted file per secret, each read through `TrustedFile` on its first lookup and cached still encrypted, as the file holds it; each value bound to its file name through `ProtectedConfigurationPurpose`, and names that can't be a file name inside the folder reported missing. A module of its own because `TrustedFile` needs Java 25 and `hkdfguard-cache` targets 21 (Java 25+) |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
+| `hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver (and the parts of ConfigurationResolver it uses) | `ProtectedCacheValueProvider`: a value provider over any `ProtectedReadOnlyCache`, so `${name}` items in a template resolve from the protected caches, each value decrypted into a scratch array copied into the resolver's buffer and zeroed, never a string; `ResolvingProtectedCacheCollection`: a cache collection whose values may be templates, resolved on first lookup, then cached encrypted until invalidated. Ported alongside them: `ConfigurationItemResolver`, `ConfigurationItemReaderImpl`, `DefaultToken`, `ValueProviderBase`, `CompositeValueProvider`, `ConfigurationResolverBuilderImpl` (see [docs/how-to/resolve-configuration-templates.md](docs/how-to/resolve-configuration-templates.md)) |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
 The build has two more modules, never published. `tools/hkdfguard-integration-hashicorpvault-generator`
@@ -734,6 +735,22 @@ isn't remembered, so a file added later is found. Names match exactly. A file ov
 `UncheckedIOException`. A file is read on the thread that looks it up, as key files are, so
 `decryptAsync` reads it there too and returns a completed future. A cached value isn't refreshed:
 a changed file is picked up by a new cache instance.
+
+## Templates with items
+
+`hkdfguard-integration-configurationresolver` fills the `${name}` items in a template, such as a
+connection string, from any protected cache, writing each value straight into your `char[]` or
+`byte[]`; no secret becomes a `String`. `ResolvingProtectedCacheCollection` can also hold the
+templates themselves. It resolves each one on its first lookup and caches the result encrypted, so
+later lookups decrypt straight into your buffer:
+
+```java
+var secrets = new ResolvingProtectedCacheCollection(ring)
+        .add(local)   // holds "Password=${app-config#password}"
+        .add(vault);  // a HashiCorpVaultSecretCacheImpl
+```
+
+See [docs/how-to/resolve-configuration-templates.md](docs/how-to/resolve-configuration-templates.md).
 
 ## Caching secrets from a secret store
 

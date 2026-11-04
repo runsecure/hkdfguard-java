@@ -75,6 +75,9 @@
     <!-- Java 25: reads its files through hkdfguard-securefile. -->
     <module>hkdfguard-cache-filepersecret</module>
     <module>hkdfguard-options</module>
+    <!-- ${...} templates resolved from the caches: a port of HkdfGuard.Integration.ConfigurationResolver,
+         with the parts of ConfigurationResolver it uses. -->
+    <module>hkdfguard-integration-configurationresolver</module>
     <module>hkdfguard-spring-boot-starter</module>
   </modules>
 
@@ -220,6 +223,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-options</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-integration-configurationresolver</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
