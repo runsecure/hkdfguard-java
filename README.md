@@ -43,6 +43,8 @@ runs the Java 21 modules' tests on a Java 21 runtime.
 | `hkdfguard-pipeline-googlesecretmanager` | HkdfGuard.Pipeline.GoogleSecretManager | `GoogleSecretManagerSecretPipelineWriterImpl`: `id` for the latest version's whole payload or `id#key` for a member of a JSON object payload, read with AccessSecretVersion; each payload checked against its CRC32C and the secret it names, encrypted straight from the parsed bytes and zeroed, as is gRPC's receive buffer (Java 25+) |
 | `hkdfguard-pipeline-hashicorpvault`   | HkdfGuard.Pipeline.HashiCorpVault    | `HashiCorpVaultSecretPipelineWriterImpl` over one HashiCorp Vault KV engine, version 1 or 2, through `java.net.http`: `path` or `path#key`, a name without a key reading `HashiCorpVaultPipelineOptions.defaultKey`; the token comes from a `VaultTokenSource`, in plaintext zeroed once sent, so no key ring is needed (Java 25+) |
 | `hkdfguard-options`                   | HkdfGuard.Options                    | `HkdfGuardOptions`, `KeyFileOptions`, `OptionsValidationException` |
+| `hkdfguard-options-certificate`       | HkdfGuard.Options.Certificate        | `CertificateOptions` (with `CertificateStoreOptions`, `LinuxOpenSslProviderOptions`, `CertificateFileOptions`), `CertificateOptionsValidator`, `CertificateOptionsLoader` (`load`/`loadAsync`), `LoadedCertificate`, `CertificateOptionsValidationException`: where one certificate and its private key are opened from - the Windows store or the macOS keychain through the JDK's `KeyStore`, chosen by subject, or a password-protected PKCS#12 or PEM file whose password comes from a `ProtectedReadOnlyCache` (see [Loading a certificate](#loading-a-certificate)) |
+| `hkdfguard-systemdcredentials`        | HkdfGuard.SystemdCredentials         | Linux only at run time. `SystemdCredentials` (`encryptAsync`/`decryptAsync` through `systemd-creds`, `readLoadedCredential`), `SystemdCredential`, `SystemdCredentialKey`, `SystemdCredentialsOptions`, and `SystemdCredentialSource`, a `ProtectedReadOnlyCache` over loaded credentials and encrypted credential files (see [Reading systemd credentials](#reading-systemd-credentials)) |
 | `hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver (and the parts of ConfigurationResolver it uses) | `ProtectedCacheValueProvider`: a value provider over any `ProtectedReadOnlyCache`, so `${name}` items in a template resolve from the protected caches, each value decrypted into a scratch array copied into the resolver's buffer and zeroed, never a string; `ResolvingProtectedCacheCollection`: a cache collection whose values may be templates, resolved on first lookup, then cached encrypted until invalidated. Ported alongside them: `ConfigurationItemResolver`, `ConfigurationItemReaderImpl`, `DefaultToken`, `ValueProviderBase`, `CompositeValueProvider`, `ConfigurationResolverBuilderImpl` (see [docs/how-to/resolve-configuration-templates.md](docs/how-to/resolve-configuration-templates.md)) |
 | `hkdfguard-spring-boot-starter`       | HkdfGuard.DependencyInjection, HkdfGuard.EncryptedConfiguration | Spring Boot 4 auto-configuration of the key ring, `ProtectedEnvironment`, and an Actuator health indicator |
 
@@ -108,6 +110,9 @@ int length = protector.decrypt(encrypted, result);
   with the `CRITICAL` marker; the event id travels as the `hkdfguard.event_id` key-value. Event 11,
   `BackgroundTaskTerminated`, is Java's own, so the key-file age events the other ports number 11
   (`KeyFileAgeWarning`) and 12 (`KeyFileExpired`) are 12 and 13 here.
+- **Certificates**: Java has no X509Certificate2, so `CertificateOptionsLoader` returns a
+  `LoadedCertificate`. The JDK's `KeyStore` opens fewer stores than .NET's X509Store, and no
+  OpenSSL provider key: see [Loading a certificate](#loading-a-certificate) for what is refused.
 - **Telemetry** goes to `GlobalOpenTelemetry` (read without latching a no-op), or to the instance
   given to `HkdfGuardTelemetry.setOpenTelemetry`.
 
@@ -163,6 +168,89 @@ var ring = options.applyTo(new KeyRingBuilder())
         .buildAsync()
         .join();
 ```
+
+## Loading a certificate
+
+`hkdfguard-options-certificate` describes one certificate and its private key as configuration, and
+opens it. `CertificateOptions` sets exactly one source - `windows` or `macOS` (a store location,
+store name and the certificate's subject), `linux` (an OpenSSL provider certificate), or `file` (a
+PKCS#12 or PEM file) - and `requirePrivateKey` (true by default). It is a JavaBean, and
+`CertificateOptions.fromMap` reads the same `appsettings.json` section .NET binds, matching keys and
+enum values ignoring case, `_` and `-`. A file's password is never in the options:
+`passwordSecretName` names the secret a `ProtectedReadOnlyCache` holds it under - a
+`FilePerSecretCacheImpl`, a secret-store cache, `SystemdCredentialSource` - and an unprotected key
+is refused unless `allowUnprotectedPrivateKey` is set, for development:
+
+```java
+var options = CertificateOptions.fromMap(settings); // {"File": {"Path": "/etc/myapp/tls.pfx", "PasswordSecretName": "tls-pfx-password"}}
+try (var certificate = new CertificateOptionsLoader(secrets).load(options, "tls")) {
+    SSLContext context = certificate.createSslContext(); // or certificate.createKeyManager()
+    ...
+}
+```
+
+`load` validates the options first (`CertificateOptionsValidationException` lists every failure),
+then opens the certificate. A certificate that isn't valid now, or has no private key when one is
+required, is refused; the result holds a private key only when one is required. `loadAsync` reads
+the password with the cache's asynchronous members and returns a `CompletableFuture`; invalid
+options throw from the call. The password is decrypted into a `char[]` sized by
+`findMaxDecryptedLength`, copied into an exactly sized array for the JDK, and both are zeroed as
+soon as the key is read, however the load ends. A `java.time.Clock` given to the loader judges
+"valid now".
+
+**From a store**, the certificates whose subject is the one named are found, and the one valid now -
+with its private key, when one is required - that expires last is returned, so a renewal under the
+same subject needs no configuration change. Subjects are compared attribute by attribute, each value
+decoded and compared ignoring case: never as a substring, so `CN=api` doesn't match
+`CN=api.example.com`; an RDN's attributes in any order, but the RDNs in order; and
+`DC=Contoso, DC=com` matches `dc=contoso, dc=COM`, which `X500Principal`'s canonical form wouldn't
+(it leaves DC, emailAddress and serialNumber as hex). Whitespace inside a value isn't folded, as in
+.NET. Only the chosen certificate's key is asked for, and only when it is required. The loader
+never writes to the store, though the JDK opens it with whatever access the account has. Matching by
+subject trusts whoever can add a certificate to the store to choose it: keep it to a store only
+administrators can write, such as LocalMachine's My.
+
+| Configured | Windows (SunMSCAPI, JDK 19+) | macOS (Apple provider) |
+|---|---|---|
+| CurrentUser My | `Windows-MY-CURRENTUSER` | `KeychainStore`: the identities and certificates of the user's keychain search list - the login keychain, the System keychain and any other on it; a certificate without a key only when user or admin trust settings trust it, or it is self-signed with none |
+| LocalMachine My (the default) | `Windows-MY-LOCALMACHINE` | Refused: no JDK KeyStore opens the System keychain alone, and `KeychainStore` would also search the user's own, writable, login keychain |
+| CurrentUser Root | `Windows-ROOT-CURRENTUSER` | Refused: no KeyStore reads the user's trust settings alone |
+| LocalMachine Root | `Windows-ROOT-LOCALMACHINE` | `KeychainStore-ROOT`: Apple's `/System/Library/Keychains/SystemRootCertificates.keychain`, less any root distrusted in the user, admin or system trust settings; roots an administrator added to the System keychain aren't in it |
+| Any other store name (CertificateAuthority, TrustedPeople...) | Refused: SunMSCAPI opens only My and Root | Refused |
+
+On Windows the private key stays in Windows: the loader holds SunMSCAPI's CNG or CryptoAPI handle,
+whose `getEncoded()` is null, and every signature - a TLS handshake's included - is made by Windows.
+On macOS a private key is refused (`requirePrivateKey` must be false): `KeychainStore.getKey` hands
+a key over only by exporting it from the keychain (`SecKeychainItemExport` to PKCS#12) and
+re-creating it as a software key in the process, which would defeat keeping it in the keychain. A
+macOS keychain source loads the certificate alone; use a `file` source for a key on macOS.
+
+**From Linux**, .NET opens the key through an OpenSSL 3 provider (`tpm2`, `pkcs11`) by its URI. The
+JDK has no counterpart - SunPKCS11 is configured with a PKCS#11 library and slot, not a provider name
+and key URI - so `LinuxOpenSslProviderOptions` is kept for configuration parity, and the validator
+refuses it unless `requirePrivateKey` is false, when the certificate file alone is loaded.
+
+**From a file**, a PKCS#12 file is opened through `KeyStore` "PKCS12" (with an empty password when
+none is named), its key entry chosen; it needs its password even for the certificate alone. A PEM
+certificate is read through `CertificateFactory` (every certificate in the file becomes the chain),
+and its key from `keyPath`: an "ENCRYPTED PRIVATE KEY" decrypted through `EncryptedPrivateKeyInfo`
+and the JDK's PBE ciphers - PBES2 (PBKDF2 with HMAC-SHA1/256/512, then AES-CBC), what OpenSSL 3 and
+.NET write, or a PKCS#12 PBE scheme - or, with `allowUnprotectedPrivateKey` and no password, a plain
+"PRIVATE KEY". Both must be PKCS#8: convert a PKCS#1 ("RSA PRIVATE KEY") or SEC1 key with
+`openssl pkcs8 -topk8`. The key must be the certificate's. The key file is read as bytes, never a
+String, and the DER and the PBE key are zeroed; the JDK's own copies, inside the key object, can't
+be. .NET re-imports a PEM key on Windows so SChannel can present it as a TLS server's; JSSE signs
+with any JDK key, so the Java loader doesn't. No third-party library is needed.
+
+`LoadedCertificate` holds the leaf `X509Certificate`, its chain (leaf first), and the `PrivateKey`
+(null when not required). `createKeyManager()` presents exactly that certificate and key, and
+`createSslContext(trustManagers...)` builds a TLS `SSLContext` around it; neither copies the key into
+a `KeyStore`, so a store's key handle works as well as a software key. `close()` destroys the key
+where it can be destroyed (most JDK keys can't) and drops it; the key manager then presents nothing.
+
+`WindowsCertificateStoreTest` opens the real CurrentUser My store on Windows; its round trip, which
+adds a throwaway self-signed certificate and key through `KeyStore`, loads it, signs with it, makes
+a TLS handshake with it and removes it, runs only when `HKDFGUARD_TEST_WINDOWS_CERTIFICATE_STORE` is 1.
 
 ## Spring Boot
 
@@ -742,6 +830,43 @@ isn't remembered, so a file added later is found. Names match exactly. A file ov
 `UncheckedIOException`. A file is read on the thread that looks it up, as key files are, so
 `decryptAsync` reads it there too and returns a completed future. A cached value isn't refreshed:
 a changed file is picked up by a new cache instance.
+
+## Reading systemd credentials
+
+`hkdfguard-systemdcredentials` (Linux only at run time) reads credentials that `systemd-creds` binds
+to this machine's host key, its TPM, or both (`SystemdCredentialKey`), and to their name.
+`SystemdCredentials` runs `/usr/bin/systemd-creds` (an absolute path, `SystemdCredentialsOptions`)
+through `ProcessBuilder` with an argument list, never a shell: `encryptAsync` writes the plaintext
+to its stdin and has it write the credential file; `decryptAsync` reads the value from its stdout
+into a `SystemdCredential`, which zeroes it on `close()`. Each run is on a virtual thread; a run that
+outlasts its timeout (30 seconds by default) fails with `TimeoutException`, and cancelling the
+future kills it - with every process it started, in both cases. `readLoadedCredential` reads a
+credential systemd decrypted for the service (`LoadCredentialEncrypted=`) from its in-memory
+`$CREDENTIALS_DIRECTORY`. Names are 1-255 ASCII letters, digits, `.`, `_` and `-`, not starting with
+`-`; values are at most 1 MiB, systemd's own limit (`InvalidSecretDataException` past it).
+
+```java
+var credentials = new SystemdCredentials();
+credentials.encryptAsync("tls-password", password, "/etc/credstore.encrypted/tls-password.cred").join(); // at deploy, as root
+
+var secrets = new SystemdCredentialSource(credentials, Map.of("tls-password", "/etc/credstore.encrypted/tls-password.cred"), null);
+var certificate = new CertificateOptionsLoader(secrets).load(options);
+```
+
+`SystemdCredentialSource` is a `ProtectedReadOnlyCache`: a name is read first from the loaded
+credentials, then from the encrypted files it was given, decrypting on every lookup and zeroing the
+value once copied out. A name it doesn't have, or that isn't a credential name, returns 0; names
+match exactly. Decrypting a system credential directly needs root (the host key) or TPM access; an
+unprivileged service uses `LoadCredentialEncrypted=`, or `--user` credentials (`userScope`,
+systemd 256+).
+
+The JVM's process pipes are buffered streams: stdout is read in reads large enough to bypass its
+8 KiB buffer, straight into the credential's array, and every smaller array it outgrows is zeroed;
+but a stdin write shorter than 8 KiB - a password - passes through the JDK's own buffer, which Java
+can't zero. A loaded credential is read through a direct buffer of its own, zeroed once copied. The
+unit tests run against a fake `systemd-creds`, and the runner itself against child JVMs, on any OS;
+`SystemdCredentialsIntegrationTest` runs the real one on Linux when `HKDFGUARD_TEST_SYSTEMD_CREDS`
+is 1.
 
 ## Writing secret files in a provisioning pipeline
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-options-certificate</artifactId>
+  <name>HkdfGuard Options Certificate</name>
+  <description>
+    Plain-data, validated description of where one certificate and its private key are opened from -
+    the Windows certificate store, the macOS keychain or a password-protected file - and a loader
+    that opens it, reading a file's password from a protected secret source.
+  </description>
+
+  <!--
+    Java 21, like hkdfguard-options: everything it opens goes through the JDK's own KeyStore,
+    CertificateFactory and PBE ciphers (SunMSCAPI on Windows, the Apple provider on macOS), so it
+    needs no native access and no third-party library. It doesn't depend on hkdfguard-options, as
+    .NET's HkdfGuard.Options.Certificate doesn't depend on HkdfGuard.Options: a certificate loader
+    has no use for the key ring builder that module applies options to.
+  -->
+
+  <dependencies>
+    <!-- ProtectedReadOnlyCache, the password source; ArrayUtility; CryptographicException. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+  </dependencies>
+</project>

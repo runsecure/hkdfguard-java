@@ -82,6 +82,11 @@
     <module>hkdfguard-pipeline-googlesecretmanager</module>
     <module>hkdfguard-pipeline-hashicorpvault</module>
     <module>hkdfguard-options</module>
+    <!-- Where one certificate and its key are opened from - the Windows store, the macOS keychain,
+         a password-protected file - through the JDK's own KeyStore, CertificateFactory and PBE. -->
+    <module>hkdfguard-options-certificate</module>
+    <!-- Linux credentials through systemd-creds, and a ProtectedReadOnlyCache over them. -->
+    <module>hkdfguard-systemdcredentials</module>
     <!-- ${...} templates resolved from the caches: a port of HkdfGuard.Integration.ConfigurationResolver,
          with the parts of ConfigurationResolver it uses. -->
     <module>hkdfguard-integration-configurationresolver</module>
@@ -259,6 +264,16 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-options</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-options-certificate</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-systemdcredentials</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
