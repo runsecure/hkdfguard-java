@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
@@ -31,13 +32,18 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /** The loader against real certificates and key files the tests make, and in-memory stores standing in for the operating system's. */
 class CertificateOptionsLoaderTest {
     private static final String SUBJECT = "CN=api.example.com, O=Contoso";
-    private static final String PASSWORD = "pässwörd-123";
+    // ASCII: Java 21's PBE key factories, which PKCS12 KeyStore and encrypted PEM keys go through,
+    // refuse any other password. aNonAsciiPassword_OpensAPfxAndAPemKey_WhereTheJdkAllowsIt covers the rest.
+    private static final String PASSWORD = "passw0rd-123";
+    private static final String NON_ASCII_PASSWORD = "pässwörd-123";
     private static final Instant NOW = Instant.parse("2026-11-03T12:00:00Z");
 
     @TempDir
@@ -377,6 +383,33 @@ class CertificateOptionsLoaderTest {
                 assertSigns(loaded);
                 assertSigns(loadedAsync);
             }
+        }
+    }
+
+    @Test
+    void aNonAsciiPassword_OpensAPfxAndAPemKey_WhereTheJdkAllowsIt() throws Exception {
+        assumeTrue(jdkAcceptsNonAsciiPbePasswords(), "This JDK's PBE key factories take ASCII passwords only (Java 21 does).");
+        passwords.with("tls-password-utf8", NON_ASCII_PASSWORD);
+        var key = TestCertificates.ec();
+        var original = TestCertificates.selfSigned(key, SUBJECT, days(-10), days(300));
+        var pfxPath = write("tls.pfx", pkcs12(key, original, NON_ASCII_PASSWORD.toCharArray()));
+        var keyPem = TestCertificates.encryptedPbes2Pem(key.getPrivate(), NON_ASCII_PASSWORD.toCharArray(), "PBEWithHmacSHA256AndAES_256", 1000);
+        var pemOptions = pem(write("tls.crt", TestCertificates.certificatePem(original)), write("tls.key", keyPem), "tls-password-utf8", false);
+
+        for (var options : List.of(pfx(pfxPath, "tls-password-utf8", false, true), pemOptions)) {
+            try (var loaded = loader().load(options)) {
+                assertEquals(original, loaded.getCertificate());
+                assertSigns(loaded);
+            }
+        }
+    }
+
+    private static boolean jdkAcceptsNonAsciiPbePasswords() {
+        try {
+            SecretKeyFactory.getInstance("PBEWithHmacSHA256AndAES_256").generateSecret(new PBEKeySpec(NON_ASCII_PASSWORD.toCharArray()));
+            return true;
+        } catch (java.security.GeneralSecurityException e) {
+            return false;
         }
     }
 
