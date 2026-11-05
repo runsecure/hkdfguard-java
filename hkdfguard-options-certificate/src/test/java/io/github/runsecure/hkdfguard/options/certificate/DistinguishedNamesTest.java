@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 /** How a configured subject is compared to a certificate's: decoded, ignoring case, whole. */
 class DistinguishedNamesTest {
     private static boolean equal(String a, String b) {
-        return DistinguishedNames.equal(new X500Principal(a), new X500Principal(b));
+        return DistinguishedNames.sameName(new X500Principal(a), new X500Principal(b));
     }
 
     @ParameterizedTest
@@ -52,8 +52,8 @@ class DistinguishedNamesTest {
         var certificate = TestCertificates.selfSigned(TestCertificates.ec(), subject, Instant.now().minusSeconds(60), Instant.now().plusSeconds(60));
 
         // Reversed by X500Principal's string form: the last RDN in DER comes first.
-        assertTrue(DistinguishedNames.equal(certificate.getSubjectX500Principal(), new X500Principal("o=CONTOSO, cn=API.example.com")));
-        assertFalse(DistinguishedNames.equal(certificate.getSubjectX500Principal(), new X500Principal("CN=api.example.com, O=Contoso")));
+        assertTrue(DistinguishedNames.sameName(certificate.getSubjectX500Principal(), new X500Principal("o=CONTOSO, cn=API.example.com")));
+        assertFalse(DistinguishedNames.sameName(certificate.getSubjectX500Principal(), new X500Principal("CN=api.example.com, O=Contoso")));
     }
 
     @Test

@@ -55,7 +55,7 @@ public final class VaultClientGenerator {
     private static final Set<String> RESERVED_PARAMETER_NAMES = Set.of("options", "request", "requestPath", "query", "client");
 
     // vault-client-go's .openapi-generator-ignore: model_*2_request.go, ..., model_enterprise_stub*.
-    private static final Pattern EXCLUDED_SCHEMA = Pattern.compile("^EnterpriseStub|[234](Request|Response)$");
+    private static final Pattern EXCLUDED_SCHEMA = Pattern.compile("(?:^EnterpriseStub)|(?:[234](?:Request|Response)$)");
 
     private static final Pattern PLACEHOLDER = Pattern.compile("([^{]*)\\{([^}]*)\\}");
 

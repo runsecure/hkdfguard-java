@@ -529,6 +529,21 @@ public final class VaultTlsOptions {
     }
 
     private record PemBlock(String label, byte[] der) {
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof PemBlock that && Objects.equals(label, that.label) && Arrays.equals(der, that.der);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * Objects.hashCode(label) + Arrays.hashCode(der);
+        }
+
+        // The DER may be a private key: only its length is shown.
+        @Override
+        public String toString() {
+            return "PemBlock[label=" + label + ", length=" + der.length + "]";
+        }
     }
 
     private static List<PemBlock> pemBlocks(byte[] pem) {

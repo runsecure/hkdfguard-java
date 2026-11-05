@@ -60,7 +60,7 @@ public class ConfigurationItemReaderImpl implements ConfigurationItemReader {
         try {
             // A byte order mark takes precedence over the encoding given, as .NET's StreamReader does.
             var start = 0;
-            var charset = encoding == null ? StandardCharsets.UTF_8 : encoding;
+            var charset = Objects.requireNonNullElse(encoding, StandardCharsets.UTF_8);
             if (startsWith(bytes, 0x00, 0x00, 0xFE, 0xFF)) {
                 charset = UTF_32BE;
                 start = 4;

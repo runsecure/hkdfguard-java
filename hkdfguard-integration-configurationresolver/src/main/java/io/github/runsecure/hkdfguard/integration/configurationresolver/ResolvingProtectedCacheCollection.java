@@ -272,6 +272,25 @@ public final class ResolvingProtectedCacheCollection implements ProtectedReadOnl
 
     /** A value holding items, in an array zeroed once it is resolved, and the reader that read them. */
     private record Template(byte[] value, int length, ConfigurationItemReaderImpl reader) {
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Template that && length == that.length && reader == that.reader
+                    && Arrays.equals(value, 0, length, that.value, 0, that.length);
+        }
+
+        @Override
+        public int hashCode() {
+            var hash = 31 * System.identityHashCode(reader) + length;
+            for (var i = 0; i < length; i++)
+                hash = 31 * hash + value[i];
+            return hash;
+        }
+
+        // The value is a secret: only its length is shown.
+        @Override
+        public String toString() {
+            return "Template[length=" + length + "]";
+        }
     }
 
     private int decryptTraced(String name, BiFunction<ProtectedReadOnlyCache, String, Integer> read) {

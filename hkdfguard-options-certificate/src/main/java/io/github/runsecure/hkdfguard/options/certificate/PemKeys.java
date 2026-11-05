@@ -31,6 +31,7 @@ import javax.security.auth.DestroyFailedException;
  * and the key object itself - can't be.
  */
 final class PemKeys {
+    private static final SecureRandom RANDOM = new SecureRandom();
     private static final String ENCRYPTED = "ENCRYPTED PRIVATE KEY";
     private static final String PLAIN = "PRIVATE KEY";
     private static final String PBES2_OID = "1.2.840.113549.1.5.13";
@@ -95,7 +96,7 @@ final class PemKeys {
         };
         try {
             var challenge = new byte[32];
-            new SecureRandom().nextBytes(challenge);
+            RANDOM.nextBytes(challenge);
             var signer = Signature.getInstance(algorithm);
             signer.initSign(key);
             signer.update(challenge);

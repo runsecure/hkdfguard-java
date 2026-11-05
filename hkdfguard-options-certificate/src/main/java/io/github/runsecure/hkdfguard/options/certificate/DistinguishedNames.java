@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import javax.security.auth.x500.X500Principal;
 
 /**
@@ -37,10 +38,26 @@ final class DistinguishedNames {
                 return text.equalsIgnoreCase(other.text);
             return text == null && other.text == null && Arrays.equals(raw, other.raw);
         }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Attribute that && Arrays.equals(oid, that.oid)
+                    && Objects.equals(text, that.text) && Arrays.equals(raw, that.raw);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * (31 * Arrays.hashCode(oid) + Objects.hashCode(text)) + Arrays.hashCode(raw);
+        }
+
+        @Override
+        public String toString() {
+            return "Attribute[oid=" + Arrays.toString(oid) + ", text=" + text + ", raw=" + Arrays.toString(raw) + "]";
+        }
     }
 
     /** Whether {@code a} and {@code b} name the same subject. */
-    static boolean equal(X500Principal a, X500Principal b) {
+    static boolean sameName(X500Principal a, X500Principal b) {
         List<List<Attribute>> first;
         List<List<Attribute>> second;
         try {

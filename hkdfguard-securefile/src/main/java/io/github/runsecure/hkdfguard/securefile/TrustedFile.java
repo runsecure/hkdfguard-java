@@ -166,6 +166,7 @@ public final class TrustedFile {
     // Fills buffer as far as the stream goes; buffer is one byte longer than the longest file
     // accepted, so filling it means the file is too long.
     private static int readBounded(InputStream stream, byte[] buffer, String path) throws IOException {
+        Objects.requireNonNull(buffer, "buffer");
         var total = 0;
         int read;
         while (total < buffer.length && (read = stream.read(buffer, total, buffer.length - total)) > 0)

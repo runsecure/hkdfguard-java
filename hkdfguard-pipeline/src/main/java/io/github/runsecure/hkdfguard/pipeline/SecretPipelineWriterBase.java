@@ -84,8 +84,8 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
 
     // Each secret's encrypted, formatted value, by file name. File names are found ignoring case on
     // Windows and macOS, so two differing only in case are refused as one.
-    private final Map<String, String> protectedSecrets = newValues();
-    private final Map<String, String> protectedSecretsView = Collections.unmodifiableMap(protectedSecrets);
+    private final Map<String, String> writableProtectedSecrets = newValues();
+    private final Map<String, String> protectedSecrets = Collections.unmodifiableMap(writableProtectedSecrets);
     private boolean pulled;
 
     /**
@@ -126,7 +126,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
     /** {@inheritDoc} */
     @Override
     public final Map<String, String> getProtectedSecrets() {
-        return protectedSecretsView;
+        return protectedSecrets;
     }
 
     /**
@@ -154,7 +154,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
      */
     @Override
     public final CompletableFuture<Void> pullSecretsAsync() {
-        protectedSecrets.clear();
+        writableProtectedSecrets.clear();
         pulled = false;
 
         var pull = new Pull();
@@ -194,7 +194,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
 
         var folder = folderPath.toAbsolutePath().normalize();
         Files.createDirectories(folder);
-        for (var secret : protectedSecrets.entrySet())
+        for (var secret : writableProtectedSecrets.entrySet())
             Files.writeString(folder.resolve(secret.getKey()), secret.getValue(), StandardCharsets.UTF_8);
     }
 
@@ -417,9 +417,9 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
     }
 
     // The secrets by file name in ordinal order, as .NET orders them - not the case-insensitive
-    // order protectedSecrets keeps them in. TreeMap(Map), not TreeMap(SortedMap): natural order.
+    // order writableProtectedSecrets keeps them in. TreeMap(Map), not TreeMap(SortedMap): natural order.
     private Map<String, String> inFileNameOrder() {
-        return new TreeMap<>(protectedSecrets);
+        return new TreeMap<>(writableProtectedSecrets);
     }
 
     // Writes bytes - ciphertext only, so nothing to zero - to destination, and flushes it.
@@ -646,7 +646,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
             // Kept only by a pull nobody cancelled.
             if (result.isDone())
                 return;
-            protectedSecrets.putAll(found);
+            writableProtectedSecrets.putAll(found);
             pulled = true;
 
             if (missing.isEmpty())

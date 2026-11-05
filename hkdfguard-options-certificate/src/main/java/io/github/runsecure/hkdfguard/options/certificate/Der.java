@@ -30,6 +30,25 @@ final class Der {
             return children;
         }
 
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Value that && tag == that.tag
+                    && Arrays.equals(buffer, offset, offset + length, that.buffer, that.offset, that.offset + that.length);
+        }
+
+        @Override
+        public int hashCode() {
+            var hash = 31 + tag;
+            for (var i = offset; i < offset + length; i++)
+                hash = 31 * hash + buffer[i];
+            return hash;
+        }
+
+        @Override
+        public String toString() {
+            return "Value[tag=" + tag + ", length=" + length + "]";
+        }
+
         /** A copy of the contents. */
         byte[] contents() {
             return Arrays.copyOfRange(buffer, offset, offset + length);
