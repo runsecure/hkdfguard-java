@@ -11,10 +11,13 @@ import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardTelemetry;
 import io.github.runsecure.hkdfguard.diagnostics.SpanNames;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import java.io.OutputStream;
 import java.nio.CharBuffer;
 import java.util.Base64;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import org.bouncycastle.crypto.CryptoServicesRegistrar;
 
 /**
@@ -117,6 +120,47 @@ public final class AesGcmPipelineDataProtectorImpl implements PipelineDataProtec
 
             return CharBuffer.wrap(base64).asReadOnlyBuffer();
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Encoded straight from the key into an array of its own - never through a String or the
+     * {@link #getKeyAsBase64()} buffer - which is zeroed once the write ends, however it ends.
+     *
+     * @throws IllegalStateException this instance has been closed
+     */
+    @Override
+    public CompletableFuture<Void> writeDekAsync(OutputStream destination) {
+        Objects.requireNonNull(destination, "destination");
+
+        byte[] ascii;
+        synchronized (gate) {
+            session();
+            ascii = Base64.getEncoder().encode(key);
+        }
+
+        var written = new CompletableFuture<Void>();
+        var thread = Thread.ofVirtual().name("hkdfguard-write-dek").unstarted(() -> {
+            try {
+                // Cancelled before the thread started, when interrupting it did nothing.
+                if (written.isDone())
+                    return;
+                destination.write(ascii);
+                destination.flush();
+                written.complete(null);
+            } catch (Throwable e) {
+                written.completeExceptionally(e);
+            } finally {
+                ArrayUtility.zeroMemory(ascii);
+            }
+        });
+        written.whenComplete((ignored, error) -> {
+            if (error instanceof CancellationException)
+                thread.interrupt();
+        });
+        thread.start();
+        return written;
     }
 
     @Override

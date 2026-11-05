@@ -9,7 +9,7 @@ the token, the reader, the resolver and the value-provider contract.
 
 Any `ProtectedReadOnlyCache` can supply the values:
 
-- a `ProtectedCacheImpl` or `FilePerSecretCacheImpl`
+- a `ProtectedCacheImpl`, `FilePerSecretCacheImpl` or `JsonSecretsFileReadOnlyCacheImpl`
 - a `ProtectedEnvironment`, for `enc::` values in your Spring configuration
 - a remote secret store's cache: `HashiCorpVaultSecretCacheImpl`, `AwsSecretsManagerSecretCacheImpl`,
   `AzureKeyVaultSecretCacheImpl` or `GoogleSecretManagerSecretCacheImpl`

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-cache-jsonsecretsfile</artifactId>
+  <name>HkdfGuard Cache JSON Secrets File</name>
+  <description>
+    A protected read-only cache over one JSON file holding every secret, already encrypted, as a
+    provisioning pipeline's writeJsonSecrets writes it: the whole file is read on the first lookup,
+    only from where no untrusted account could have written or replaced it, every value
+    authenticated against its name, and the values kept still encrypted.
+  </description>
+
+  <!--
+    The port of HkdfGuard.Cache.JsonSecretsFile. It reads the file through hkdfguard-securefile's
+    TrustedFile, which needs Java 25 (FFM), and follows FilePerSecretCacheImpl's name rule, from
+    hkdfguard-cache-filepersecret (Java 25 too), as .NET's follows FilePerSecretCache's in
+    HkdfGuard.Cache. Applications grant hkdfguard-securefile and hkdfguard-platform native access,
+    as for hkdfguard-cache-filepersecret.
+  -->
+
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+    <hkdfguard.test.argLine>--enable-native-access=io.github.runsecure.hkdfguard.securefile,io.github.runsecure.hkdfguard.platform,ALL-UNNAMED</hkdfguard.test.argLine>
+  </properties>
+
+  <dependencies>
+    <!-- FilePerSecretCacheImpl.isValidName, the name rule; ProtectedReadOnlyCache, and
+         InvalidSecretDataException through hkdfguard-cache; TrustedFile through hkdfguard-securefile. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache-filepersecret</artifactId>
+    </dependency>
+    <!-- JsonReader: the strict JSON reader the secret stores' responses are read with. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-remote-common</artifactId>
+    </dependency>
+
+    <!-- The tests write values with a real key ring of AES-256-GCM keys, in the default format, and
+         with a pipeline writer, whose JSON file and tar archive they read back. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-pipeline</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- WindowsTempDirectory: folders the trust checks accept. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-test-support</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

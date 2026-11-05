@@ -74,6 +74,9 @@
     <module>hkdfguard-cache-hashicorpvault</module>
     <!-- Java 25: reads its files through hkdfguard-securefile. -->
     <module>hkdfguard-cache-filepersecret</module>
+    <!-- Java 25: reads its file through hkdfguard-securefile, and follows
+         hkdfguard-cache-filepersecret's name rule. -->
+    <module>hkdfguard-cache-jsonsecretsfile</module>
     <!-- Java 25, for FilePerSecretCacheImpl's file-name rule: the provisioning pipeline's writers,
          which pull secrets from a store and write the files hkdfguard-cache-filepersecret reads. -->
     <module>hkdfguard-pipeline</module>
@@ -100,8 +103,9 @@
          hkdfguard-platform, hkdfguard-keywrapping-v1 and hkdfguard-securefile (with
          hkdfguard-keywrapping-awskms, hkdfguard-keywrapping-azurekeyvault,
          hkdfguard-keywrapping-googlekms and hkdfguard-keywrapping-hashicorpvault, which read key
-         files through it, hkdfguard-cache-filepersecret, which reads secret files through it, and
-         hkdfguard-pipeline and its four store writers, which follow that module's file-name rule)
+         files through it, hkdfguard-cache-filepersecret and hkdfguard-cache-jsonsecretsfile, which
+         read secret files through it, and hkdfguard-pipeline and its four store writers, which
+         follow hkdfguard-cache-filepersecret's file-name rule)
          need Java 25 and override
          this: their native calls use the Foreign Function & Memory API, final only from Java 22. Building still needs JDK 25 (see the
          enforcer's requireJavaVersion) because those modules are part of every build. -->
@@ -234,6 +238,11 @@
       <dependency>
         <groupId>io.github.runsecure</groupId>
         <artifactId>hkdfguard-cache-filepersecret</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.runsecure</groupId>
+        <artifactId>hkdfguard-cache-jsonsecretsfile</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

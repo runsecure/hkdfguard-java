@@ -9,12 +9,14 @@ import io.github.runsecure.hkdfguard.cache.filepersecret.FilePerSecretCacheImpl;
 import io.github.runsecure.hkdfguard.remote.JsonReader;
 import io.github.runsecure.hkdfguard.remote.JsonReader.Token;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -26,6 +28,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
@@ -54,6 +57,14 @@ import java.util.function.Predicate;
  * behind, which zeroing can't reach. The protector is the caller's and is never closed, so its key
  * can be handed to the wrap process once the files are written. An instance isn't thread-safe: make
  * one pull at a time, and read {@link #getProtectedSecrets()} once it has completed.
+ * <p>
+ * The secrets can be written as one file each ({@link #writeProtectedSecretFiles}, the folder
+ * FilePerSecretCacheImpl reads) or as one JSON file of them all ({@link #writeJsonSecrets}, the
+ * file JsonSecretsFileReadOnlyCacheImpl reads) - and each to a stream instead, a tar archive of the
+ * files ({@link #writeProtectedSecretFilesAsync}) or the JSON ({@link #writeJsonSecretsAsync}), for
+ * a remote command's standard input such as {@code ssh -T host sudo -n tar -x ...}. The streamed
+ * forms take what {@link #getProtectedSecrets()} holds when they are called, and write it on a
+ * virtual thread of their own.
  */
 public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
     /** Separates a secret's name from the key it reads: "prod/app#password". */
@@ -61,6 +72,9 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
 
     /** Replaces each '/' and '#' of a secret name in its file name. */
     public static final String FILE_NAME_SEPARATOR = "__";
+
+    // rw-r--r--: what each file in a tar archive is unpacked as.
+    private static final int SECRET_FILE_MODE = 0644;
 
     private final PipelineDataProtector protector;
 
@@ -176,13 +190,96 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
         Objects.requireNonNull(folderPath, "folderPath");
         if (folderPath.toString().isEmpty())
             throw new IllegalArgumentException("folderPath must not be empty.");
-        if (!pulled)
-            throw new IllegalStateException("No secrets have been pulled: call pullSecretsAsync first.");
+        requirePulled();
 
         var folder = folderPath.toAbsolutePath().normalize();
         Files.createDirectories(folder);
         for (var secret : protectedSecrets.entrySet())
             Files.writeString(folder.resolve(secret.getKey()), secret.getValue(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Writes every secret in {@link #getProtectedSecrets()} to one JSON file at {@code filePath},
+     * creating its folder if it doesn't exist: a single object with a member per secret, its file
+     * name mapped to its encrypted, formatted value, in file-name order (ordinal, so upper case
+     * before lower), indented, as UTF-8 without a byte order mark - byte for byte the file .NET's
+     * SecretPipelineWriter writes on the same platform, whose line separator ends its lines. A file
+     * already there is replaced. Each value is bound to its member's name -
+     * {@code decrypt(value, name)} - as it is to its file name in {@link #writeProtectedSecretFiles}.
+     *
+     * @param filePath the file to write, absolute or relative to the working directory
+     * @throws NullPointerException     filePath is null
+     * @throws IllegalArgumentException filePath is empty
+     * @throws IllegalStateException    no pull has completed
+     * @throws IOException              the folder or the file couldn't be written
+     */
+    @Override
+    public final void writeJsonSecrets(Path filePath) throws IOException {
+        Objects.requireNonNull(filePath, "filePath");
+        if (filePath.toString().isEmpty())
+            throw new IllegalArgumentException("filePath must not be empty.");
+        requirePulled();
+
+        // An absolute path always has a parent: at the least, its root.
+        var path = filePath.toAbsolutePath().normalize();
+        Files.createDirectories(path.getParent());
+        Files.write(path, JsonSecretsText.of(inFileNameOrder()));
+    }
+
+    /**
+     * Writes every secret in {@link #getProtectedSecrets()} to {@code destination} as a tar archive
+     * of the files {@link #writeProtectedSecretFiles} would write - for a remote tar to unpack, e.g.
+     * the stdin of {@code ssh -T host sudo -n tar -x --no-same-owner -f - -C folder}. The archive is
+     * PAX, which GNU tar and bsdtar (macOS, and Windows' tar.exe) both read: one regular file per
+     * secret, in file-name order (ordinal), mode 0644 and modified now - the values are encrypted,
+     * and only who may write them matters to FilePerSecretCacheImpl; with --no-same-owner they
+     * belong to whoever unpacks them. destination is flushed and left open: close it afterwards.
+     * <p>
+     * The archive is built from what getProtectedSecrets() holds when this is called, and written
+     * on a virtual thread of its own; cancelling the returned future interrupts it - a stream that
+     * ignores interrupts, as a process's standard input does, still finishes the write it is
+     * blocked in.
+     *
+     * @param destination where to write the archive: a process's standard input
+     * @return completes once the archive has been written and flushed; fails with the
+     *         {@link IOException} the stream fails with
+     * @throws NullPointerException  destination is null
+     * @throws IllegalStateException no pull has completed
+     */
+    @Override
+    public final CompletableFuture<Void> writeProtectedSecretFilesAsync(OutputStream destination) {
+        Objects.requireNonNull(destination, "destination");
+        requirePulled();
+
+        var files = new LinkedHashMap<String, byte[]>();
+        for (var secret : inFileNameOrder().entrySet())
+            files.put(secret.getKey(), secret.getValue().getBytes(StandardCharsets.UTF_8));
+        return write(destination, PaxTarArchive.of(files, SECRET_FILE_MODE, Instant.now()), "hkdfguard-pipeline-write-tar");
+    }
+
+    /**
+     * Writes every secret in {@link #getProtectedSecrets()} to {@code destination} as the JSON
+     * object {@link #writeJsonSecrets} would write, byte for byte - for a remote command to store,
+     * e.g. the stdin of {@code ssh -T host sudo -n tee /etc/app/secrets.json}. destination is
+     * flushed and left open: close it afterwards.
+     * <p>
+     * The JSON is built from what getProtectedSecrets() holds when this is called, and written on a
+     * virtual thread of its own; cancelling the returned future interrupts it - a stream that
+     * ignores interrupts, as a process's standard input does, still finishes the write it is
+     * blocked in.
+     *
+     * @param destination where to write the JSON: a process's standard input
+     * @return completes once the JSON has been written and flushed; fails with the
+     *         {@link IOException} the stream fails with
+     * @throws NullPointerException  destination is null
+     * @throws IllegalStateException no pull has completed
+     */
+    @Override
+    public final CompletableFuture<Void> writeJsonSecretsAsync(OutputStream destination) {
+        Objects.requireNonNull(destination, "destination");
+        requirePulled();
+
+        return write(destination, JsonSecretsText.of(inFileNameOrder()), "hkdfguard-pipeline-write-json");
     }
 
     /** Releases the writer's connection to the store. Does nothing here; a store's writer overrides it. */
@@ -211,21 +308,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
      * @return completes once the secret has been read, or fails as readSecret would throw
      */
     protected CompletableFuture<Void> readSecretAsync(String name, List<SecretRequest> requests, Map<String, String> values) {
-        var read = new CompletableFuture<Void>();
-        var thread = Thread.ofVirtual().name("hkdfguard-pipeline-read").unstarted(() -> {
-            try {
-                readSecret(name, requests, values);
-                read.complete(null);
-            } catch (Throwable e) {
-                read.completeExceptionally(e);
-            }
-        });
-        read.whenComplete((ignored, error) -> {
-            if (read.isCancelled())
-                thread.interrupt();
-        });
-        thread.start();
-        return read;
+        return onVirtualThread("hkdfguard-pipeline-read", () -> readSecret(name, requests, values));
     }
 
     /**
@@ -326,6 +409,53 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
      */
     protected static Map<String, String> newValues() {
         return new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    }
+
+    private void requirePulled() {
+        if (!pulled)
+            throw new IllegalStateException("No secrets have been pulled: call pullSecretsAsync first.");
+    }
+
+    // The secrets by file name in ordinal order, as .NET orders them - not the case-insensitive
+    // order protectedSecrets keeps them in. TreeMap(Map), not TreeMap(SortedMap): natural order.
+    private Map<String, String> inFileNameOrder() {
+        return new TreeMap<>(protectedSecrets);
+    }
+
+    // Writes bytes - ciphertext only, so nothing to zero - to destination, and flushes it.
+    private static CompletableFuture<Void> write(OutputStream destination, byte[] bytes, String threadName) {
+        return onVirtualThread(threadName, () -> {
+            destination.write(bytes);
+            destination.flush();
+        });
+    }
+
+    /** Work for a virtual thread, which may fail with an IOException. */
+    private interface IoAction {
+        void run() throws IOException;
+    }
+
+    // Runs action on a new virtual thread, which cancelling the returned future interrupts; what
+    // action throws fails the future as it is.
+    private static CompletableFuture<Void> onVirtualThread(String threadName, IoAction action) {
+        var result = new CompletableFuture<Void>();
+        var thread = Thread.ofVirtual().name(threadName).unstarted(() -> {
+            try {
+                // Cancelled before the thread started, when interrupting it did nothing.
+                if (result.isDone())
+                    return;
+                action.run();
+                result.complete(null);
+            } catch (Throwable e) {
+                result.completeExceptionally(e);
+            }
+        });
+        result.whenComplete((ignored, error) -> {
+            if (error instanceof CancellationException)
+                thread.interrupt();
+        });
+        thread.start();
+        return result;
     }
 
     // Unescapes the string the reader is at into an array of its own (a number, true or false is

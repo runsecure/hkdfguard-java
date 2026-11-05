@@ -1,6 +1,8 @@
 package io.github.runsecure.hkdfguard.pipeline;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,9 +10,13 @@ import io.github.runsecure.hkdfguard.abstractions.PipelineDataProtector;
 import io.github.runsecure.hkdfguard.abstractions.SecretPipelineWriter;
 import io.github.runsecure.hkdfguard.cache.InvalidSecretDataException;
 import io.github.runsecure.hkdfguard.pipeline.contract.SecretPipelineWriterContractTest;
+import io.github.runsecure.hkdfguard.pipeline.contract.TarEntries;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -19,7 +25,9 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -174,6 +182,136 @@ class SecretPipelineWriterBaseTest extends SecretPipelineWriterContractTest {
             }
             assertEquals("b", decrypt(writer.getProtectedSecrets().get("b"), "b"));
         }
+    }
+
+    @Test
+    void theStreamsAndTheJsonFile_AreInOrdinalFileNameOrder_AndALongNameIsWholeInTheArchive() throws Exception {
+        var longName = "n".repeat(120);
+        for (var name : List.of("alpha", longName, "Zeta", "beta"))
+            store.set(name, "value of " + name);
+        try (var writer = new FakeWriter(protector, List.of("alpha", longName, "Zeta", "beta"), store)) {
+            pull(writer);
+            var tar = new RecordingStream();
+            var json = new RecordingStream();
+
+            await(writer.writeProtectedSecretFilesAsync(tar));
+            await(writer.writeJsonSecretsAsync(json));
+
+            var order = List.of("Zeta", "alpha", "beta", longName);
+            var entries = TarEntries.read(tar.toByteArray());
+            assertEquals(order, entries.stream().map(TarEntries.Entry::name).toList());
+            assertEquals(longName, entries.get(3).extended().get("path"));
+            assertEquals("value of " + longName, decrypt(entries.get(3).text(), longName));
+            assertEquals(order, List.copyOf(members(json.toByteArray()).keySet()));
+        }
+    }
+
+    @Test
+    void aPullThatFoundNothing_WritesAnEmptyObject_AndAnEmptyArchive() throws IOException {
+        try (var writer = new FakeWriter(protector, List.of("absent"), store)) {
+            assertPullFails(NoSuchElementException.class, writer);
+            var tar = new RecordingStream();
+            var json = new RecordingStream();
+
+            await(writer.writeProtectedSecretFilesAsync(tar));
+            await(writer.writeJsonSecretsAsync(json));
+            writer.writeJsonSecrets(folder.resolve("secrets.json"));
+
+            assertArrayEquals(new byte[1024], tar.toByteArray());
+            assertEquals("{}", json.toString(StandardCharsets.UTF_8));
+            assertEquals("{}", Files.readString(folder.resolve("secrets.json")));
+        }
+    }
+
+    @Test
+    void aStreamThatFails_FailsTheWrite() {
+        store.set("item", "s3cret");
+        try (var writer = new FakeWriter(protector, List.of("item"), store)) {
+            pull(writer);
+            var broken = new RecordingStream() {
+                @Override
+                public void flush() {
+                    throw new UncheckedIOException(new IOException("Broken pipe"));
+                }
+
+                @Override
+                public synchronized void write(byte[] b, int off, int len) {
+                    throw new UncheckedIOException(new IOException("Broken pipe"));
+                }
+            };
+            var closing = new OutputStream() {
+                @Override
+                public void write(int b) throws IOException {
+                    throw new IOException("Broken pipe");
+                }
+            };
+
+            assertInstanceOf(UncheckedIOException.class, failure(writer.writeJsonSecretsAsync(broken)));
+            assertInstanceOf(IOException.class, failure(writer.writeProtectedSecretFilesAsync(closing)));
+            assertInstanceOf(IOException.class, failure(writer.writeJsonSecretsAsync(closing)));
+        }
+    }
+
+    @Test
+    void aStreamWrite_TakesWhatWasHeldWhenCalled_AndCancellingItInterruptsIt() throws Exception {
+        store.set("item", "first");
+        try (var writer = new FakeWriter(protector, List.of("item"), store)) {
+            pull(writer);
+            var writing = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var interrupted = new CountDownLatch(1);
+            var blocking = new RecordingStream() {
+                @Override
+                public synchronized void write(byte[] b, int off, int len) {
+                    writing.countDown();
+                    try {
+                        if (!release.await(30, TimeUnit.SECONDS))
+                            throw new AssertionError("Never released.");
+                    } catch (InterruptedException e) {
+                        interrupted.countDown();
+                        throw new UncheckedIOException(new InterruptedIOException("interrupted"));
+                    }
+                    super.write(b, off, len);
+                }
+            };
+
+            var write = writer.writeJsonSecretsAsync(blocking);
+            assertTrue(writing.await(10, TimeUnit.SECONDS));
+            store.set("item", "second");
+            pull(writer);
+            release.countDown();
+            await(write);
+            assertEquals("first", decrypt(members(blocking.toByteArray()).get("item"), "item"));
+
+            var stuck = new RecordingStream() {
+                @Override
+                public synchronized void write(byte[] b, int off, int len) {
+                    try {
+                        new CountDownLatch(1).await(30, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        interrupted.countDown();
+                        throw new UncheckedIOException(new InterruptedIOException("interrupted"));
+                    }
+                }
+            };
+            var cancelled = writer.writeProtectedSecretFilesAsync(stuck);
+            cancelled.cancel(true);
+            assertTrue(cancelled.isCancelled());
+            // Interrupted, unless it was cancelled before its thread wrote anything.
+            interrupted.await(1, TimeUnit.SECONDS);
+            assertEquals(0, stuck.size());
+        }
+    }
+
+    private static Throwable failure(CompletableFuture<Void> write) {
+        try {
+            write.get(10, TimeUnit.SECONDS);
+        } catch (ExecutionException e) {
+            return e.getCause();
+        } catch (InterruptedException | TimeoutException e) {
+            throw new AssertionError("The write did not complete.", e);
+        }
+        throw new AssertionError("The write succeeded.");
     }
 
     @ParameterizedTest
