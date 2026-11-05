@@ -252,26 +252,33 @@ public final class SystemdCredentials {
     private CompletableFuture<SystemdCredential> run(String verb, List<String> arguments, byte[] stdin, Runnable afterRun, boolean keepOutput) {
         var future = new CompletableFuture<SystemdCredential>();
         var thread = Thread.ofVirtual().name("systemd-creds " + verb).unstarted(() -> {
+            SystemdCredential value = null;
+            Throwable failure = null;
             try {
                 var result = runner.run(executablePath, List.copyOf(arguments), stdin, timeout);
                 if (result.exitCode() != 0) {
                     result.output().close();
                     var detail = result.error() == null || result.error().isBlank() ? "" : ": " + result.error().strip();
-                    future.completeExceptionally(new IllegalStateException("systemd-creds " + verb + " failed with exit code " + result.exitCode() + detail));
-                } else if (!keepOutput) {
-                    result.output().close();
-                    future.complete(null);
-                } else if (!future.complete(result.output())) {
+                    failure = new IllegalStateException("systemd-creds " + verb + " failed with exit code " + result.exitCode() + detail);
+                } else if (keepOutput) {
+                    value = result.output();
+                } else {
                     result.output().close();
                 }
             } catch (InterruptedException e) {
-                future.completeExceptionally(new CancellationException("systemd-creds " + verb + " was cancelled, and killed."));
+                Thread.currentThread().interrupt();
+                failure = new CancellationException("systemd-creds " + verb + " was cancelled, and killed.");
             } catch (Throwable t) {
-                future.completeExceptionally(t);
+                failure = t;
             } finally {
+                // Before the future completes, so a caller that sees it done never sees stdin's plaintext.
                 if (afterRun != null)
                     afterRun.run();
             }
+            if (failure != null)
+                future.completeExceptionally(failure);
+            else if (!future.complete(value) && value != null)
+                value.close();
         });
         future.whenComplete((value, failure) -> {
             if (future.isCancelled())

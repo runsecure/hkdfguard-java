@@ -226,19 +226,23 @@ public final class CertificateOptionsLoader {
                 // A dependent of the read itself, never of result, so it runs - and zeroes - however
                 // result completes.
                 decrypt.whenComplete((length, decryptFailure) -> {
+                    LoadedCertificate loaded = null;
+                    Throwable failure = null;
                     try {
-                        if (decryptFailure != null) {
-                            result.completeExceptionally(unwrap(decryptFailure));
-                        } else if (!result.isDone()) {
-                            var loaded = openWithPassword(options, password, length);
-                            if (!result.complete(loaded))
-                                loaded.close();
-                        }
+                        if (decryptFailure != null)
+                            failure = unwrap(decryptFailure);
+                        else if (!result.isDone())
+                            loaded = openWithPassword(options, password, length);
                     } catch (RuntimeException e) {
-                        result.completeExceptionally(e);
+                        failure = e;
                     } finally {
+                        // Before result completes, so a caller that sees it done never sees the password.
                         ArrayUtility.zeroMemory(password);
                     }
+                    if (failure != null)
+                        result.completeExceptionally(failure);
+                    else if (loaded != null && !result.complete(loaded))
+                        loaded.close();
                 });
             });
         } catch (RuntimeException e) {
@@ -326,7 +330,7 @@ public final class CertificateOptionsLoader {
             var named = new ArrayList<Candidate>();
             for (var alias : Collections.list(keyStore.aliases())) {
                 if (keyStore.getCertificate(alias) instanceof X509Certificate certificate
-                        && DistinguishedNames.equal(certificate.getSubjectX500Principal(), subject))
+                        && DistinguishedNames.sameName(certificate.getSubjectX500Principal(), subject))
                     named.add(new Candidate(alias, certificate, keyStore.isKeyEntry(alias)));
             }
             var chosen = named.stream()

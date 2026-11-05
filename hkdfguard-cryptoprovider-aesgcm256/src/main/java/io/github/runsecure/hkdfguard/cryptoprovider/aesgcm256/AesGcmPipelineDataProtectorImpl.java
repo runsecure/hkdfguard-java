@@ -142,18 +142,23 @@ public final class AesGcmPipelineDataProtectorImpl implements PipelineDataProtec
 
         var written = new CompletableFuture<Void>();
         var thread = Thread.ofVirtual().name("hkdfguard-write-dek").unstarted(() -> {
+            Throwable failure = null;
             try {
                 // Cancelled before the thread started, when interrupting it did nothing.
-                if (written.isDone())
-                    return;
-                destination.write(ascii);
-                destination.flush();
-                written.complete(null);
+                if (!written.isDone()) {
+                    destination.write(ascii);
+                    destination.flush();
+                }
             } catch (Throwable e) {
-                written.completeExceptionally(e);
+                failure = e;
             } finally {
+                // Zeroed before the future completes, so a caller that sees it done never sees the key.
                 ArrayUtility.zeroMemory(ascii);
             }
+            if (failure == null)
+                written.complete(null);
+            else
+                written.completeExceptionally(failure);
         });
         written.whenComplete((ignored, error) -> {
             if (error instanceof CancellationException)
