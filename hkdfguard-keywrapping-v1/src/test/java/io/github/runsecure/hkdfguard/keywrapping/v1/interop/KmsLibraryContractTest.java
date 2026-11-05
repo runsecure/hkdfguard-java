@@ -53,6 +53,7 @@ class KmsLibraryContractTest {
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_MALFORMED, -38),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_FILE_UNTRUSTED, -39),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_WIN_GROUP_INVALID, -64),
+                Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_LINUX_GROUP_INVALID, -80),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_ACCESS_CONTROL_CREATION_FAILED, -96),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_KEY_GENERATION_FAILED, -97),
                 Arguments.of(AbstractHkdfGuardKmsLibrary.ERR_MAC_KEYCHAIN_WRITE_FAILED, -98),
@@ -163,6 +164,12 @@ class KmsLibraryContractTest {
 
         assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_KEK_ACCESS_DENIED).contains("keychain"));
         assertTrue(library.describeStatus(AbstractHkdfGuardKmsLibrary.ERR_PROVIDER_UNAVAILABLE).contains("Secure Enclave"));
+    }
+
+    @Test
+    void macOs_NamesThePolicyThatRefusesAPayloadSuite() {
+        assertTrue(new MacOsHkdfGuardKmsLibrary().describeStatus(AbstractHkdfGuardKmsLibrary.ERR_PAYLOAD_UNSUPPORTED)
+                .contains("RequirePostQuantum"));
     }
 
     @Test
