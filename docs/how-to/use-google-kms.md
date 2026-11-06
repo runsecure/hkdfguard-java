@@ -124,9 +124,9 @@ Protobuf at the versions the wrapper was built against:
 
 > **TODO (maintainer):** confirm the version once the artifact is published.
 
-libraries-bom 26.90.0 pins Guava 33.6.0-jre, which has
+libraries-bom 26.91.0 pins Guava 33.6.0-jre, which has
 [GHSA-xxph-c9ww-hj94](https://github.com/advisories/GHSA-xxph-c9ww-hj94); this build pins
-`com.google.guava:guava` to 33.7.2-jre in its own `dependencyManagement`, and so should yours, until
+`com.google.guava:guava` to 33.8.0-jre (any 33.7.2-jre or later fixes it) in its own `dependencyManagement`, and so should yours, until
 a newer libraries-bom does.
 
 The client brings its own transport, gRPC over a shaded copy of Netty, so there is no HTTP client

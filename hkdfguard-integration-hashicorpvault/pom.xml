@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-integration-hashicorpvault</artifactId>
+  <name>HkdfGuard Integration HashiCorp Vault</name>
+  <description>
+    A HashiCorp Vault client - a port of vault-client-go, generated from Vault's OpenAPI spec for
+    the endpoints HkdfGuard needs - that holds tokens only protected by a key ring; and the HTTP
+    rules, token types and errors the HashiCorp Vault cache and key wrapper share.
+  </description>
+
+  <!-- The tests serve a fake Vault with the JDK's com.sun.net.httpserver (module jdk.httpserver).
+       They are compiled and run inside this module, patched in on the module path, so that module
+       is added to the graph and this one made to read it - for the tests alone: the shipped module
+       doesn't require it. -->
+  <properties>
+    <hkdfguard.httpserver.reads>--add-reads=io.github.runsecure.hkdfguard.integration.hashicorpvault=jdk.httpserver</hkdfguard.httpserver.reads>
+    <hkdfguard.test.argLine>--enable-native-access=ALL-UNNAMED --add-modules=jdk.httpserver ${hkdfguard.httpserver.reads}</hkdfguard.test.argLine>
+  </properties>
+
+  <!-- No third-party dependency: Vault is called through the JDK's java.net.http, and JSON is read
+       with the strict reader in hkdfguard-remote-common, so a token in a response is protected
+       straight from the bytes it arrived in. HashiCorp ships no Java SDK. -->
+  <dependencies>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-abstractions</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-remote-common</artifactId>
+    </dependency>
+
+    <!-- The tests protect tokens with a real data protector over a real key ring. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-dataencryptionkey</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cryptoprovider-aesgcm256</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Generated/ in .NET: the API groups and models generated from openapi.json, as filtered by
+           generator.json, by tools/hkdfguard-integration-hashicorpvault-generator. Kept apart from
+           the hand-written sources; never edited by hand (docs/how-to/use-hashicorp-vault-client.md). -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-generated-sources</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>src/generated/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <configuration>
+              <compilerArgs>
+                <arg>--add-modules=jdk.httpserver</arg>
+                <arg>${hkdfguard.httpserver.reads}</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

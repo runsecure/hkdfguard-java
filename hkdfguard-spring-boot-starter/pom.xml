@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.runsecure</groupId>
     <artifactId>hkdfguard-parent</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>0.9.1</version>
   </parent>
 
   <artifactId>hkdfguard-spring-boot-starter</artifactId>
@@ -62,12 +62,13 @@
       <optional>true</optional>
     </dependency>
     <!-- Compile-only: Spring Boot's Health carries Jackson's @JsonInclude, and without the
-         annotation's class the compiler warns (and -Werror fails the build). Spring Boot 4.1's
-         Jackson 3 BOM manages this version; applications bring their own at run time. -->
+         annotation's class the compiler warns (and -Werror fails the build). Only the annotation's
+         class is needed, so this is the latest release; applications bring their own (Spring Boot
+         4.1's Jackson 3 BOM manages one) at run time. -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-annotations</artifactId>
-      <version>2.21</version>
+      <version>2.22</version>
       <scope>provided</scope>
     </dependency>
 
@@ -81,7 +82,7 @@
     <dependency>
       <groupId>org.yaml</groupId>
       <artifactId>snakeyaml</artifactId>
-      <version>2.6</version>
+      <version>2.7</version>
       <scope>test</scope>
     </dependency>
     <dependency>

@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.cache.hashicorpvault;
 
 import io.github.runsecure.hkdfguard.abstractions.DataProtector;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenProvider;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntFunction;

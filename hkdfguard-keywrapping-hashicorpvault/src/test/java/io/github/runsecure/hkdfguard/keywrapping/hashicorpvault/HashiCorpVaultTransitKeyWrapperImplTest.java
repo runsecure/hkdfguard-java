@@ -16,6 +16,10 @@ import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProviderFactoryImpl;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.StaticVaultTokenSource;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultRequestException;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenSource;
 import io.github.runsecure.hkdfguard.keywrapping.hashicorpvault.FakeTransit.Answer;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.testsupport.WindowsTempDirectory;
@@ -40,10 +44,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterEach;
@@ -265,6 +269,7 @@ class HashiCorpVaultTransitKeyWrapperImplTest {
         assertEquals(Duration.ofMillis(200), options.retryDelay());
         assertNull(options.httpClient());
         assertFalse(options.allowRedirects());
+        assertNull(options.tls());
 
         var changed = options.toBuilder().mountPath("transit/team-a").namespace("team-a").retryCount(5).build();
         assertEquals("transit/team-a", changed.mountPath());
@@ -284,6 +289,25 @@ class HashiCorpVaultTransitKeyWrapperImplTest {
         assertTrue(e.getMessage().contains("allowRedirects"));
 
         construct(address, KEY_NAME, null, HashiCorpVaultTransitKeyWrapperOptions.builder().httpClient(client).allowRedirects(true).build()).close();
+    }
+
+    @Test
+    void tlsOptions_AreRefused_WithASuppliedClient_OrWhenTheyCantBeRead() {
+        var address = vault.address();
+        var tls = io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTlsOptions.builder().insecureSkipVerify(true).build();
+        var client = track(HttpClient.newBuilder().build());
+
+        var e = assertThrows(IllegalArgumentException.class,
+                () -> construct(address, KEY_NAME, null, HashiCorpVaultTransitKeyWrapperOptions.builder().httpClient(client).tls(tls).build()));
+        assertTrue(e.getMessage().contains("SSLContext"), e.getMessage());
+        var unreadable = io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTlsOptions.builder()
+                .trustStoreFile(java.nio.file.Path.of("no-such-trust-store.p12")).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> construct(address, KEY_NAME, null, HashiCorpVaultTransitKeyWrapperOptions.builder().tls(unreadable).build()));
+
+        var options = HashiCorpVaultTransitKeyWrapperOptions.builder().tls(tls).build();
+        assertSame(tls, options.toBuilder().build().tls());
+        construct(address, KEY_NAME, null, options).close();
     }
 
     @Test
@@ -1231,7 +1255,7 @@ class HashiCorpVaultTransitKeyWrapperImplTest {
             "10000, 40, 0, 10000",
     })
     void retryDelay_DoublesUpToTheLimit_PlusJitter(int baseMillis, int retry, int jitter, int expectedMillis) {
-        assertEquals(Duration.ofMillis(expectedMillis), HashiCorpVaultTransitKeyWrapperImpl.retryDelay(Duration.ofMillis(baseMillis), retry, jitter));
+        assertEquals(Duration.ofMillis(expectedMillis), VaultHttp.retryDelay(Duration.ofMillis(baseMillis), retry, jitter));
     }
 
     // --- End to end ------------------------------------------------------------------------------

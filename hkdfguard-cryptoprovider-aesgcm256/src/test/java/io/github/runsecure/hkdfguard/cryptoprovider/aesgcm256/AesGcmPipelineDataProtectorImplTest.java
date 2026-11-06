@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -14,11 +15,20 @@ import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.EncryptedFormatException;
 import io.github.runsecure.hkdfguard.abstractions.PipelineDataProtector;
 import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardTelemetry;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.io.UncheckedIOException;
 import java.nio.CharBuffer;
 import java.nio.ReadOnlyBufferException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
@@ -213,6 +223,105 @@ class AesGcmPipelineDataProtectorImplTest {
             try (var reader = new AesGcmPipelineDataProtectorImpl(new TestFormatProvider(), VERSION, key)) {
                 assertEquals("hello", decrypt(reader, formatted, ID));
             }
+        }
+    }
+
+    @Test
+    void writeDekAsync_WritesTheBase64KeyAsAscii_WithoutALineEnding_AndLeavesTheStreamOpen() throws Exception {
+        var key = FakeKeyWrapper.randomKey();
+        try (var protector = new AesGcmPipelineDataProtectorImpl(new TestFormatProvider(), VERSION, key.clone());
+             var stdin = new RecordingStream()) {
+            protector.writeDekAsync(stdin).get(10, TimeUnit.SECONDS);
+
+            assertArrayEquals(Base64.getEncoder().encodeToString(key).getBytes(StandardCharsets.US_ASCII), stdin.toByteArray());
+            assertEquals(44, stdin.size());
+            assertTrue(stdin.flushed);
+            assertFalse(stdin.closed);
+            // Written from an array of its own, zeroed once the write and flush were done.
+            assertArrayEquals(new byte[44], stdin.lastWritten);
+        }
+    }
+
+    @Test
+    void writeDekAsync_RefusesNoStream_AndAClosedProtector() {
+        var protector = create();
+        assertThrows(NullPointerException.class, () -> protector.writeDekAsync(null));
+
+        protector.close();
+
+        var stdin = new ByteArrayOutputStream();
+        assertThrows(IllegalStateException.class, () -> protector.writeDekAsync(stdin));
+        assertEquals(0, stdin.size());
+    }
+
+    @Test
+    void writeDekAsync_AFailedWrite_FailsTheFuture_AndStillZeroesTheBytes() throws Exception {
+        try (var protector = create()) {
+            var stdin = new RecordingStream() {
+                @Override
+                public void flush() throws IOException {
+                    throw new IOException("Broken pipe");
+                }
+            };
+
+            var e = assertThrows(ExecutionException.class, () -> protector.writeDekAsync(stdin).get(10, TimeUnit.SECONDS));
+
+            assertInstanceOf(IOException.class, e.getCause());
+            assertArrayEquals(new byte[44], stdin.lastWritten);
+        }
+    }
+
+    @Test
+    void writeDekAsync_Cancelled_InterruptsTheWrite_AndZeroesTheBytes() throws Exception {
+        try (var protector = create()) {
+            var writing = new CountDownLatch(1);
+            var stdin = new RecordingStream() {
+                @Override
+                public synchronized void write(byte[] b, int off, int len) {
+                    lastWritten = b;
+                    writing.countDown();
+                    try {
+                        new CountDownLatch(1).await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        throw new UncheckedIOException(new InterruptedIOException("interrupted"));
+                    }
+                    super.write(b, off, len);
+                }
+            };
+
+            CompletableFuture<Void> write = protector.writeDekAsync(stdin);
+            assertTrue(writing.await(10, TimeUnit.SECONDS));
+            assertTrue(write.cancel(true));
+
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (!Arrays.equals(new byte[44], stdin.lastWritten) && System.nanoTime() < deadline)
+                Thread.onSpinWait();
+            assertArrayEquals(new byte[44], stdin.lastWritten);
+            assertTrue(write.isCancelled());
+            assertEquals(0, stdin.size());
+        }
+    }
+
+    /** Records whether it was flushed or closed, and the last array written from. */
+    private static class RecordingStream extends ByteArrayOutputStream {
+        volatile byte[] lastWritten;
+        volatile boolean flushed;
+        volatile boolean closed;
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) {
+            lastWritten = b;
+            super.write(b, off, len);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            flushed = true;
+        }
+
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 

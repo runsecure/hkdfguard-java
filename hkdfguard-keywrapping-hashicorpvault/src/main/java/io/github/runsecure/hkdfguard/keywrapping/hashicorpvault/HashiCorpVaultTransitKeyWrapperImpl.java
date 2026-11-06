@@ -6,9 +6,11 @@ import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.LocalKeyGeneration;
 import io.github.runsecure.hkdfguard.abstractions.Utf8Utility;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultRequestException;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenSource;
 import io.github.runsecure.hkdfguard.remote.JsonReader;
 import io.github.runsecure.hkdfguard.remote.JsonReader.Token;
-import io.github.runsecure.hkdfguard.remote.VaultHttp;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
 import java.io.IOException;
@@ -16,25 +18,18 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
-import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Flow;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Protects (encrypt) and reveals (decrypt) a DEK under one key in a HashiCorp Vault transit secrets
@@ -105,12 +100,10 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
     public static final int MAX_KEY_NAME_LENGTH = 128;
 
     /** The longest token a {@link VaultTokenSource} may supply, in characters. */
-    public static final int MAX_TOKEN_LENGTH = 2048;
+    public static final int MAX_TOKEN_LENGTH = VaultHttp.MAX_TOKEN_LENGTH;
 
     /** The largest response read from Vault, in bytes; a transit answer is well under 1 KB. */
     static final int MAX_RESPONSE_LENGTH = 16 * 1024;
-
-    private static final String TOKEN_HEADER = "X-Vault-Token";
 
     private static final byte[] BASE64_ALPHABET =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".getBytes(StandardCharsets.US_ASCII);
@@ -194,7 +187,8 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
      *                                  {@link #MAX_CONTEXT_LENGTH} bytes; the mount path or
      *                                  namespace isn't one; the timeout isn't positive, the retry
      *                                  count isn't 3-10 or the retry delay isn't zero to 10 seconds;
-     *                                  or the HttpClient follows redirects without allowRedirects
+     *                                  the HttpClient follows redirects without allowRedirects; or TLS
+     *                                  options are given with an HttpClient, or can't be read
      */
     public HashiCorpVaultTransitKeyWrapperImpl(URI address, String keyName, VaultTokenSource tokenSource, String context,
             KeyFileTrust keyFileTrust, HashiCorpVaultTransitKeyWrapperOptions options) {
@@ -207,23 +201,9 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         if (keyName.length() > MAX_KEY_NAME_LENGTH || !VaultHttp.isValidSegment(keyName, 0, keyName.length()))
             throw new IllegalArgumentException("The key name '" + keyName + "' isn't one: 1-" + MAX_KEY_NAME_LENGTH
                     + " ASCII letters, digits, '-', '_' and '.', and not \".\" or \"..\".");
-        if (!VaultHttp.isValidPath(options.mountPath()))
-            throw new IllegalArgumentException("The mount path '" + options.mountPath() + "' isn't a Vault path.");
-        if (options.namespace() != null && !VaultHttp.isValidPath(options.namespace()))
-            throw new IllegalArgumentException("The namespace '" + options.namespace() + "' isn't a Vault path.");
-        if (options.timeout().isNegative() || options.timeout().isZero())
-            throw new IllegalArgumentException("The timeout must be positive; it is " + options.timeout() + ".");
-        if (options.retryCount() < HashiCorpVaultTransitKeyWrapperOptions.MIN_RETRY_COUNT
-                || options.retryCount() > HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_COUNT)
-            throw new IllegalArgumentException("The retry count must be " + HashiCorpVaultTransitKeyWrapperOptions.MIN_RETRY_COUNT + "-"
-                    + HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_COUNT + "; it is " + options.retryCount() + ".");
-        if (options.retryDelay().isNegative() || options.retryDelay().compareTo(HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_DELAY) > 0)
-            throw new IllegalArgumentException("The retry delay must be zero to " + HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_DELAY
-                    + "; it is " + options.retryDelay() + ".");
+        VaultHttp.checkSettings(options.mountPath(), options.namespace(), options.timeout(), options.retryCount(), options.retryDelay());
         var supplied = options.httpClient();
-        if (supplied != null && !options.allowRedirects() && supplied.followRedirects() != HttpClient.Redirect.NEVER)
-            throw new IllegalArgumentException("The HttpClient follows redirects, which would send the Vault token wherever they point. "
-                    + "Build it with followRedirects(HttpClient.Redirect.NEVER), or set allowRedirects if every redirect target may see the token.");
+        VaultHttp.checkRedirects(supplied, options.allowRedirects());
 
         var contextBytes = encodeContext(context);
         if (contextBytes.length > MAX_CONTEXT_LENGTH)
@@ -254,10 +234,9 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         this.retryDelay = options.retryDelay();
         this.keyFileTrust = keyFileTrust != null ? keyFileTrust : KeyFileTrust.ADMINISTRATORS_ONLY;
 
-        // A redirect would carry X-Vault-Token to wherever it points. Vault's standbys forward
-        // requests to the active node themselves, so a redirect is answered as an error instead.
+        // Follows no redirects: one would carry X-Vault-Token wherever it points.
         this.ownsHttp = supplied == null;
-        this.http = supplied != null ? supplied : HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        this.http = VaultHttp.httpClient(supplied, options.tls());
     }
 
     /**
@@ -405,37 +384,12 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         return true;
     }
 
-    /**
-     * The wait before retry number {@code retry} (0 for the first): baseDelay, doubled for each
-     * retry before it, at most {@link HashiCorpVaultTransitKeyWrapperOptions#MAX_RETRY_DELAY} - plus
-     * jitterMillis.
-     */
-    static Duration retryDelay(Duration baseDelay, int retry, int jitterMillis) {
-        return VaultHttp.retryDelay(baseDelay, retry, jitterMillis, HashiCorpVaultTransitKeyWrapperOptions.MAX_RETRY_DELAY);
-    }
-
     // Runs work on a virtual thread of its own, which cancelling the returned future interrupts.
     // zeroOnFailure, if any, is zeroed when the work fails - or succeeds only after the future was
     // cancelled, when the caller is no longer waiting for what it wrote there.
     private static CompletableFuture<Integer> run(Callable<Integer> work, byte[] zeroOnFailure) {
-        var future = new CompletableFuture<Integer>();
-        var thread = Thread.ofVirtual().name("hkdfguard-vault-transit").unstarted(() -> {
-            try {
-                var written = work.call();
-                if (!future.complete(written) && zeroOnFailure != null)
-                    ArrayUtility.zeroMemory(zeroOnFailure);
-            } catch (Throwable e) {
-                if (zeroOnFailure != null)
-                    ArrayUtility.zeroMemory(zeroOnFailure);
-                future.completeExceptionally(e);
-            }
-        });
-        future.whenComplete((value, error) -> {
-            if (future.isCancelled())
-                thread.interrupt();
-        });
-        thread.start();
-        return future;
+        return VaultHttp.runAsync("hkdfguard-vault-transit", work, e -> e,
+                zeroOnFailure != null ? () -> ArrayUtility.zeroMemory(zeroOnFailure) : null);
     }
 
     // prefix, then value (base64-encoded if encode), then the suffix: a whole encrypt or decrypt
@@ -466,35 +420,13 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         try {
             // A source's failure is its own to retry, so isn't retried here, and propagates as it is.
             var tokenLength = copyToken(token);
-            for (var retry = 0; ; retry++) {
-                Exception failure;
-                try {
-                    return send(uri, body, token, tokenLength);
-                } catch (VaultRequestException e) {
-                    if (!e.isTransient())
-                        throw failed(operation, e);
-                    failure = e;
-                } catch (IOException e) {
-                    failure = e;
-                } catch (UncheckedIOException e) {
-                    failure = e.getCause();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw cancelled();
-                }
-
-                // A body read that was interrupted fails as an IOException, the interrupt status set.
-                if (Thread.currentThread().isInterrupted())
-                    throw cancelled();
-                if (retry >= retryCount || closed)
-                    throw failed(operation, failure);
-
-                try {
-                    Thread.sleep(retryDelay(retryDelay, retry, VaultHttp.jitterMillis()));
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw cancelled();
-                }
+            try {
+                return VaultHttp.withRetries(retryCount, retryDelay, () -> closed, () -> send(uri, body, token, tokenLength),
+                        HashiCorpVaultTransitKeyWrapperImpl::cancelled);
+            } catch (VaultRequestException e) {
+                throw failed(operation, e);
+            } catch (UncheckedIOException e) {
+                throw failed(operation, e.getCause());
             }
         } finally {
             ArrayUtility.zeroMemory(token);
@@ -525,33 +457,15 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
     // VaultRequestException carrying Vault's status and errors.
     private Answer send(URI uri, byte[] body, char[] token, int tokenLength) throws IOException, InterruptedException {
         var deadline = System.nanoTime() + timeoutNanos;
-        var builder = HttpRequest.newBuilder(uri)
-                .timeout(timeout)
-                .POST(new ArrayBodyPublisher(body))
-                .header("Content-Type", "application/json")
-                .header("X-Vault-Request", "true");
-        if (namespace != null)
-            builder.header("X-Vault-Namespace", namespace);
+        var builder = VaultHttp.newRequest(uri, timeout, namespace)
+                .POST(VaultHttp.bodyPublisher(body, body.length))
+                .header("Content-Type", "application/json");
 
         // The one String the token becomes: java.net.http takes a header's value only as one. It is
         // referenced only by this request, so lives no longer than it, until collected.
-        var request = builder.header(TOKEN_HEADER, new String(token, 0, tokenLength)).build();
-        var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-
-        try (var stream = response.body()) {
-            // HttpRequest's timeout ends once the headers arrive; this one covers the whole body.
-            var expired = new AtomicBoolean();
-            var watchdog = VaultHttp.watchDeadline(deadline, stream, expired);
-            try {
-                return readResponse(response.statusCode(), stream);
-            } catch (IOException | UncheckedIOException e) {
-                if (expired.get())
-                    throw new HttpTimeoutException("Vault's answer took longer than " + timeout + ".");
-                throw e;
-            } finally {
-                watchdog.interrupt();
-            }
-        }
+        var request = builder.header(VaultHttp.TOKEN_HEADER, new String(token, 0, tokenLength)).build();
+        return VaultHttp.send(http, request, deadline, response -> readResponse(response.statusCode(), response.body()),
+                () -> "Vault's answer took longer than " + timeout + ".");
     }
 
     // Reads Vault's whole answer into an array of this class's own: returned for a success, for the
@@ -573,9 +487,9 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
                 return new Answer(buffer, length);
             }
 
-            var errors = readErrors(buffer, length);
+            var errors = VaultHttp.readErrors(buffer, length);
             var detail = errors != null && !errors.isEmpty() ? ": " + String.join("; ", errors) : "";
-            throw new VaultRequestException("Vault answered " + status + reasonPhrase(status) + detail, status);
+            throw new VaultRequestException("Vault answered " + status + VaultHttp.reasonPhrase(status) + detail, status);
         } finally {
             if (!returned)
                 ArrayUtility.zeroMemory(buffer);
@@ -716,71 +630,6 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         return new CryptographicException("Vault transit " + operation + " failed for key '" + keyName + "': " + reason, failure);
     }
 
-    // The errors Vault listed in an error answer: a string as its text, anything else as its JSON
-    // text; empty if the answer is a JSON object without errors; null if it isn't Vault's JSON. An
-    // error answer holds no key material.
-    private static List<String> readErrors(byte[] body, int length) {
-        var reader = new JsonReader(body, length);
-        try {
-            if (!reader.read() || reader.token() != Token.START_OBJECT)
-                return null;
-
-            List<String> found = List.of();
-            while (reader.read() && reader.token() == Token.PROPERTY_NAME) {
-                var isErrors = reader.valueTextEquals("errors");
-                reader.read();
-                if (!isErrors) {
-                    reader.skip();
-                } else if (reader.token() != Token.START_ARRAY) {
-                    return null;
-                } else {
-                    var errors = new ArrayList<String>();
-                    while (reader.read() && reader.token() != Token.END_ARRAY) {
-                        var start = reader.tokenStart();
-                        if (reader.token() == Token.STRING) {
-                            errors.add(reader.getString());
-                            continue;
-                        }
-
-                        reader.skip();
-                        errors.add(new String(body, start, reader.bytesConsumed() - start, StandardCharsets.UTF_8));
-                    }
-                    found = List.copyOf(errors);
-                }
-            }
-
-            // Anything after the object makes it not JSON.
-            return reader.read() ? null : found;
-        } catch (JsonReader.Malformed e) {
-            return null;
-        }
-    }
-
-    // " Bad Request" and the like, for the statuses Vault and the proxies in front of it answer
-    // with; "" for any other.
-    private static String reasonPhrase(int status) {
-        return switch (status) {
-            case 301 -> " Moved Permanently";
-            case 302 -> " Found";
-            case 303 -> " See Other";
-            case 307 -> " Temporary Redirect";
-            case 308 -> " Permanent Redirect";
-            case 400 -> " Bad Request";
-            case 401 -> " Unauthorized";
-            case 403 -> " Forbidden";
-            case 404 -> " Not Found";
-            case 405 -> " Method Not Allowed";
-            case 412 -> " Precondition Failed";
-            case 429 -> " Too Many Requests";
-            case 500 -> " Internal Server Error";
-            case 501 -> " Not Implemented";
-            case 502 -> " Bad Gateway";
-            case 503 -> " Service Unavailable";
-            case 504 -> " Gateway Timeout";
-            default -> "";
-        };
-    }
-
     // The length of base64 for length bytes, padded.
     private static int base64Length(int length) {
         return (length + 2) / 3 * 4;
@@ -879,7 +728,6 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
         return new CancellationException("The Vault transit call was abandoned: the thread making it was interrupted.");
     }
 
-
     /**
      * A successful answer: bytes[0, length) of an array the reader zeroes. A class, not a record: a
      * record's equals and hashCode would compare the array by identity, not by content.
@@ -899,47 +747,6 @@ public final class HashiCorpVaultTransitKeyWrapperImpl implements KeyWrapper, Au
 
         int length() {
             return length;
-        }
-    }
-
-    /**
-     * Publishes a body straight from the array it wraps. BodyPublishers.ofByteArray copies the array
-     * into buffers of java.net.http's own on every send, which nothing zeroes; this hands over the
-     * array itself, wrapped, so zeroing it reaches the bytes every attempt sent.
-     */
-    private static final class ArrayBodyPublisher implements HttpRequest.BodyPublisher {
-        private final byte[] body;
-
-        ArrayBodyPublisher(byte[] body) {
-            this.body = body;
-        }
-
-        @Override
-        public long contentLength() {
-            return body.length;
-        }
-
-        @Override
-        public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
-            var done = new AtomicBoolean();
-            subscriber.onSubscribe(new Flow.Subscription() {
-                @Override
-                public void request(long n) {
-                    if (!done.compareAndSet(false, true))
-                        return;
-                    if (n <= 0) {
-                        subscriber.onError(new IllegalArgumentException("A subscriber must request at least one item; it requested " + n + "."));
-                        return;
-                    }
-                    subscriber.onNext(ByteBuffer.wrap(body));
-                    subscriber.onComplete();
-                }
-
-                @Override
-                public void cancel() {
-                    done.set(true);
-                }
-            });
         }
     }
 }

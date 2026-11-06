@@ -1,5 +1,6 @@
 package io.github.runsecure.hkdfguard.keywrapping.hashicorpvault;
 
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenSource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;

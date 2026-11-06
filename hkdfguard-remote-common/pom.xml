@@ -7,38 +7,35 @@
   <parent>
     <groupId>io.github.runsecure</groupId>
     <artifactId>hkdfguard-parent</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>0.9.1</version>
   </parent>
 
   <artifactId>hkdfguard-remote-common</artifactId>
   <name>HkdfGuard Remote Common</name>
   <description>
     Internal to HkdfGuard: the strict JSON reader that takes secrets out of response bodies without
-    making them Strings, and the HTTP rules the HashiCorp Vault cache and key wrapper share.
-    Not an API for applications.
+    making them Strings. Not an API for applications.
   </description>
 
   <!--
-    One copy of code that hkdfguard-cache and hkdfguard-keywrapping-hashicorpvault both need but
-    neither can take from the other: a key wrapper sits below the key ring and caches, so it can't
-    depend on hkdfguard-cache. A fix to the JSON reader, or to which Vault addresses and paths are
-    accepted, lands once for both.
+    One copy of code that hkdfguard-cache, hkdfguard-integration-hashicorpvault and
+    hkdfguard-keywrapping-hashicorpvault all need but can't take from one another: a key wrapper sits
+    below the key ring and caches, so it can't depend on hkdfguard-cache. A fix to the JSON reader
+    lands once for all three - and for the pipeline writers (hkdfguard-pipeline and the HashiCorp
+    Vault, AWS Secrets Manager and Azure Key Vault writers), which read secrets out of response
+    bodies with it too. The Vault rules this module once held as well are VaultHttp, in
+    hkdfguard-integration-hashicorpvault, which the Vault cache and key wrapper now share with the
+    Vault client.
 
-    The module exports its package only to hkdfguard-cache, hkdfguard-cache-hashicorpvault and
-    hkdfguard-keywrapping-hashicorpvault.
+    The module exports its package only to those modules.
   -->
 
   <properties>
-    <!-- Internal, exported only to three modules of this build: its public members are commented
+    <!-- Internal, exported only to the modules of this build that use it: its public members are commented
          like the package-private code they came from, not tag by tag like an application API.
          Every other doclint check stays on. -->
     <doclint>all,-missing</doclint>
   </properties>
 
-  <dependencies>
-    <dependency>
-      <groupId>io.github.runsecure</groupId>
-      <artifactId>hkdfguard-abstractions</artifactId>
-    </dependency>
-  </dependencies>
+  <!-- No dependency: JsonReader needs only the JDK. -->
 </project>

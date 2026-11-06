@@ -18,6 +18,10 @@ import io.github.runsecure.hkdfguard.cache.ProtectedCacheImpl;
 import io.github.runsecure.hkdfguard.cache.hashicorpvault.FakeVault.Answer;
 import io.github.runsecure.hkdfguard.dataencryptionkey.KeyRingImpl;
 import io.github.runsecure.hkdfguard.diagnostics.HkdfGuardLog;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.StaticVaultToken;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultRequestException;
+import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenProvider;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
@@ -32,11 +36,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
@@ -620,7 +624,7 @@ class HashiCorpVaultSecretCacheImplTest {
             "10000, 40, 0, 10000",
     })
     void retryDelay_Doubles_UpToTheMaximum_PlusTheJitter(int baseMillis, int retry, int jitter, int expectedMillis) {
-        assertEquals(Duration.ofMillis(expectedMillis), HashiCorpVaultSecretCacheImpl.retryDelay(Duration.ofMillis(baseMillis), retry, jitter));
+        assertEquals(Duration.ofMillis(expectedMillis), VaultHttp.retryDelay(Duration.ofMillis(baseMillis), retry, jitter));
     }
 
     @Test
@@ -898,6 +902,7 @@ class HashiCorpVaultSecretCacheImplTest {
         assertEquals(Duration.ofMillis(200), defaults.retryDelay());
         assertNull(defaults.httpClient());
         assertFalse(defaults.allowRedirects());
+        assertNull(defaults.tls());
 
         var changed = defaults.toBuilder().namespace("team-a").build();
         assertEquals("team-a", changed.namespace());
@@ -957,6 +962,20 @@ class HashiCorpVaultSecretCacheImplTest {
 
         var e = assertThrows(IllegalArgumentException.class, () -> newCache(options().httpClient(client)));
         assertTrue(e.getMessage().contains("allowRedirects"));
+    }
+
+    @Test
+    void tlsOptions_AreRefused_WithASuppliedClient_OrWhenTheyCantBeRead() {
+        var tls = io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTlsOptions.builder().insecureSkipVerify(true).build();
+        var client = track(HttpClient.newBuilder().build());
+
+        var e = assertThrows(IllegalArgumentException.class, () -> newCache(options().httpClient(client).tls(tls)));
+        assertTrue(e.getMessage().contains("SSLContext"), e.getMessage());
+        var unreadable = io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTlsOptions.builder()
+                .trustStoreFile(java.nio.file.Path.of("no-such-trust-store.p12")).build();
+        assertThrows(IllegalArgumentException.class, () -> newCache(options().tls(unreadable)));
+
+        assertEquals(0, newCache(options().tls(tls)).decrypt("not:a:path", new byte[16]));
     }
 
     @Test

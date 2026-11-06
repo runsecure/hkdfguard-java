@@ -9,8 +9,8 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.NoSuchFileException;
 
 /**
- * Decides whether a key file's path on Linux or macOS can be trusted: resolves it the way the
- * kernel would, from {@code /}, checking everything it passes through. Every directory and the file
+ * Decides whether a file's path on Linux or macOS can be trusted (a key file's, or any file
+ * {@link TrustedFile} reads): resolves it the way the kernel would, from {@code /}, checking everything it passes through. Every directory and the file
  * itself must be owned by root or a {@link KeyFileTrust#unixUserIds()} user, must not be writable
  * by others, and may be writable by its group only if that is a {@link KeyFileTrust#unixGroupIds()}
  * group. A symbolic link is followed only if a trusted user owns it, and its target is then checked
@@ -52,9 +52,9 @@ final class UnixKeyFileChecks {
             }
             case Resolution.RootUnreadable() -> throw new AccessDeniedException(path, null, "'/' could not be examined.");
             case Resolution.Missing(var component) ->
-                    throw new NoSuchFileException(path, null, "Key file '" + path + "' was not found ('" + component + "' does not exist).");
+                    throw new NoSuchFileException(path, null, "'" + path + "' was not found ('" + component + "' does not exist).");
             case Resolution.NotADirectory(var component) ->
-                    throw new NoSuchFileException(path, null, "Key file '" + path + "' runs through '" + component + "', which is not a directory.");
+                    throw new NoSuchFileException(path, null, "'" + path + "' runs through '" + component + "', which is not a directory.");
             case Resolution.UntrustedComponent(var component, var status) ->
                     throw untrusted(path, "'" + component + "' " + whyUntrusted(status, trust));
             case Resolution.UntrustedLink(var component, var status) -> throw untrusted(path, "'" + component
@@ -64,7 +64,7 @@ final class UnixKeyFileChecks {
         };
     }
 
-    // Why a directory or the file may not be on a key file's path, or null if it may.
+    // Why a directory or the file may not be on a trusted file's path, or null if it may.
     private static String whyUntrusted(UnixFileStatus status, KeyFileTrust trust) {
         if (!isTrustedUser(status.ownerId(), trust))
             return "is owned by uid " + status.ownerId() + ", not root or a trusted user";
@@ -83,7 +83,7 @@ final class UnixKeyFileChecks {
     }
 
     private static AccessDeniedException untrusted(String path, String why) {
-        return new AccessDeniedException(path, null, "Key file '" + path + "' is not trusted: " + why
-                + ". Keep key files where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.");
+        return new AccessDeniedException(path, null, "'" + path + "' is not trusted: " + why
+                + ". Keep it where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.");
     }
 }

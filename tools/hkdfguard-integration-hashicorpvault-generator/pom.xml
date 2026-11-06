@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>hkdfguard-integration-hashicorpvault-generator</artifactId>
+  <name>HkdfGuard Integration HashiCorp Vault Generator</name>
+  <description>
+    Generates hkdfguard-integration-hashicorpvault's typed Vault API (src/generated/java) from its
+    openapi.json. A build tool only: never published.
+  </description>
+
+  <!--
+    Run it from hkdfguard-java with the JDK's source launcher - no build needed, no dependencies:
+
+        java tools/hkdfguard-integration-hashicorpvault-generator/src/main/java/io/github/runsecure/hkdfguard/integration/hashicorpvault/generator/GeneratorCommand.java
+
+    (see docs/how-to/use-hashicorp-vault-client.md). It's a module of the build for its tests, one
+    of which fails whenever the checked-in generated code isn't what the spec generates.
+  -->
+
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+
+    <!-- Not published. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <skipPublishing>true</skipPublishing>
+    <gpg.skip>true</gpg.skip>
+    <maven.source.skip>true</maven.source.skip>
+    <maven.javadoc.skip>true</maven.javadoc.skip>
+  </properties>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <!-- Where the library is: its spec, its settings and the generated code checked in. -->
+            <hkdfguard.integration.dir>${project.basedir}/../../hkdfguard-integration-hashicorpvault</hkdfguard.integration.dir>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
