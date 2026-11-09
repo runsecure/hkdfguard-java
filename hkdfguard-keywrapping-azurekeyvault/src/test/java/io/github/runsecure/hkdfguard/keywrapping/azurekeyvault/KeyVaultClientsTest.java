@@ -65,9 +65,11 @@ class KeyVaultClientsTest {
         assertEquals(32, await(wrapper.unwrapAsync(wrapped, revealed)));
 
         assertArrayEquals(dek, revealed);
-        // The signing key's recorded version is fetched and the signature checked with it here;
-        // only then is the wrapping key's recorded version asked to unwrap.
+        // The signing key's recorded version is read by the wrapper (is it enabled?), then fetched by
+        // the SDK, which checks the signature with it here; only then is the wrapping key's
+        // recorded version asked to unwrap.
         assertEquals(List.of(
+                "GET /keys/" + FakeKeyVault.SIGNING_KEY_NAME + "/" + signVersion,
                 "GET /keys/" + FakeKeyVault.SIGNING_KEY_NAME + "/" + signVersion,
                 "GET /keys/" + FakeKeyVault.WRAPPING_KEY_NAME + "/" + wrapVersion,
                 "POST /keys/" + FakeKeyVault.WRAPPING_KEY_NAME + "/" + wrapVersion + "/unwrapkey"), stub.requests);
@@ -101,6 +103,22 @@ class KeyVaultClientsTest {
 
         assertArrayEquals(dek, revealed);
         assertTrue(stub.requests.stream().anyMatch(request -> request.endsWith("/verify")), stub.requests.toString());
+    }
+
+    @Test
+    void disablingTheSigningKeyVersion_RevokesWhatItSigned_ThoughTheClientVerifiesLocally() {
+        // The SDK fetched the public key on the first unwrap and verifies with it locally from then
+        // on: without the wrapper's own read, disabling the version would change nothing here.
+        var wrapper = wrapper();
+        var wrapped = wrap(wrapper, random(32));
+        await(wrapper.unwrapAsync(wrapped, new byte[32]));
+        vault.disable(FakeKeyVault.SIGNING_KEY_NAME, vault.currentVersion(FakeKeyVault.SIGNING_KEY_NAME));
+        stub.requests.clear();
+
+        var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(wrapped, new byte[32]));
+
+        assertTrue(exception.getMessage().contains("is disabled in Azure Key Vault"), exception.getMessage());
+        assertTrue(stub.requests.stream().noneMatch(request -> request.endsWith("/unwrapkey")), stub.requests.toString());
     }
 
     @Test
@@ -141,7 +159,7 @@ class KeyVaultClientsTest {
 
         var exception = assertFailsWith(CryptographicException.class, wrapper().unwrapAsync(wrapped, new byte[32]));
 
-        assertTrue(exception.getMessage().contains("verify failed for key '" + FakeKeyVault.SIGNING_KEY_NAME + "': KeyNotFound (HTTP 404)"),
+        assertTrue(exception.getMessage().contains("read failed for key '" + FakeKeyVault.SIGNING_KEY_NAME + "': KeyNotFound (HTTP 404)"),
                 exception.getMessage());
     }
 

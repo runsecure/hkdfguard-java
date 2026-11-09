@@ -223,6 +223,121 @@ class SecretPipelineWriterBaseTest extends SecretPipelineWriterContractTest {
         }
     }
 
+    // --- Writing files: never through what is already there ------------------------------------
+
+    /** Writes a file outside the output folder that a link planted in it will point to. */
+    private java.nio.file.Path victim() throws IOException {
+        var victim = folder.resolveSibling("victim.txt");
+        Files.writeString(victim, "do not overwrite");
+        return victim;
+    }
+
+    /** {@code link}, a symbolic link to {@code target}; the test is skipped where this account can't make one (Windows without the privilege). */
+    private static void symbolicLink(java.nio.file.Path link, java.nio.file.Path target) {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (IOException | UnsupportedOperationException e) {
+            org.junit.jupiter.api.Assumptions.abort("Symbolic links can't be made here: " + e);
+        }
+    }
+
+    private void writeItem(java.util.function.Consumer<FakeWriter> write) {
+        store.set("item", "s3cret");
+        try (var writer = new FakeWriter(protector, List.of("item"), store)) {
+            pull(writer);
+            write.accept(writer);
+        }
+    }
+
+    private static void writeFiles(FakeWriter writer, java.nio.file.Path folder) {
+        try {
+            writer.writeProtectedSecretFiles(folder);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static void writeJson(FakeWriter writer, java.nio.file.Path path) {
+        try {
+            writer.writeJsonSecrets(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void aSymbolicLinkPlantedUnderASecretsName_IsReplaced_NotWrittenThrough() throws IOException {
+        var victim = victim();
+        Files.createDirectories(folder);
+        symbolicLink(folder.resolve("item"), victim);
+
+        writeItem(writer -> writeFiles(writer, folder));
+
+        assertEquals("do not overwrite", Files.readString(victim));
+        assertTrue(Files.isRegularFile(folder.resolve("item"), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+        assertEquals("s3cret", decrypt(Files.readString(folder.resolve("item")), "item"));
+        assertEquals(List.of("item"), filesInFolder());
+    }
+
+    @Test
+    void aHardLinkPlantedUnderASecretsName_IsReplaced_NotWrittenThrough() throws IOException {
+        var victim = victim();
+        Files.createDirectories(folder);
+        Files.createLink(folder.resolve("item"), victim);
+
+        writeItem(writer -> writeFiles(writer, folder));
+
+        assertEquals("do not overwrite", Files.readString(victim));
+        assertEquals("s3cret", decrypt(Files.readString(folder.resolve("item")), "item"));
+    }
+
+    @Test
+    void aLinkPlantedAtTheJsonFilesPath_IsReplaced_NotWrittenThrough() throws IOException {
+        var victim = victim();
+        Files.createDirectories(folder);
+        var path = folder.resolve("secrets.json");
+        Files.createLink(path, victim);
+
+        writeItem(writer -> writeJson(writer, path));
+
+        assertEquals("do not overwrite", Files.readString(victim));
+        assertEquals("s3cret", decrypt(members(Files.readAllBytes(path)).get("item"), "item"));
+        assertEquals(List.of("secrets.json"), filesInFolder());
+    }
+
+    @Test
+    void aWriteThatCanNotBeRenamedIntoPlace_LeavesNothingBehind() throws IOException {
+        // A folder by the secret's name, not empty: nothing can replace it.
+        Files.createDirectories(folder.resolve("item"));
+        Files.writeString(folder.resolve("item").resolve("keep"), "kept");
+
+        store.set("item", "s3cret");
+        try (var writer = new FakeWriter(protector, List.of("item"), store)) {
+            pull(writer);
+            assertThrows(IOException.class, () -> writer.writeProtectedSecretFiles(folder));
+        }
+
+        assertEquals("kept", Files.readString(folder.resolve("item").resolve("keep")));
+        try (var entries = Files.list(folder)) {
+            assertEquals(List.of("item"), entries.map(entry -> entry.getFileName().toString()).toList());
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void aReplacedFile_KeepsItsPosixPermissions() throws IOException {
+        Files.createDirectories(folder);
+        var path = folder.resolve("item");
+        Files.writeString(path, "old");
+        var permissions = java.nio.file.attribute.PosixFilePermissions.fromString("rw-r-----");
+        Files.setPosixFilePermissions(path, permissions);
+
+        writeItem(writer -> writeFiles(writer, folder));
+
+        assertEquals(permissions, Files.getPosixFilePermissions(path));
+        assertEquals("s3cret", decrypt(Files.readString(path), "item"));
+    }
+
     @Test
     void aStreamThatFails_FailsTheWrite() {
         store.set("item", "s3cret");

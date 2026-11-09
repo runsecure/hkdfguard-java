@@ -304,10 +304,13 @@ hkdfguard:
   `my-service.api-key`. Spring would also find that value as `my-service.apikey`, but it would not
   decrypt under that spelling. An environment variable (`MY_SERVICE_API_KEY`) holding a value
   encrypted for `my-service.api-key` decrypts under that name.
-- **Health:** with Actuator, `/actuator/health` gains an `hkdfguard` component that encrypts and
-  decrypts a random probe with the current key. It reports `DOWN` when that key can't protect new
+- **Health:** with Actuator, `/actuator/health` gains an `hkdfguard` component that decrypts a
+  random probe the current key encrypted. It reports `DOWN` when that key can't protect new
   values, most often because it failed closed after its KEK was revoked or became unreachable.
-  It never calls the KMS. Its details are `currentVersion` (the key checked) and, when it is
+  It never calls the KMS. Every encryption counts against the key's AES-GCM limit, so a fresh
+  probe is encrypted at most once a minute per current key (`PROBE_REENCRYPT_INTERVAL`), and other
+  polls only decrypt: polling the endpoint, however often, can't exhaust the key. A key that can
+  no longer encrypt shows as `DOWN` within that minute. Its details are `currentVersion` (the key checked) and, when it is
   `DOWN`, `error`: a fixed message when the probe doesn't decrypt to what was encrypted, or, when
   the check throws, the exception's class and message (added by Spring's
   `AbstractHealthIndicator`). No key material, probe or ciphertext is reported. Turn it off with
@@ -603,6 +606,9 @@ var wrapper = new AzureKeyVaultKeyWrapperImpl(
 - Both keys are pinned. Each wrapped DEK records only the versions of the two keys it was made
   with; the vault and key names always come from the constructor. Rotating either key in Key Vault
   needs nothing here, as long as versions in use stay enabled. Give identifiers without a version.
+- Disabling a signing key version revokes the key files it signed. The SDK verifies locally with a
+  public key it fetched once, so every unwrap first reads that version's state from Key Vault and
+  refuses a disabled one. Expiry doesn't revoke: Key Vault still verifies under an expired key.
 - The optional context is bound into the signature and must be given again, exactly, to reveal the
   DEK. It isn't secret.
 - Key Vault has no "generate data key": `generateAndWrapAsync` generates the DEK in the process,
@@ -947,12 +953,19 @@ secret, without a byte order mark, replacing a file by that name and leaving eve
 is; before a pull it throws `IllegalStateException`. Only ciphertext is written, but
 `FilePerSecretCacheImpl` refuses a folder or file anyone but administrators and the principals it
 trusts can modify, so write where the deployment can set that, or set it once they're written.
+Each file is written to a new file beside it, then renamed over the old one, so a reader never sees
+it half written. Whatever was there by that name, a symbolic or hard link included, is replaced
+rather than written through, so a link planted in the folder can't redirect the write. A replaced
+file keeps its POSIX permissions; on Windows the new file takes the folder's inheritable
+permissions. The folder itself is used as given: keep it, and the folders above it, out of reach of
+untrusted accounts.
 
 `writeJsonSecrets` writes the same values as one JSON file instead, the file
 `JsonSecretsFileReadOnlyCacheImpl` reads: one object, a member per file name in ordinal order,
 indented, `+` and `/` kept as they are, UTF-8 without a byte order mark - byte for byte what .NET
 writes on the same platform, lines ending in the platform's line separator as .NET's
-`Environment.NewLine` does (`{}` when nothing was found). A file already there is replaced.
+`Environment.NewLine` does (`{}` when nothing was found). A file already there is replaced, in the
+same way.
 
 To deliver to another host without a file on this one, write to a process's standard input and
 close it once the future completes. `writeProtectedSecretFilesAsync` writes a PAX tar archive of

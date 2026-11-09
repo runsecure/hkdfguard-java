@@ -26,6 +26,7 @@ public final class WindowsAccessRules {
     public static final int APPEND_DATA = 0x0004;               // FILE_APPEND_DATA, FILE_ADD_SUBDIRECTORY on a folder
     public static final int WRITE_EXTENDED_ATTRIBUTES = 0x0010; // FILE_WRITE_EA
     public static final int DELETE_SUBDIRECTORIES_AND_FILES = 0x0040; // FILE_DELETE_CHILD
+    public static final int WRITE_ATTRIBUTES = 0x0100;          // FILE_WRITE_ATTRIBUTES
     public static final int DELETE = 0x00010000;
     public static final int CHANGE_PERMISSIONS = 0x00040000;    // WRITE_DAC
     public static final int TAKE_OWNERSHIP = 0x00080000;        // WRITE_OWNER
@@ -36,10 +37,13 @@ public final class WindowsAccessRules {
      * Any right that lets a principal change what a path refers to: write or append data (on a
      * folder, create files or folders), delete or rename (Delete on the item,
      * DeleteSubdirectoriesAndFiles on its parent), write extended attributes, or take over the ACL.
-     * Generic bits are listed too, since an ACE can carry them unmapped.
+     * Also write attributes, which sets a file's timestamps: a key file's last-modified time is its
+     * age, which decides when it stops encrypting (KeyRingBuilder's keyFileMaxAgeDays), so whoever
+     * can set it can keep an expired key file encrypting, or stop a current one. Generic bits are
+     * listed too, since an ACE can carry them unmapped.
      */
     public static final int GUARDED_RIGHTS = WRITE_DATA | APPEND_DATA | WRITE_EXTENDED_ATTRIBUTES | DELETE_SUBDIRECTORIES_AND_FILES
-            | DELETE | CHANGE_PERMISSIONS | TAKE_OWNERSHIP | GENERIC_ALL | GENERIC_WRITE;
+            | WRITE_ATTRIBUTES | DELETE | CHANGE_PERMISSIONS | TAKE_OWNERSHIP | GENERIC_ALL | GENERIC_WRITE;
 
     /**
      * On a drive root, only what lets a principal rename or delete an entry directly beneath it -

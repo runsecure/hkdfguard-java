@@ -261,8 +261,8 @@ native library's rules, through `TrustedKeyFile` in `hkdfguard-securefile`:
 - **Windows:** the file is on a local fixed drive, not a UNC path or network drive, and its path
   runs through no symbolic link, junction or substituted drive. The file and every folder above it
   are owned by SYSTEM, Administrators or TrustedInstaller, and grant no one else the right to write,
-  delete, rename, change permissions or take ownership. For a folder that includes creating files
-  in it. The drive root is held only to renaming and deleting what's beneath it. So nothing under
+  write attributes (which sets the timestamp a key file's age is read from), delete, rename, change
+  permissions or take ownership. For a folder that includes creating files in it. The drive root is held only to renaming and deleting what's beneath it. So nothing under
   `C:\ProgramData`, your user profile or `%TEMP%` is trusted, nor a folder made directly under `C:\`
   with its default permissions.
 - **Linux and macOS:** the file and every directory above it, up to `/`, are owned by root and

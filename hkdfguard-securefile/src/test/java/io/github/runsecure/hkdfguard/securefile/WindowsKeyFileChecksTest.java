@@ -201,6 +201,8 @@ class WindowsKeyFileChecksTest {
             WindowsAccessRules.APPEND_DATA,
             WindowsAccessRules.WRITE_EXTENDED_ATTRIBUTES,
             WindowsAccessRules.DELETE_SUBDIRECTORIES_AND_FILES,
+            // Sets the file's timestamps, and a key file's last-modified time is its age.
+            WindowsAccessRules.WRITE_ATTRIBUTES,
             WindowsAccessRules.DELETE,
             WindowsAccessRules.CHANGE_PERMISSIONS,
             WindowsAccessRules.TAKE_OWNERSHIP,
