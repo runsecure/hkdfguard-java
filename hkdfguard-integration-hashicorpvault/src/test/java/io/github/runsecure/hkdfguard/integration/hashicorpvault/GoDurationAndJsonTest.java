@@ -323,6 +323,17 @@ class GoDurationAndJsonTest {
     // --- SecureBuffer -----------------------------------------------------------------------------
 
     @Test
+    void secureBuffer_ReadsUpToItsLimit_AndStopsJustPastIt() throws Exception {
+        try (var exact = new SecureBuffer(); var over = new SecureBuffer()) {
+            assertTrue(exact.readFrom(new ByteArrayInputStream(new byte[100_000]), 100_000));
+            assertEquals(100_000, exact.length());
+
+            assertFalse(over.readFrom(new ByteArrayInputStream(new byte[100_001]), 100_000));
+            assertEquals(100_001, over.length());
+        }
+    }
+
+    @Test
     void secureBuffer_Grows_AndIsZeroedWhenItGrowsAndWhenClosed() throws Exception {
         var buffer = new SecureBuffer(4);
         var first = buffer.array();

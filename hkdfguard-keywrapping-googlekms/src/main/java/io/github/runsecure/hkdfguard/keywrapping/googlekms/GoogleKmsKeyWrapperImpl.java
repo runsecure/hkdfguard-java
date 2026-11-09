@@ -38,6 +38,8 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 import java.util.zip.CRC32C;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Protects (Encrypt) and reveals (Decrypt) a DEK under one symmetric Google Cloud KMS key (purpose
@@ -54,6 +56,7 @@ import java.util.zip.CRC32C;
  * optional context: Decrypt fails unless both are presented again exactly. The label stops a
  * ciphertext the same key made for some other purpose being accepted as a DEK; the context stops a
  * key file made for one application being used by another that shares the key. Neither is secret.
+ * A wrapper made without a context logs a warning: give each application a context of its own.
  * Wrapped DEKs are byte for byte the .NET {@code GoogleKmsKeyWrapper}'s: a key file made by either
  * is read by the other, given the same key and context.
  * <p>
@@ -158,6 +161,11 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
      *                                  holds an unpaired surrogate or is over {@link #MAX_CONTEXT_LENGTH} bytes
      */
     public GoogleKmsKeyWrapperImpl(KeyManagementServiceClient client, String keyName, String context, KeyFileTrust keyFileTrust) {
+        this(client, keyName, context, keyFileTrust, LoggerFactory.getLogger(GoogleKmsKeyWrapperImpl.class));
+    }
+
+    /** The public constructor's, warning logger: the tests'. */
+    GoogleKmsKeyWrapperImpl(KeyManagementServiceClient client, String keyName, String context, KeyFileTrust keyFileTrust, Logger logger) {
         this.client = Objects.requireNonNull(client, "client");
         Objects.requireNonNull(keyName, "keyName");
         if (!isKeyName(keyName))
@@ -176,6 +184,10 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
         this.aad = ByteString.copyFrom(aadBytes);
         this.aadCrc32c = crc32c(aadBytes);
         this.keyFileTrust = keyFileTrust != null ? keyFileTrust : KeyFileTrust.ADMINISTRATORS_ONLY;
+
+        if (contextBytes.length == 0)
+            logger.warn("The Google Cloud KMS key wrapper for '{}' binds no context, so it accepts a key file wrapped under that key for any"
+                    + " service that shares it. Give each application a context of its own.", keyName);
     }
 
     /**

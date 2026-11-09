@@ -68,6 +68,12 @@ public final class VaultClient implements VaultApis, AutoCloseable {
 
     private static final String HEALTH_PATH = "/v1/sys/health";
 
+    /**
+     * The largest response body read, in bytes: 32 MiB, Vault's own default limit on a request. A
+     * larger one fails the request with a {@link VaultRequestException} instead of being buffered.
+     */
+    public static final int MAX_RESPONSE_LENGTH = 32 * 1024 * 1024;
+
     private final VaultClientOptions options;
     private final DataProtector tokenProtector;
     private final Logger logger;
@@ -109,7 +115,8 @@ public final class VaultClient implements VaultApis, AutoCloseable {
      * @throws NullPointerException     tokenProtector is null
      * @throws IllegalArgumentException the address isn't https (or http on loopback, or with
      *                                  allowUnencryptedHttp), or holds credentials, a query or a
-     *                                  fragment; the namespace can't be sent; the request timeout or a
+     *                                  fragment; a redirect origin isn't an https (or permitted http)
+     *                                  origin; the namespace can't be sent; the request timeout or a
      *                                  retry wait is negative; the HttpClient follows redirects, or is
      *                                  given together with TLS options; or a certificate can't be read
      */
@@ -122,6 +129,8 @@ public final class VaultClient implements VaultApis, AutoCloseable {
             throw new IllegalArgumentException("The request timeout must not be negative; it is " + options.requestTimeout() + ".");
         if (options.retry().retryWaitMin().isNegative() || options.retry().retryWaitMax().isNegative())
             throw new IllegalArgumentException("The retry waits must not be negative.");
+        for (var origin : options.redirectOrigins())
+            checkRedirectOrigin(origin, options);
         var ns = options.namespace();
         if (ns != null && !ns.isEmpty() && !isValidNamespace(ns))
             throw new IllegalArgumentException("The namespace '" + ns + "' contains non-printable characters.");
@@ -625,7 +634,9 @@ public final class VaultClient implements VaultApis, AutoCloseable {
             var expired = new AtomicBoolean();
             var watchdog = hasDeadline ? VaultHttp.watchDeadline(deadline, stream, expired) : null;
             try {
-                content.readFrom(stream);
+                if (!content.readFrom(stream, MAX_RESPONSE_LENGTH))
+                    throw new VaultRequestException("Vault's response to " + method + " " + path + " is over " + MAX_RESPONSE_LENGTH
+                            + " bytes, so it wasn't read.", response.statusCode());
             } catch (IOException e) {
                 if (expired.get())
                     throw new DeadlineExceeded(timedOut);
@@ -730,8 +741,36 @@ public final class VaultClient implements VaultApis, AutoCloseable {
             throw new VaultRedirectException(status, "the redirect would cause a protocol downgrade", location, request.method(), from);
         if (!scheme.equals("https") && !(scheme.equals("http") && (VaultHttp.isLoopback(location.getHost()) || options.allowUnencryptedHttp())))
             throw new VaultRedirectException(status, "the redirect would send the token over unencrypted http", location, request.method(), from);
+        var target = location;
+        if (!sameOrigin(from, location) && options.redirectOrigins().stream().noneMatch(origin -> sameOrigin(origin, target)))
+            throw new VaultRedirectException(status, "the redirect would send the token to another origin, which redirectOrigins doesn't list",
+                    location, request.method(), from);
 
         return location;
+    }
+
+    // Whether a and b have the same scheme, host and port, the scheme's default port standing in
+    // for none.
+    static boolean sameOrigin(URI a, URI b) {
+        if (a.getScheme() == null || b.getScheme() == null || a.getHost() == null || b.getHost() == null)
+            return false;
+        return a.getScheme().equalsIgnoreCase(b.getScheme()) && a.getHost().equalsIgnoreCase(b.getHost()) && port(a) == port(b);
+    }
+
+    private static int port(URI uri) {
+        if (uri.getPort() >= 0)
+            return uri.getPort();
+        return uri.getScheme().equalsIgnoreCase("https") ? 443 : 80;
+    }
+
+    // A redirect origin must be an origin the address itself could be: https, or http where allowed.
+    private static void checkRedirectOrigin(URI origin, VaultClientOptions options) {
+        var scheme = origin.getScheme() == null ? "" : origin.getScheme().toLowerCase(Locale.ROOT);
+        if (!origin.isAbsolute() || origin.isOpaque() || origin.getHost() == null || origin.getRawUserInfo() != null)
+            throw new IllegalArgumentException("The redirect origin '" + origin + "' isn't scheme://host[:port], e.g. https://vault-2.example.com:8200.");
+        if (!scheme.equals("https") && !(scheme.equals("http") && (VaultHttp.isLoopback(origin.getHost()) || options.allowUnencryptedHttp())))
+            throw new IllegalArgumentException("The redirect origin '" + origin + "' must be https; http is allowed only on a loopback address, or with"
+                    + " allowUnencryptedHttp, since a redirect carries the token.");
     }
 
     // One request, sent until it succeeds, fails in a way not worth retrying, or runs out of retries.

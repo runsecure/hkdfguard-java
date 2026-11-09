@@ -232,6 +232,46 @@ class VaultClientResilienceTest {
     }
 
     @Test
+    void aResponseOverTheLimit_FailsTheRequest_WithoutBufferingIt() {
+        try (var t = TestClient.create()) {
+            t.vault().then(200, "{\"data\":\"" + "a".repeat(VaultClient.MAX_RESPONSE_LENGTH) + "\"}");
+
+            var e = assertFailsWith(VaultRequestException.class, t.client().readAsync("a"));
+
+            assertTrue(e.getMessage().contains("over " + VaultClient.MAX_RESPONSE_LENGTH + " bytes"), e.getMessage());
+            assertEquals(1, t.vault().requests().size());
+        }
+    }
+
+    // A proxy's page: quoted in the message only in part, on one line; whole in rawResponseBytes.
+    @Test
+    void aLongErrorBody_IsQuotedInPart_OnOneLine() {
+        var page = "<html>\r\nInjected: line\n" + "x".repeat(10_000) + "</html>";
+        try (var t = TestClient.create()) {
+            t.vault().then(400, page);
+
+            var e = assertFailsWith(VaultResponseException.class, t.client().readAsync("a"));
+
+            assertTrue(e.getMessage().length() < 400, e.getMessage());
+            assertFalse(e.getMessage().contains("\n") || e.getMessage().contains("\r"), e.getMessage());
+            assertTrue(e.getMessage().endsWith("(" + page.length() + " bytes)"), e.getMessage());
+            assertEquals(page, new String(e.rawResponseBytes(), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void vaultsErrors_AreQuotedOnOneLine_AndKeptWhole() {
+        try (var t = TestClient.create()) {
+            t.vault().then(400, "{\"errors\":[\"1 error occurred:\\n\\t* bad\\n\"]}");
+
+            var e = assertFailsWith(VaultResponseException.class, t.client().readAsync("a"));
+
+            assertFalse(e.getMessage().contains("\n"), e.getMessage());
+            assertEquals(List.of("1 error occurred:\n\t* bad\n"), e.errors());
+        }
+    }
+
+    @Test
     void aSecondRedirect_Fails() {
         try (var t = TestClient.create(o -> o.followRedirects(true))) {
             t.vault().then(307, "", "Location", "/v1/b").then(307, "", "Location", "/v1/c");
@@ -255,15 +295,46 @@ class VaultClientResilienceTest {
         }
     }
 
+    // Another node of the cluster - here a second fake on another port, over http on loopback - is
+    // followed to only when redirectOrigins lists it; the token goes with the request.
     @Test
-    void anHttpRedirect_IsFollowedOnLoopback() {
-        try (var t = TestClient.create(o -> o.followRedirects(true))) {
-            t.vault().then(307, "", "Location", "http://localhost:" + t.vault().address().getPort() + "/v1/b");
+    void aRedirectToAListedOrigin_IsFollowed_WithTheToken() {
+        try (var other = new FakeVault();
+                var t = TestClient.create(o -> o.followRedirects(true).redirectOrigins(List.of(other.address())))) {
+            t.vault().then(307, "", "Location", other.address() + "/v1/b");
 
             await(t.client().readAsync("a"));
 
-            assertEquals("/v1/b", t.vault().requests().get(1).pathAndQuery());
+            assertEquals(1, t.vault().requests().size());
+            assertEquals("/v1/b", other.requests().get(0).pathAndQuery());
+            assertEquals(FakeVault.TOKEN, other.requests().get(0).header("X-Vault-Token"));
         }
+    }
+
+    @Test
+    void aRedirectToAnUnlistedOrigin_Fails_WithoutSendingTheToken() {
+        try (var other = new FakeVault(); var listed = new FakeVault();
+                var t = TestClient.create(o -> o.followRedirects(true).redirectOrigins(List.of(listed.address())))) {
+            t.vault().then(307, "", "Location", other.address() + "/v1/b");
+
+            var e = assertFailsWith(VaultRedirectException.class, t.client().readAsync("a"));
+
+            assertEquals("the redirect would send the token to another origin, which redirectOrigins doesn't list", e.reason());
+            assertTrue(other.requests().isEmpty());
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"https://VAULT.example:443,https://vault.example,true", "https://vault.example:8200,https://vault.example,false",
+            "http://vault.example,https://vault.example,false", "http://vault.example:80/x,http://vault.example/y,true"})
+    void sameOrigin_ComparesSchemeHostAndEffectivePort(String a, String b, boolean same) {
+        assertEquals(same, VaultClient.sameOrigin(URI.create(a), URI.create(b)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http://vault-2.example:8200", "vault-2.example:8200", "https://user@vault-2.example"})
+    void aRedirectOriginThatCantBeOne_IsRefused(String origin) {
+        assertThrows(IllegalArgumentException.class, () -> TestClient.create(o -> o.redirectOrigins(List.of(URI.create(origin)))));
     }
 
     @Test

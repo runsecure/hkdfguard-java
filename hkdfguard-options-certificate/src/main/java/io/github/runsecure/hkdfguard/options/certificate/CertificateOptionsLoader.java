@@ -45,7 +45,8 @@ import javax.security.auth.x500.X500Principal;
  * decrypted from the password source into a {@code char[]} only while the key is read, and zeroed at
  * once; it is never a String. A PKCS#12 file is opened through KeyStore "PKCS12"; a PEM certificate
  * through CertificateFactory, its encrypted PKCS#8 key through EncryptedPrivateKeyInfo and the JDK's
- * PBE ciphers (PBES2 included), and the key checked to be the certificate's.</li>
+ * PBES2 cipher (PBKDF2 with HMAC-SHA2 and AES only, at most 10,000,000 iterations; any legacy scheme
+ * is refused), and the key checked to be the certificate's.</li>
  * </ul>
  * Whatever the source, a certificate that isn't valid now, or that has no private key when one is
  * required, is refused. The result holds a private key only when one is required.

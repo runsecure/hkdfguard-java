@@ -19,6 +19,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 
 /**
  * The macOS loader's decisions - which install to use and whether its path and signature can be
@@ -590,4 +591,49 @@ class MacOsNativeLibraryLoaderTest {
     void theProbeExport_IsOneTheBindingCalls() {
         assertEquals("hkdfguard_wrap_dek", MacOsNativeLibraryLoader.PROBE_EXPORT);
     }
+    // --- Access control lists ------------------------------------------------------------------
+
+    private static UnixFileStatus withAcl(UnixFileStatus status, UnixAclWriter.Kind kind, long id) {
+        return status.withAclWriters(List.of(new UnixAclWriter(kind, id)));
+    }
+
+    @Test
+    void anAclLettingAnotherUserModifyTheLibrary_IsRefused() {
+        var fs = userInstall();
+        fs.put(MacOsNativeLibraryLoader.userPath(HOME), withAcl(fs.get(MacOsNativeLibraryLoader.userPath(HOME)), UnixAclWriter.Kind.USER, OTHER_USER));
+
+        var ex = assertThrows(SecurityException.class, () -> verify(fs, MacOsNativeLibraryLoader.userPath(HOME), USER_OWNERS));
+        assertTrue(ex.getMessage().contains("access control list") && ex.getMessage().contains("uid " + OTHER_USER), ex.getMessage());
+    }
+
+    @Test
+    void anAclLettingATrustedOwnerModifyIt_IsAccepted() {
+        var fs = userInstall();
+        fs.put(HOME + "/.hkdfguard", withAcl(fs.get(HOME + "/.hkdfguard"), UnixAclWriter.Kind.USER, USER));
+
+        assertDoesNotThrow(() -> verify(fs, MacOsNativeLibraryLoader.userPath(HOME), USER_OWNERS));
+    }
+
+    @Test
+    void anAclForAdministrators_IsAccepted_OnlyOnTheSharedSystemDirectories() {
+        var shared = systemInstall();
+        shared.put("/Library/Application Support", withAcl(shared.get("/Library/Application Support"), UnixAclWriter.Kind.GROUP, ADMIN));
+        assertDoesNotThrow(() -> verify(shared, MacOsNativeLibraryLoader.systemPath(), SYSTEM_OWNERS));
+
+        var install = systemInstall();
+        install.put("/Library/Application Support/HkdfGuard", withAcl(install.get("/Library/Application Support/HkdfGuard"), UnixAclWriter.Kind.GROUP, ADMIN));
+        assertThrows(SecurityException.class, () -> verify(install, MacOsNativeLibraryLoader.systemPath(), SYSTEM_OWNERS));
+    }
+
+    @Test
+    void anAclForEveryoneOrAnUnknownPrincipal_IsRefused() {
+        var everyone = systemInstall();
+        everyone.put("/Library", withAcl(everyone.get("/Library"), UnixAclWriter.Kind.GROUP, 12));
+        assertThrows(SecurityException.class, () -> verify(everyone, MacOsNativeLibraryLoader.systemPath(), SYSTEM_OWNERS));
+
+        var unknown = systemInstall();
+        unknown.put(MacOsNativeLibraryLoader.systemPath(), withAcl(unknown.get(MacOsNativeLibraryLoader.systemPath()), UnixAclWriter.Kind.UNKNOWN, -1));
+        assertThrows(SecurityException.class, () -> verify(unknown, MacOsNativeLibraryLoader.systemPath(), SYSTEM_OWNERS));
+    }
+
 }

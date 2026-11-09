@@ -90,6 +90,19 @@ class GoogleKmsKeyWrapperImplTest {
     }
 
     @Test
+    void aWrapperWithoutAContext_LogsAWarning_AndOneWithAContextDoesnt() {
+        var logger = new RecordingLogger();
+
+        new GoogleKmsKeyWrapperImpl(kms.client(), KEY_NAME, "", null, logger);
+        assertEquals(1, logger.entries().size());
+        assertEquals(org.slf4j.event.Level.WARN, logger.entries().get(0).level());
+        assertTrue(logger.entries().get(0).message().contains(KEY_NAME), logger.entries().get(0).message());
+
+        new GoogleKmsKeyWrapperImpl(kms.client(), KEY_NAME, CONTEXT, null, logger);
+        assertEquals(1, logger.entries().size());
+    }
+
+    @Test
     void constructor_RejectsMissingAndMalformedArguments() {
         var client = kms.client();
 

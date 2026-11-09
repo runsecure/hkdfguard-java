@@ -48,12 +48,22 @@ final class SecureBuffer implements AutoCloseable {
 
     /** Reads stream to its end into the buffer. */
     void readFrom(InputStream stream) throws IOException {
+        readFrom(stream, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Reads stream to its end into the buffer, unless it holds more than maxLength bytes: then stops
+     * there, with at most maxLength + 1 bytes read, and returns false.
+     */
+    boolean readFrom(InputStream stream, int maxLength) throws IOException {
         while (true) {
-            reserve(8192);
-            var read = stream.read(buffer, length, buffer.length - length);
+            reserve((int) Math.min(8192, (long) maxLength + 1 - length));
+            var read = stream.read(buffer, length, (int) Math.min(buffer.length - length, (long) maxLength + 1 - length));
             if (read < 0)
-                return;
+                return true;
             length += read;
+            if (length > maxLength)
+                return false;
         }
     }
 

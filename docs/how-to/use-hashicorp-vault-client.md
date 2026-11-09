@@ -194,7 +194,7 @@ try {
 | Login and wrapping tokens in responses | Strings | Protected as they're read (`StaticVaultToken`) |
 | Address | Any scheme | `https`, or `http` on loopback; any other `http` needs `allowUnencryptedHttp` |
 | Unix domain sockets | Yes | No: `java.net.http` can't connect to one |
-| Redirects | Follows one, never `https` to `http` | Refused (`VaultRedirectException`) unless `followRedirects` is set; then as vault-client-go |
+| Redirects | Follows one, never `https` to `http` | Refused (`VaultRedirectException`) unless `followRedirects` is set; then one, never `https` to `http`, and only to the address's own origin or one `redirectOrigins` lists (the cluster's other nodes, for raft calls a standby redirects) |
 | Address with a path | Path dropped | Kept as a prefix, for Vault behind a reverse proxy |
 | Free-form values | `map[string]interface{}` | `Map<String, Object>` sent, `Map<String, JsonValue>` returned |
 | Optional fields | Zero values left out (`omitempty`) | Boxed and nullable; null left out, so `false` and `0` can be sent |

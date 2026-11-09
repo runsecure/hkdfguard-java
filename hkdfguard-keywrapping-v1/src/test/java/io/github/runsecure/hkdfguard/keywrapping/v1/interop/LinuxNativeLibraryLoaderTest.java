@@ -25,6 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 
 /**
  * The Linux loader's decisions - where the library is, whether every path to it and to its
@@ -627,4 +628,26 @@ class LinuxNativeLibraryLoaderTest {
 
         assertInstanceOf(UncheckedIOException.class, ex.getCause());
     }
+    @Test
+    void anAclLettingAnyoneButRootModifyIt_IsRefused_WhereverItIsOnThePath() {
+        for (var writer : List.of(new UnixAclWriter(UnixAclWriter.Kind.USER, USER), new UnixAclWriter(UnixAclWriter.Kind.GROUP, ROOT),
+                new UnixAclWriter(UnixAclWriter.Kind.UNKNOWN, -1))) {
+            for (var path : List.of("/usr", LIB_DIR, LIBRARY)) {
+                var fs = standardHost();
+                fs.entries.put(path, fs.status(path).withAclWriters(List.of(writer)));
+
+                var ex = assertThrows(SecurityException.class, () -> fs.resolve(LIBRARY), path + " " + writer);
+                assertTrue(ex.getMessage().contains("'" + path + "' has an access control list"), ex.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void anAclNamingOnlyRoot_IsAccepted() {
+        var fs = standardHost();
+        fs.entries.put(LIBRARY, fs.status(LIBRARY).withAclWriters(List.of(new UnixAclWriter(UnixAclWriter.Kind.USER, ROOT))));
+
+        assertEquals(LIBRARY, fs.resolve(LIBRARY));
+    }
+
 }

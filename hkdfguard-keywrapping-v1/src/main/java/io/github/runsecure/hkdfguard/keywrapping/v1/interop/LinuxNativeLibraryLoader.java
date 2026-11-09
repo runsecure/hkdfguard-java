@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
@@ -272,6 +273,13 @@ final class LinuxNativeLibraryLoader {
 
         if (status.groupWritable() || status.otherWritable())
             return "is writable by its group or by every user; the HkdfGuard native library and its dependencies are only trusted in locations only root can modify.";
+
+        // A POSIX ACL can let others write where the mode bits don't: only root may.
+        for (var writer : status.aclWriters()) {
+            if (writer.kind() != UnixAclWriter.Kind.USER || writer.id() != 0)
+                return "has an access control list that lets " + writer
+                        + " modify it; the HkdfGuard native library and its dependencies are only trusted in locations only root can modify.";
+        }
 
         return null;
     }

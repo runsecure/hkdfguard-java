@@ -22,6 +22,11 @@ import java.util.concurrent.TimeoutException;
  * <p>The JDK wraps a process's stdin in a BufferedOutputStream: a write of 8 KiB or more goes
  * straight to the pipe, but a shorter one - a password - passes through that stream's buffer, which
  * Java can't reach to zero. It is flushed and closed at once, and unreachable from then on.
+ *
+ * <p>stdout bypasses its buffer only while the process runs. When it exits, the JDK's process reaper
+ * drains what the pipe still holds into an array of its own (ProcessPipeInputStream.processExited),
+ * which can't be reached to zero, and later reads come from there. systemd-creds writes the value
+ * and exits at once, so the whole value may pass through that array, which lives until collected.
  */
 final class ProcessSystemdCredsRunner implements SystemdCredsRunner {
     static final ProcessSystemdCredsRunner INSTANCE = new ProcessSystemdCredsRunner();
