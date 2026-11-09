@@ -1,0 +1,16 @@
+{
+  "description": "The operations hkdfguard-integration-hashicorpvault generates from openapi.json: logging in and managing tokens, the KV and cubbyhole secrets engines, the transit engine (HkdfGuard's KMS), and a few system endpoints. Each entry is a regular expression matched against a method name without its Async suffix, in PascalCase as .NET names it (KvV2Read for kvV2ReadAsync), and must match at least one. Anything else stays reachable through VaultClient's generic readAsync, writeAsync, listAsync and deleteAsync. Regenerate after changing this: java tools/hkdfguard-integration-hashicorpvault-generator/src/main/java/io/github/runsecure/hkdfguard/integration/hashicorpvault/generator/GeneratorCommand.java (from hkdfguard-java)",
+  "include": [
+    "^[A-Za-z]+Login$",
+    "^RadiusLoginWithUsername$",
+    "^JwtOidc(RequestAuthorizationUrl|Callback|CallbackFormPost)$",
+    "^OktaVerify$",
+    "^Token(Create|CreateOrphan|CreateAgainstRole|LookUp|LookUpAccessor|LookUpSelf|Renew|RenewAccessor|RenewSelf|Revoke|RevokeAccessor|RevokeOrphan|RevokeSelf)$",
+    "^KvV1",
+    "^KvV2",
+    "^Cubbyhole",
+    "^Transit",
+    "^(ReadHealthStatus|SealStatus|LeaderStatus|MountsListSecretsEngines)$",
+    "^(Wrap|Unwrap|Rewrap|ReadWrappingProperties)$"
+  ]
+}

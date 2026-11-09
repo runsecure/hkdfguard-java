@@ -1,6 +1,8 @@
 package io.github.runsecure.hkdfguard.abstractions;
 
+import java.io.OutputStream;
 import java.nio.CharBuffer;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * A short-lived, string-level protector for a pipeline that must encrypt secrets before a durable
@@ -54,6 +56,28 @@ public interface PipelineDataProtector extends AutoCloseable {
      * process listings and logs capture.
      */
     CharBuffer getKeyAsBase64();
+
+    /**
+     * Writes the key to {@code destination} exactly as the wrap tool's {@code --dek-stdin} reads
+     * it - its base64 form as ASCII, with no line ending - and flushes it. For the wrap tool's
+     * standard input, local or remote: the stdin of {@code hkdfguard wrap … --dek-stdin}, or of
+     * {@code ssh -T host sudo -n hkdfguard wrap … --dek-stdin} - a {@link Process}'s
+     * {@link Process#getOutputStream() output stream}. The bytes are written from an array of their
+     * own, zeroed once the write and flush complete; no String is ever made of them. destination is
+     * left open: close it afterwards, so the tool sees the end of its input.
+     * <p>
+     * The key is encoded before this returns; the write runs on a virtual thread of its own.
+     * Cancelling the returned future interrupts it - a stream that ignores interrupts, as a
+     * process's standard input does, still finishes the write it is blocked in - and the bytes are
+     * zeroed however it ends.
+     *
+     * @param destination where to write the key: a process's standard input
+     * @return completes once the key has been written and flushed; fails with the
+     *         {@link java.io.IOException} the stream fails with
+     * @throws NullPointerException  destination is null
+     * @throws IllegalStateException the protector has been closed
+     */
+    CompletableFuture<Void> writeDekAsync(OutputStream destination);
 
     /** Zeroes the key and its base64 form. Safe to call more than once. */
     @Override

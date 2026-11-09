@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.cache.awssecretsmanager;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyRing;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
 import io.github.runsecure.hkdfguard.cache.RemoteSecretCache;
@@ -33,7 +34,9 @@ import software.amazon.awssdk.services.secretsmanager.model.ResourceNotFoundExce
  * missing. Any other failure (access denied, a secret scheduled for deletion, AWS unreachable, no
  * credentials) propagates as the AWS exception, and a response body that can't be trusted as
  * Secrets Manager's as an {@link io.github.runsecure.hkdfguard.cache.InvalidSecretDataException}. A
- * SecretString is cached as its UTF-8 bytes; a SecretBinary as its bytes.
+ * response naming a secret other than the one asked for is refused with a
+ * {@link CryptographicException}, and nothing it held is cached. A SecretString is cached as its
+ * UTF-8 bytes; a SecretBinary as its bytes.
  * <p>
  * A key/value secret - a SecretString holding a JSON object, as the console stores one - is cached
  * whole under its name and each member under "name#key" - "prod/app#password" - all from one
@@ -137,6 +140,7 @@ public final class AwsSecretsManagerSecretCacheImpl extends RemoteSecretCache {
         return KeyWrapperFutures.cancelling(call.handle((response, error) -> {
             if (error == null) {
                 ensureCaptured(capture, response);
+                ensureNamed(name, response);
                 return null;
             }
 
@@ -155,6 +159,14 @@ public final class AwsSecretsManagerSecretCacheImpl extends RemoteSecretCache {
                 throw e;
             throw new CompletionException(cause);
         }), call);
+    }
+
+    // The response must be the secret asked for: names are exact, and only a name is ever asked for,
+    // so Secrets Manager answers with that name exactly. Failing the fetch discards every value the
+    // capture handed over.
+    private static void ensureNamed(String name, GetSecretValueResponse response) {
+        if (!name.equals(response.name()))
+            throw new CryptographicException("Secrets Manager answered a request for secret '" + name + "' with '" + response.name() + "'.");
     }
 
     // A successful response whose body never passed through the capture would hold the secret, and

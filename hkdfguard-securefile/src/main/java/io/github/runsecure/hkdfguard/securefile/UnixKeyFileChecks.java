@@ -1,5 +1,6 @@
 package io.github.runsecure.hkdfguard.securefile;
 
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
@@ -9,11 +10,14 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.NoSuchFileException;
 
 /**
- * Decides whether a key file's path on Linux or macOS can be trusted: resolves it the way the
- * kernel would, from {@code /}, checking everything it passes through. Every directory and the file
+ * Decides whether a file's path on Linux or macOS can be trusted (a key file's, or any file
+ * {@link TrustedFile} reads): resolves it the way the kernel would, from {@code /}, checking everything it passes through. Every directory and the file
  * itself must be owned by root or a {@link KeyFileTrust#unixUserIds()} user, must not be writable
  * by others, and may be writable by its group only if that is a {@link KeyFileTrust#unixGroupIds()}
- * group. A symbolic link is followed only if a trusted user owns it, and its target is then checked
+ * group. Its access control list may let only root, trusted users and trusted groups modify it: a
+ * POSIX ACL (Linux) or extended ACL (macOS) entry granting anyone else write - or, on macOS, any
+ * right that changes it, or an entry whose principal maps to no uid or gid - fails it (see
+ * {@link io.github.runsecure.hkdfguard.platform.unix.UnixFiles}). A symbolic link is followed only if a trusted user owns it, and its target is then checked
  * in turn - so macOS's root-owned /etc to private/etc works, and a link anyone else made doesn't.
  * Nothing under /tmp, /var/tmp or another world-writable directory passes, sticky or not.
  * <p>
@@ -52,9 +56,9 @@ final class UnixKeyFileChecks {
             }
             case Resolution.RootUnreadable() -> throw new AccessDeniedException(path, null, "'/' could not be examined.");
             case Resolution.Missing(var component) ->
-                    throw new NoSuchFileException(path, null, "Key file '" + path + "' was not found ('" + component + "' does not exist).");
+                    throw new NoSuchFileException(path, null, "'" + path + "' was not found ('" + component + "' does not exist).");
             case Resolution.NotADirectory(var component) ->
-                    throw new NoSuchFileException(path, null, "Key file '" + path + "' runs through '" + component + "', which is not a directory.");
+                    throw new NoSuchFileException(path, null, "'" + path + "' runs through '" + component + "', which is not a directory.");
             case Resolution.UntrustedComponent(var component, var status) ->
                     throw untrusted(path, "'" + component + "' " + whyUntrusted(status, trust));
             case Resolution.UntrustedLink(var component, var status) -> throw untrusted(path, "'" + component
@@ -64,7 +68,7 @@ final class UnixKeyFileChecks {
         };
     }
 
-    // Why a directory or the file may not be on a key file's path, or null if it may.
+    // Why a directory or the file may not be on a trusted file's path, or null if it may.
     private static String whyUntrusted(UnixFileStatus status, KeyFileTrust trust) {
         if (!isTrustedUser(status.ownerId(), trust))
             return "is owned by uid " + status.ownerId() + ", not root or a trusted user";
@@ -75,7 +79,21 @@ final class UnixKeyFileChecks {
         if (status.groupWritable() && !trust.unixGroupIds().contains(status.groupId()))
             return "is writable by group " + status.groupId() + ", which is not a trusted group";
 
+        for (var writer : status.aclWriters()) {
+            if (!isTrustedAclWriter(writer, trust))
+                return "has an access control list that lets " + writer + " modify it, which is not trusted";
+        }
+
         return null;
+    }
+
+    private static boolean isTrustedAclWriter(UnixAclWriter writer, KeyFileTrust trust) {
+        return switch (writer.kind()) {
+            case USER -> isTrustedUser(writer.id(), trust);
+            // As for the owning group: trusted only when named, root's group included.
+            case GROUP -> trust.unixGroupIds().contains(writer.id());
+            case UNKNOWN -> false;
+        };
     }
 
     private static boolean isTrustedUser(long uid, KeyFileTrust trust) {
@@ -83,7 +101,7 @@ final class UnixKeyFileChecks {
     }
 
     private static AccessDeniedException untrusted(String path, String why) {
-        return new AccessDeniedException(path, null, "Key file '" + path + "' is not trusted: " + why
-                + ". Keep key files where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.");
+        return new AccessDeniedException(path, null, "'" + path + "' is not trusted: " + why
+                + ". Keep it where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.");
     }
 }

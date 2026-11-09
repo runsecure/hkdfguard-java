@@ -27,9 +27,19 @@ import java.util.function.ToIntFunction;
  * sources support it (e.g. a writable {@link ProtectedCacheImpl} among them). Safe to read while
  * sources are being added.
  * <p>
+ * A source that throws fails the lookup, even when a later source holds the name: a source that
+ * couldn't answer can't say whether it holds the name, and answering from a later source could
+ * return a value an earlier one overrides. Order sources so that cannot cost availability: add
+ * local sources ({@link ProtectedCacheImpl}, a file-per-secret cache) before remote ones (a
+ * {@link RemoteSecretCache} such as the Key Vault or Secrets Manager caches). A remote cache doesn't
+ * remember a name its store lacks, so a remote source added first makes a network call for every
+ * local-only name on every lookup - enough to be throttled, and then to fail every lookup.
+ * <p>
  * decryptAsync and findMaxDecryptedLengthAsync ask each source with its own asynchronous member,
  * one after another, so a source that fetches over the network (a {@link RemoteSecretCache})
- * doesn't block; cancelling the returned future cancels the source being asked.
+ * doesn't block; cancelling the returned future cancels the source being asked. A source whose
+ * future completes with null fails the lookup with a {@link NullPointerException}, as one that
+ * returns no future does.
  */
 public final class ProtectedCacheCollectionImpl implements ProtectedReadOnlyCache {
     private static final AttributeKey<String> NAME = AttributeKey.stringKey(AttributeNames.NAME);
@@ -125,13 +135,23 @@ public final class ProtectedCacheCollectionImpl implements ProtectedReadOnlyCach
         }
 
         KeyWrapperFutures.cancelling(result, answer);
+        // Whatever goes wrong here must complete result: an exception thrown from this callback
+        // would be swallowed, and the lookup would never complete.
         answer.whenComplete((value, error) -> {
-            if (error != null)
-                result.completeExceptionally(KeyWrapperFutures.unwrap(error));
-            else if (matches.test(value))
-                result.complete(value);
-            else
-                askNext(remaining, ask, matches, missing, result);
+            try {
+                if (error != null)
+                    result.completeExceptionally(KeyWrapperFutures.unwrap(error));
+                else if (value == null)
+                    result.completeExceptionally(new NullPointerException("A source completed its lookup with null."));
+                else if (matches.test(value))
+                    result.complete(value);
+                else
+                    askNext(remaining, ask, matches, missing, result);
+            } catch (RuntimeException | Error e) {
+                result.completeExceptionally(e);
+                if (e instanceof Error)
+                    throw e;
+            }
         });
     }
 

@@ -17,6 +17,9 @@ import java.util.Objects;
  * is a developer machine: an application that can rewrite its own key files can be made to roll
  * back to an older one.
  * <p>
+ * {@link TrustedFile} holds secret files, certificates and any other file it reads to the same
+ * rules, with the same trust.
+ * <p>
  * Immutable: each {@code with...} method returns a copy with that list replaced.
  * <pre>{@code
  * var trust = KeyFileTrust.ADMINISTRATORS_ONLY

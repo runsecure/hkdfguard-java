@@ -92,8 +92,12 @@ final class KeyVaultHttpStub implements HttpClient {
         var keyId = FakeKeyVault.VAULT + "/keys/" + path.group(1) + (path.group(2).isEmpty() ? "" : "/" + path.group(2));
         try {
             var resolved = vault.resolve(keyId);
+            var enabled = vault.isEnabled(keyId);
             if (request.getHttpMethod() == HttpMethod.GET)
-                return StubHttpResponse.json(request, 200, "{\"key\":" + jsonWebKey(resolved) + ",\"attributes\":{\"enabled\":true}}");
+                return StubHttpResponse.json(request, 200, "{\"key\":" + jsonWebKey(resolved) + ",\"attributes\":{\"enabled\":" + enabled + "}}");
+            // Key Vault refuses every operation but a read on a disabled key version.
+            if (!enabled)
+                return StubHttpResponse.error(request, 403, "Forbidden");
 
             var body = body(request);
             return switch (operation) {

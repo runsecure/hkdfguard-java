@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
@@ -34,6 +35,7 @@ import java.util.function.Function;
 import java.util.function.ToIntFunction;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
+import java.util.Objects;
 
 /**
  * Loads the Linux native KMS library from its package's install location and nowhere else. The
@@ -55,7 +57,8 @@ import java.util.stream.Collectors;
  * interpose on any symbol. So every directory on LD_LIBRARY_PATH and every path-named LD_PRELOAD or
  * LD_AUDIT object must pass the same path checks, and none may be relative, empty (the working
  * directory) or use $ORIGIN-style substitutions. Both the environment the process started with
- * (/proc/self/environ, what the dynamic linker read) and the current one are checked.</li>
+ * (/proc/self/environ, what the dynamic linker read) and the current one are checked; an unreadable
+ * /proc/self/environ, or one of the three variables in it that isn't valid UTF-8, refuses the load.</li>
  * <li><b>What would be loaded.</b> Before dlopen, the process's own dynamic linker (its PT_INTERP,
  * which must pass the path checks) is asked, in list mode (ld.so --list, the mechanism ldd uses),
  * where it would find every object the library pulls in, under the LD_LIBRARY_PATH and LD_PRELOAD
@@ -273,32 +276,45 @@ final class LinuxNativeLibraryLoader {
         if (status.groupWritable() || status.otherWritable())
             return "is writable by its group or by every user; the HkdfGuard native library and its dependencies are only trusted in locations only root can modify.";
 
+        // A POSIX ACL can let others write where the mode bits don't: only root may.
+        for (var writer : status.aclWriters()) {
+            if (writer.kind() != UnixAclWriter.Kind.USER || writer.id() != 0)
+                return "has an access control list that lets " + writer
+                        + " modify it; the HkdfGuard native library and its dependencies are only trusted in locations only root can modify.";
+        }
+
         return null;
     }
 
     /**
      * Every value each dynamic-linker variable has had: in the environment the process started with
-     * ({@code initialEnvironment}, /proc/self/environ's NUL-separated block, if it could be read)
-     * and in the current one.
+     * ({@code initialEnvironment}, /proc/self/environ's NUL-separated block) and in the current one.
+     * Each of the three is decoded from the block as UTF-8, strictly: the path checks name a path to
+     * the system in UTF-8, so only a value that decodes exactly is checked as the very bytes the
+     * dynamic linker used. Any other variable may hold any bytes.
      *
      * @param current reads a current environment variable; null if unset
      * @return each of the three variables, mapped to its values (empty if it never had one)
+     * @throws SecurityException one of the three, as the process started with it, isn't valid UTF-8
      */
     static Map<String, List<String>> readEnvironment(Function<String, String> current, byte[] initialEnvironment) {
+        Objects.requireNonNull(initialEnvironment, "initialEnvironment");
         var names = List.of(LIBRARY_PATH_VARIABLE, PRELOAD_VARIABLE, AUDIT_VARIABLE);
         var values = new LinkedHashMap<String, List<String>>();
         for (var name : names)
             values.put(name, new ArrayList<>());
 
-        if (initialEnvironment != null) {
-            for (var entry : new String(initialEnvironment, StandardCharsets.UTF_8).split("\0", -1)) {
-                var equals = entry.indexOf('=');
-                if (equals > 0) {
-                    var list = values.get(entry.substring(0, equals));
-                    if (list != null)
-                        list.add(entry.substring(equals + 1));
-                }
+        var start = 0;
+        while (start < initialEnvironment.length) {
+            var end = start;
+            while (end < initialEnvironment.length && initialEnvironment[end] != 0)
+                end++;
+            for (var name : names) {
+                var prefix = (name + "=").getBytes(StandardCharsets.US_ASCII);
+                if (end - start >= prefix.length && Arrays.equals(initialEnvironment, start, start + prefix.length, prefix, 0, prefix.length))
+                    values.get(name).add(strictUtf8(name, initialEnvironment, start + prefix.length, end - start - prefix.length));
             }
+            start = end + 1;
         }
 
         for (var name : names) {
@@ -310,6 +326,20 @@ final class LinuxNativeLibraryLoader {
         var result = new LinkedHashMap<String, List<String>>();
         values.forEach((name, list) -> result.put(name, List.copyOf(list)));
         return Collections.unmodifiableMap(result);
+    }
+
+    // bytes[offset, offset + length) as UTF-8, refusing anything that doesn't decode exactly.
+    private static String strictUtf8(String name, byte[] bytes, int offset, int length) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes, offset, length))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            throw new SecurityException("The " + name + " this process started with is not valid UTF-8, so the locations it names can't be"
+                    + " checked as the dynamic linker reads them; refusing to load the HkdfGuard native library.", e);
+        }
     }
 
     /**
@@ -379,7 +409,7 @@ final class LinuxNativeLibraryLoader {
      * dlopen, so nothing that would fail them ever runs here (check 4 above).
      *
      * @param library            the verified library
-     * @param initialEnvironment /proc/self/environ's block, or null if it could not be read
+     * @param initialEnvironment /proc/self/environ's block
      * @param resolveTrusted     resolves a path, throwing unless it passes the path checks
      * @throws SecurityException the dynamic linker isn't trusted or can't say, or it would load an untrusted file
      */
@@ -413,13 +443,12 @@ final class LinuxNativeLibraryLoader {
      * execute, and its locations were already checked before this runs. Should the block name a
      * variable twice, the last value wins, as in the dynamic linker.
      *
-     * @param initialEnvironment /proc/self/environ's NUL-separated block, or null if it could not be read
+     * @param initialEnvironment /proc/self/environ's NUL-separated block
      * @throws SecurityException a value can't be passed on to a child process byte for byte
      */
     static Map<String, String> listingEnvironment(byte[] initialEnvironment) {
+        Objects.requireNonNull(initialEnvironment, "initialEnvironment");
         var environment = new LinkedHashMap<String, String>();
-        if (initialEnvironment == null)
-            return environment;
 
         // A child's environment is encoded in the charset the JVM uses for the platform's strings;
         // a value that doesn't decode in it exactly would reach the list run altered, and the list

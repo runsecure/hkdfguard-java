@@ -59,7 +59,7 @@ final class FakeKeyVault {
     /** Every seam call, as "operation key-id". */
     final List<String> calls = new CopyOnWriteArrayList<>();
 
-    /** Makes the named seam operation ("wrap", "unwrap", "sign", "verify") throw. */
+    /** Makes the named seam operation ("read", "wrap", "unwrap", "sign", "verify") throw. */
     final Map<String, RuntimeException> failures = new ConcurrentHashMap<>();
 
     /** Every future a seam call returned, to check a cancellation reached it. */
@@ -103,6 +103,27 @@ final class FakeKeyVault {
         return version;
     }
 
+    /** Key versions disabled, as "name/version". */
+    private final java.util.Set<String> disabled = ConcurrentHashMap.newKeySet();
+
+    /** Disables one version of a key, as Key Vault's Update Key with enabled false would. */
+    void disable(String name, String version) {
+        disabled.add(name.toLowerCase(java.util.Locale.ROOT) + "/" + version);
+    }
+
+    /**
+     * Whether the key version {@code keyId} names (or the key's current one) is enabled; true when
+     * there is no such version, which the operation itself then refuses.
+     */
+    synchronized boolean isEnabled(String keyId) {
+        var id = KeyVaultKeyId.parse(keyId);
+        var versions = keys.get(id.name());
+        if (versions == null || versions.isEmpty())
+            return true;
+        var version = id.version() != null ? id.version() : versions.getLast().version();
+        return !disabled.contains(id.name().toLowerCase(java.util.Locale.ROOT) + "/" + version);
+    }
+
     synchronized String currentVersion(String name) {
         return keys.get(name).getLast().version();
     }
@@ -138,6 +159,14 @@ final class FakeKeyVault {
     /** The wrapper's seam over one key identifier in this vault. */
     KeyVaultKeyClient client(String keyId) {
         return new KeyVaultKeyClient() {
+            @Override
+            public CompletableFuture<KeyState> getKeyState() {
+                return answer("read", keyId, () -> {
+                    var resolved = resolve(keyId);
+                    return new KeyState(resolved.keyId(), isEnabled(keyId));
+                });
+            }
+
             @Override
             public CompletableFuture<WrapResult> wrapKey(KeyWrapAlgorithm algorithm, byte[] key) {
                 return answer("wrap", keyId, () -> {
@@ -234,6 +263,9 @@ final class FakeKeyVault {
             var failure = failures.get(operation);
             if (failure != null)
                 throw failure;
+            // Key Vault refuses every operation but a read on a disabled key version.
+            if (!operation.equals("read") && !isEnabled(keyId))
+                throw refusal(403, "Forbidden");
             return work.get();
         };
 

@@ -4,23 +4,18 @@ import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.InvalidKeyFileException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapper;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
-import io.github.runsecure.hkdfguard.platform.unix.UnixFiles;
-import io.github.runsecure.hkdfguard.platform.windows.WindowsAccessRules;
-import io.github.runsecure.hkdfguard.platform.windows.WindowsSecurity;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 /**
  * Reads a key file only after its location passes the platform's checks (WindowsKeyFileChecks,
- * UnixKeyFileChecks): the Java equivalent of the native library's {@code hkdfguard_open_file}, for
- * a {@link KeyWrapper#readKeyFileAsync} with no native library to read through - a network KMS's
- * key wrapper, say. The contents are then held to the same rules: 1 to
+ * UnixKeyFileChecks, opened through {@link TrustedFile}): the Java equivalent of the native
+ * library's {@code hkdfguard_open_file}, for a {@link KeyWrapper#readKeyFileAsync} with no native
+ * library to read through - a network KMS's key wrapper, say. The contents are then held to the same rules: 1 to
  * {@link WrappedKeyLimits#MAX_BYTES} bytes, never more than one byte past that read, and not
  * something that looks like an unwrapped key.
  * <p>
@@ -70,86 +65,10 @@ public final class TrustedKeyFile {
         if (path.toString().isEmpty())
             throw new IllegalArgumentException("path must not be empty.");
 
-        try {
-            return CompletableFuture.completedFuture(read(path, trust));
+        try (var file = TrustedFile.openTrusted(path, trust)) {
+            return CompletableFuture.completedFuture(readContents(file, file.path()));
         } catch (IOException | RuntimeException e) {
             return CompletableFuture.failedFuture(e);
-        }
-    }
-
-    // Dispatches to one platform's wiring; each is exercised by the real-file tests on its own platform.
-    private static byte[] read(Path path, KeyFileTrust trust) throws IOException {
-        var os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        if (os.startsWith("windows"))
-            return readWindows(path, trust);
-        if (os.startsWith("linux") || os.startsWith("mac os x") || os.startsWith("macos") || os.startsWith("darwin"))
-            return readUnix(path, trust);
-
-        throw new UnsupportedOperationException("Key files are read on Windows, Linux and macOS only.");
-    }
-
-    // Wires the WindowsKeyFileChecks policy to real files; exercised by the Windows-only real-file tests.
-    private static byte[] readWindows(Path path, KeyFileTrust trust) throws IOException {
-        var trusted = WindowsKeyFileChecks.trustedPrincipals(trust, WindowsSecurity::canonicalSid);
-        // A relative path is resolved against the working directory (user.dir), as every Java file
-        // API resolves one, and then put in the form .NET's Path.GetFullPath gives it.
-        var fullPath = WindowsNative.fullPath(path.toAbsolutePath().toString());
-        WindowsKeyFileChecks.verifyPathForm(fullPath,
-                fullPath.startsWith("\\\\") ? DriveType.NETWORK : WindowsNative.driveType(Path.of(fullPath).getRoot().toString()));
-
-        // Read sharing only: refused if another process has it open for writing, and no one can
-        // open it for writing while it's read.
-        try (var file = WindowsNative.open(fullPath)) {
-            WindowsKeyFileChecks.verifyFinalPath(fullPath, file.finalPath());
-
-            // The file through its own handle; the folders by path, which the final-path check ties
-            // to the folders it was opened through, and which no untrusted principal can then change.
-            WindowsKeyFileChecks.verifyTrustedOnly(file.securityDescriptor(), fullPath, fullPath, WindowsAccessRules.GUARDED_RIGHTS, trusted,
-                    WindowsSecurity::accountName);
-            for (var folder = Path.of(fullPath).getParent(); folder != null; folder = folder.getParent()) {
-                var name = folder.toString();
-                var security = WindowsSecurity.securityDescriptorOf(name);
-                if (folder.getParent() == null) {
-                    WindowsKeyFileChecks.verifyTrustedOnly(security, fullPath, name, WindowsAccessRules.GUARDED_ROOT_RIGHTS, trusted,
-                            WindowsSecurity::accountName);
-                    break;
-                }
-
-                WindowsKeyFileChecks.verifyNotReparsePoint(WindowsSecurity.fileAttributes(name), fullPath, name);
-                WindowsKeyFileChecks.verifyTrustedOnly(security, fullPath, name, WindowsAccessRules.GUARDED_RIGHTS, trusted, WindowsSecurity::accountName);
-            }
-
-            return readContents(new InputStream() {
-                @Override
-                public int read() throws IOException {
-                    var one = new byte[1];
-                    return read(one, 0, 1) <= 0 ? -1 : one[0] & 0xFF;
-                }
-
-                @Override
-                public int read(byte[] buffer, int offset, int length) throws IOException {
-                    var count = file.read(buffer, offset, length);
-                    return count == 0 && length > 0 ? -1 : count;
-                }
-            }, fullPath);
-        }
-    }
-
-    // Wires the UnixKeyFileChecks policy to real files; exercised by the Unix-only real-file tests.
-    private static byte[] readUnix(Path path, KeyFileTrust trust) throws IOException {
-        // The working directory is already a resolved path; resolveTrusted handles ".." itself.
-        var text = path.toString();
-        String absolute;
-        if (text.startsWith("/")) {
-            absolute = text;
-        } else {
-            var workingDirectory = System.getProperty("user.dir");
-            absolute = workingDirectory.endsWith("/") ? workingDirectory + text : workingDirectory + "/" + text;
-        }
-        var resolved = UnixKeyFileChecks.resolveTrusted(absolute, trust, UnixFiles::statusOrNull, UnixFiles::readLink);
-
-        try (var stream = Files.newInputStream(Path.of(resolved))) {
-            return readContents(stream, text);
         }
     }
 

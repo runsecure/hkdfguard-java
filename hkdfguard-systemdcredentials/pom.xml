@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.runsecure</groupId>
+    <artifactId>hkdfguard-parent</artifactId>
+    <version>0.9.1</version>
+  </parent>
+
+  <artifactId>hkdfguard-systemdcredentials</artifactId>
+  <name>HkdfGuard Systemd Credentials</name>
+  <description>
+    Linux credentials encrypted and decrypted by systemd-creds - bound to the host key, the TPM or
+    both - read without the plaintext touching a file or a command line, and a protected read-only
+    cache over them and the credentials systemd decrypts for a service.
+  </description>
+
+  <!--
+    Java 21: systemd-creds runs as a child process through ProcessBuilder, so nothing native is
+    called. Linux only at run time; the unit tests run anywhere, against a fake systemd-creds.
+  -->
+
+  <dependencies>
+    <!-- ProtectedReadOnlyCache, Utf8Utility, ArrayUtility; and InvalidSecretDataException, Java's
+         InvalidDataException for secrets, for a credential over systemd's 1 MiB limit. -->
+    <dependency>
+      <groupId>io.github.runsecure</groupId>
+      <artifactId>hkdfguard-cache</artifactId>
+    </dependency>
+  </dependencies>
+</project>

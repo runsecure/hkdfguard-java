@@ -65,6 +65,20 @@ class ProtectedCacheCollectionImplAsyncTest {
         Futures.assertFailsWith(NullPointerException.class, new ProtectedCacheCollectionImpl().add(new AsyncOnlyCache(null)).decryptAsync("item", new byte[16]));
     }
 
+    // A third-party source answering null: the lookup fails at once rather than never completing,
+    // and no later source is asked.
+    @Test
+    void decryptAsync_WhenASourceAnswersNull_Fails_AndAsksNoMore() {
+        var later = new ProtectedCacheImpl(ring);
+        later.add("item", utf8("later"));
+        var source = new AsyncOnlyCache(CompletableFuture.completedFuture(null));
+        source.maxLength = CompletableFuture.completedFuture(null);
+        var collection = new ProtectedCacheCollectionImpl().add(source).add(later);
+
+        Futures.assertFailsWith(NullPointerException.class, collection.decryptAsync("item", new byte[16]));
+        Futures.assertFailsWith(NullPointerException.class, collection.findMaxDecryptedLengthAsync("item"));
+    }
+
     @Test
     void cancellingALookup_CancelsTheSourceBeingAsked_AndAsksNoMore() {
         var pending = new CompletableFuture<Integer>();
@@ -91,6 +105,7 @@ class ProtectedCacheCollectionImplAsyncTest {
     private static final class AsyncOnlyCache implements ProtectedReadOnlyCache {
         private final CompletableFuture<Integer> answer;
         RuntimeException thrown;
+        CompletableFuture<OptionalInt> maxLength;
 
         AsyncOnlyCache(CompletableFuture<Integer> answer) {
             this.answer = answer;
@@ -116,6 +131,13 @@ class ProtectedCacheCollectionImplAsyncTest {
             if (thrown != null)
                 throw thrown;
             return answer;
+        }
+
+        @Override
+        public CompletableFuture<OptionalInt> findMaxDecryptedLengthAsync(String name) {
+            if (maxLength == null)
+                throw new UnsupportedOperationException();
+            return maxLength;
         }
     }
 }

@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.keywrapping.v1.interop;
 
 import io.github.runsecure.hkdfguard.keywrapping.v1.NativeLibraryNotFoundException;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import java.lang.foreign.MemorySegment;
@@ -423,6 +424,19 @@ final class MacOsNativeLibraryLoader {
             throw new SecurityException("'" + path + "' is writable by group " + status.groupId()
                     + "; the HkdfGuard native library is only loaded from a location only its owner can modify (administrators may also write only to the system directories above an install: "
                     + String.join(", ", new TreeSet<>(SHARED_SYSTEM_DIRECTORIES)) + ").");
+
+        // An extended ACL can let others modify it where the mode bits don't: only the owners
+        // trusted above may, and administrators only where they may write by group.
+        for (var writer : status.aclWriters()) {
+            var trusted = switch (writer.kind()) {
+                case USER -> writer.id() == 0 || trustedOwners.contains(writer.id());
+                case GROUP -> status.ownerId() == 0 && ADMINISTRATIVE_GROUPS.contains(writer.id()) && SHARED_SYSTEM_DIRECTORIES.contains(path);
+                case UNKNOWN -> false;
+            };
+            if (!trusted)
+                throw new SecurityException("'" + path + "' has an access control list that lets " + writer
+                        + " modify it; the HkdfGuard native library is only loaded from a location only its owner can modify.");
+        }
     }
 
     /**

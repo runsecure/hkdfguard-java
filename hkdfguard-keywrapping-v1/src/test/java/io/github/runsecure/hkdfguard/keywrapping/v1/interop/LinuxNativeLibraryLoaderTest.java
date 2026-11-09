@@ -25,6 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 
 /**
  * The Linux loader's decisions - where the library is, whether every path to it and to its
@@ -357,11 +358,45 @@ class LinuxNativeLibraryLoaderTest {
     }
 
     @Test
-    void readEnvironment_WithoutProcEnviron_UsesTheCurrentEnvironment() {
-        var values = LinuxNativeLibraryLoader.readEnvironment(n -> n.equals("LD_PRELOAD") ? "x.so" : null, null);
+    void readEnvironment_WithAnEmptyStartupEnvironment_UsesTheCurrentOne() {
+        var values = LinuxNativeLibraryLoader.readEnvironment(n -> n.equals("LD_PRELOAD") ? "x.so" : null, new byte[0]);
 
         assertEquals(List.of("x.so"), values.get("LD_PRELOAD"));
         assertTrue(values.get("LD_LIBRARY_PATH").isEmpty());
+        assertThrows(NullPointerException.class, () -> LinuxNativeLibraryLoader.readEnvironment(n -> null, null));
+    }
+
+    // Decoded leniently, invalid bytes would become U+FFFD: a path that doesn't exist, checked in
+    // place of the one the dynamic linker opens. So a linker variable must be exact UTF-8.
+    @ParameterizedTest
+    @ValueSource(strings = {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT"})
+    void readEnvironment_ALinkerVariableThatIsntUtf8_IsRefused(String name) {
+        var block = concat((name + "=/opt/").getBytes(StandardCharsets.US_ASCII), new byte[] {(byte) 0xFF, (byte) 0xFE, 0});
+
+        var e = assertThrows(SecurityException.class, () -> LinuxNativeLibraryLoader.readEnvironment(n -> null, block));
+        assertTrue(e.getMessage().contains(name), e.getMessage());
+    }
+
+    @Test
+    void readEnvironment_AnyOtherVariable_MayHoldAnyBytes() {
+        var block = concat("LANG=".getBytes(StandardCharsets.US_ASCII), new byte[] {(byte) 0xFF, 0},
+                "LD_PRELOAD=/opt/caf\u00e9.so\0".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(List.of("/opt/caf\u00e9.so"), LinuxNativeLibraryLoader.readEnvironment(n -> null, block).get("LD_PRELOAD"));
+    }
+
+    @Test
+    void readInitialEnvironment_ThatCantBeRead_RefusesToLoad() {
+        var e = assertThrows(SecurityException.class,
+                () -> LinuxNative.readInitialEnvironment(java.nio.file.Path.of("/nonexistent-hkdfguard/environ")));
+        assertTrue(e.getMessage().contains("refusing to load"), e.getMessage());
+    }
+
+    private static byte[] concat(byte[]... parts) {
+        var out = new java.io.ByteArrayOutputStream();
+        for (var part : parts)
+            out.writeBytes(part);
+        return out.toByteArray();
     }
 
     private static void verifyEnvironment(FileSystem fs, String variable, String... values) {
@@ -596,7 +631,7 @@ class LinuxNativeLibraryLoaderTest {
         var initial = "HOME=/root\0LD_LIBRARY_PATH=/opt/lib\0LD_AUDIT=/opt/audit.so\0PATH=/usr/bin\0LD_PRELOAD=/opt/pre.so\0".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(Map.of("LD_LIBRARY_PATH", "/opt/lib", "LD_PRELOAD", "/opt/pre.so"), LinuxNativeLibraryLoader.listingEnvironment(initial));
-        assertEquals(Map.of(), LinuxNativeLibraryLoader.listingEnvironment(null));
+        assertThrows(NullPointerException.class, () -> LinuxNativeLibraryLoader.listingEnvironment(null));
         assertEquals(Map.of(), LinuxNativeLibraryLoader.listingEnvironment(new byte[0]));
         // Neither a longer name that starts the same nor a bare name without '=' counts.
         assertEquals(Map.of(), LinuxNativeLibraryLoader.listingEnvironment("LD_PRELOAD_X=/a\0LD_PRELOAD\0".getBytes(StandardCharsets.UTF_8)));
@@ -627,4 +662,26 @@ class LinuxNativeLibraryLoaderTest {
 
         assertInstanceOf(UncheckedIOException.class, ex.getCause());
     }
+    @Test
+    void anAclLettingAnyoneButRootModifyIt_IsRefused_WhereverItIsOnThePath() {
+        for (var writer : List.of(new UnixAclWriter(UnixAclWriter.Kind.USER, USER), new UnixAclWriter(UnixAclWriter.Kind.GROUP, ROOT),
+                new UnixAclWriter(UnixAclWriter.Kind.UNKNOWN, -1))) {
+            for (var path : List.of("/usr", LIB_DIR, LIBRARY)) {
+                var fs = standardHost();
+                fs.entries.put(path, fs.status(path).withAclWriters(List.of(writer)));
+
+                var ex = assertThrows(SecurityException.class, () -> fs.resolve(LIBRARY), path + " " + writer);
+                assertTrue(ex.getMessage().contains("'" + path + "' has an access control list"), ex.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void anAclNamingOnlyRoot_IsAccepted() {
+        var fs = standardHost();
+        fs.entries.put(LIBRARY, fs.status(LIBRARY).withAclWriters(List.of(new UnixAclWriter(UnixAclWriter.Kind.USER, ROOT))));
+
+        assertEquals(LIBRARY, fs.resolve(LIBRARY));
+    }
+
 }
