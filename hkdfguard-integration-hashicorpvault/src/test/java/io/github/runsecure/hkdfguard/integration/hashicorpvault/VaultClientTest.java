@@ -561,12 +561,59 @@ class VaultClientTest {
         }
     }
 
-    @Test
-    void a304_IsNotAnError() {
+    // A 3xx the client doesn't follow - 303, 304, 308 - isn't Vault's answer, so it fails the request.
+    @ParameterizedTest
+    @ValueSource(ints = {303, 304, 308})
+    void a3xxTheClientDoesntFollow_IsAnError(int status) {
         try (var t = TestClient.create()) {
-            t.vault().then(304, "");
-            assertNull(await(t.client().readAsync("a")));
+            t.vault().then(status, "");
+
+            var e = assertFailsWith(VaultResponseException.class, t.client().readAsync("a"));
+            assertEquals(status, e.statusCode());
         }
+    }
+
+    // The token a lookup answers with is the caller's own: left out unread, everything else kept.
+    @ParameterizedTest
+    @ValueSource(strings = {"auth/token/lookup-self", "/v1/auth/token/lookup-self"})
+    void aTokenLookup_LeavesTheTokenOutOfItsData(String path) {
+        try (var t = TestClient.create()) {
+            t.vault().then(200, "{\"data\":{\"accessor\":\"acc\",\"id\":\"hvs.secret-token\",\"policies\":[\"default\"],\"ttl\":60}}");
+
+            var data = await(t.client().readAsync(path)).data();
+
+            assertFalse(data.containsKey("id"));
+            assertEquals("acc", data.get("accessor").asString());
+            assertEquals(4 - 1, data.size());
+        }
+    }
+
+    @Test
+    void anotherPathsId_IsKept() {
+        try (var t = TestClient.create()) {
+            t.vault().then(200, "{\"data\":{\"id\":\"entity-1\"}}");
+
+            assertEquals("entity-1", await(t.client().readAsync("identity/entity/id/entity-1")).data().get("id").asString());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"secret/../sys/seal", "../sys", "a/./b", "..", "secret/a?list=true", "secret/a#x", "secret/%2e%2e/sys", "secret\\a",
+            "secret/a b", "secret/a\tb", "secret/a\u007f"})
+    void aGenericPathThatCouldReachElsewhere_IsRefused(String path) {
+        try (var t = TestClient.create()) {
+            assertThrows(IllegalArgumentException.class, () -> t.client().readAsync(path));
+            assertThrows(IllegalArgumentException.class, () -> t.client().writeAsync(path, Map.of()));
+            assertThrows(IllegalArgumentException.class, () -> t.client().listAsync(path));
+            assertThrows(IllegalArgumentException.class, () -> t.client().deleteAsync(path));
+            assertTrue(t.vault().requests().isEmpty());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"secret/metadata/", "secret/data/a.b..c/d", "sys/policies/acl/app-role_1", "transit/keys/k:1@x+y=z", ""})
+    void anOrdinaryGenericPath_IsAccepted(String path) {
+        assertTrue(VaultClient.v1Path(path).startsWith("/v1/"));
     }
 
     @Test

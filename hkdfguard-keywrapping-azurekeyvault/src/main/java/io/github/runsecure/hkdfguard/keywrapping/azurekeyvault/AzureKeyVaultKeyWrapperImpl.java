@@ -17,8 +17,10 @@ import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -42,7 +44,9 @@ import java.util.function.Supplier;
  * Both keys are pinned: a wrapped DEK records only the key versions it was made with, and the vault
  * and key names always come from the constructor. Rotating either key in Key Vault therefore needs
  * nothing here - existing key files keep naming the version that made them, which must stay enabled
- * while they're in use. Wrapped DEKs are byte for byte those of the .NET AzureKeyVaultKeyWrapper, so
+ * while they're in use. Disabling a signing key version revokes what it signed: every unwrap first
+ * reads that version's state from Key Vault and refuses it once disabled, since the SDK otherwise
+ * verifies locally with a public key it fetched once. Wrapped DEKs are byte for byte those of the .NET AzureKeyVaultKeyWrapper, so
  * a key file made by either is read by the other, given the same keys and context.
  * <p>
  * The optional context is bound into the signature, and must be given again, exactly, to reveal
@@ -74,6 +78,8 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
     private final KeyVaultKeyId signingKey;
     private final Function<String, KeyVaultKeyClient> clientFactory;
     private final Map<String, KeyVaultKeyClient> clients = new ConcurrentHashMap<>();
+    // Signing key versions (as key identifiers) a read has succeeded for: see requireSigningKeyEnabled.
+    private final Set<String> readableSigningKeys = ConcurrentHashMap.newKeySet();
     private final byte[] context;
     private final KeyFileTrust keyFileTrust;
 
@@ -221,13 +227,15 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
     /**
      * {@inheritDoc}
      * <p>
-     * Verifies the signature under the signing key version the wrapped DEK records first, and only
-     * then unwraps under the recorded wrapping key version.
+     * Reads the state of the signing key version the wrapped DEK records, refusing a disabled one;
+     * then verifies the signature under that version, and only then unwraps under the recorded
+     * wrapping key version. The read needs {@code keys/get} on the signing key; without it the SDK
+     * verifies in Key Vault, which refuses a disabled key itself.
      *
      * @return completes with the number of bytes written to result; fails with a
      *         {@link CryptographicException} when wrapped isn't a wrapped DEK this wrapper wrote, its
-     *         signature doesn't verify (forged, tampered with, or under a different context), Key
-     *         Vault refused it, or Key Vault could not be reached (the Azure exception is the cause),
+     *         signature doesn't verify (forged, tampered with, or under a different context), the
+     *         signing key version that signed it is disabled, Key Vault refused it, or Key Vault could not be reached (the Azure exception is the cause),
      *         or with an {@link IllegalArgumentException} when result is too small for the revealed
      *         key. On any failure, result is zeroed.
      * @throws NullPointerException wrapped or result is null
@@ -253,7 +261,13 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
         // Both versions come from the wrapped DEK, so neither client is kept until Key Vault has
         // accepted a call through it: a forged version leaves no client behind.
         var verifyClient = new Lease(signedBy);
-        var unwrap = calls.send(() -> verifyClient.client().verifyData(SignatureAlgorithm.ES256, signed, parts.signature()), "verify", signingKey)
+        // The signing key version's state first, on every unwrap: the SDK verifies locally once it
+        // holds the public key, and never asks Key Vault again, so disabling the version would
+        // otherwise not stop a running process from accepting what it signed.
+        var unwrap = calls.send(() -> verifyClient.client().getKeyState(), "read", signingKey)
+                .handle((state, error) -> requireSigningKeyEnabled(state, error, signedBy))
+                .thenCompose(enabled -> calls.send(() -> verifyClient.current().verifyData(SignatureAlgorithm.ES256, signed, parts.signature()),
+                        "verify", signingKey))
                 .thenCompose(verify -> {
                     if (!Boolean.TRUE.equals(verify.isValid()))
                         throw new CryptographicException("The wrapped DEK's signature doesn't verify under '" + signingKey.name() + "' version "
@@ -334,6 +348,43 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
         return TrustedKeyFile.readAsync(path, keyFileTrust);
     }
 
+    /**
+     * Passes when Key Vault reported {@code version} of the signing key enabled - or, when this
+     * wrapper has never been allowed to read that version, when Key Vault refused the read for want
+     * of {@code keys/get}: the SDK can't read it either, so it verifies in the vault, which refuses
+     * a disabled key itself. Once a read of the version has succeeded the SDK may hold its public
+     * key and verify locally, so from then on every read must succeed and report it enabled.
+     * Expiry is deliberately not checked: Key Vault still verifies under an expired key, which
+     * stops signing new key files, not trusting existing ones.
+     *
+     * @param state the read's answer, or null when it failed
+     * @param error the read's failure, as {@link Calls#send} reports it; null when it succeeded
+     */
+    private Void requireSigningKeyEnabled(KeyVaultKeyClient.KeyState state, Throwable error, KeyVaultKeyId version) {
+        var id = version.toString();
+        if (error == null) {
+            if (state == null || !version.version().equalsIgnoreCase(versionOf(state.keyId(), signingKey, "read")))
+                throw new CryptographicException("Azure Key Vault read of key '" + signingKey.name() + "' version " + version.version()
+                        + " reported a different version.");
+            if (!Boolean.TRUE.equals(state.enabled()))
+                throw new CryptographicException("Signing key '" + signingKey.name() + "' version " + version.version()
+                        + " is disabled in Azure Key Vault, so what it signed is no longer trusted.");
+            readableSigningKeys.add(id);
+            return null;
+        }
+
+        var failure = KeyWrapperFutures.unwrap(error);
+        if (failure instanceof CryptographicException translated && translated.getCause() instanceof HttpResponseException e
+                && e.getResponse() != null && e.getResponse().getStatusCode() == 403) {
+            if (!readableSigningKeys.contains(id))
+                return null;
+            throw new CryptographicException("Signing key '" + signingKey.name() + "' version " + version.version()
+                    + " could be read before and now can't (" + KeyVaultErrors.code(e) + ", HTTP 403): it may have been disabled,"
+                    + " so what it signed is no longer trusted.", e);
+        }
+        throw failure instanceof RuntimeException runtime ? runtime : new CompletionException(failure);
+    }
+
     static Function<String, KeyVaultKeyClient> clientFactory(TokenCredential credential, Consumer<CryptographyClientBuilder> clientOptions) {
         Objects.requireNonNull(credential, "credential");
         return keyId -> {
@@ -369,6 +420,11 @@ public final class AzureKeyVaultKeyWrapperImpl implements KeyWrapper {
             var cached = clients.get(keyId);
             kept = cached != null;
             client = cached != null ? cached : clientFactory.apply(keyId);
+            return client;
+        }
+
+        /** The client {@link #client} last returned, for a second call through the same one. */
+        KeyVaultKeyClient current() {
             return client;
         }
 

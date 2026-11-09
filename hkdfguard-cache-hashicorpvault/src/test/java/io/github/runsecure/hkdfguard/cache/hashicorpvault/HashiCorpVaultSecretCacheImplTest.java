@@ -685,6 +685,29 @@ class HashiCorpVaultSecretCacheImplTest {
         assertEquals(3, vault.reads().size());
     }
 
+    // A KV version 2 engine read as version 1: Vault answers 404 with no errors and a warning, as
+    // here; reported as the mismatch it is, not as a missing secret.
+    @Test
+    void aKvVersion2EngineReadAsVersion1_Fails_SayingSo() {
+        // Served at the version 1 path the cache asks for, with the answer a version 2 engine gives there.
+        var v1 = track(new FakeVault("kv", VaultKvVersion.V1, ""));
+        var cache = create(v1, v1.address(), options -> options.kvVersion(VaultKvVersion.V1).mountPath("kv"), null, null);
+        v1.answer = new Answer(404,"{\"request_id\":\"x\",\"data\":null,\"warnings\":[\"Invalid path for a versioned K/V secrets engine. See the API docs for the appropriate API endpoints to use. If using the Vault CLI, use 'vault kv get' for this operation.\"],\"auth\":null}");
+
+        var e = assertThrows(VaultRequestException.class, () -> cache.decrypt("item", new byte[16]));
+        assertEquals(404, e.statusCode());
+        assertTrue(e.getMessage().contains("KV version 2"), e.getMessage());
+        assertTrue(e.getMessage().contains("versioned K/V"), e.getMessage());
+    }
+
+    @Test
+    void a404WithAnotherWarning_IsStillMissing() {
+        var cache = create();
+        vault.answer = new Answer(404, "{\"errors\":[],\"warnings\":[\"something else\"]}");
+
+        assertEquals(0, cache.decrypt("item", new byte[16]));
+    }
+
     @Test
     void aDeletedLatestVersion_IsReportedMissing() {
         var cache = create();

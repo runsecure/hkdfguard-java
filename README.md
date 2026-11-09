@@ -207,7 +207,9 @@ soon as the key is read, however the load ends. A `java.time.Clock` given to the
 **From a store**, the certificates whose subject is the one named are found, and the one valid now -
 with its private key, when one is required - that expires last is returned, so a renewal under the
 same subject needs no configuration change. Subjects are compared attribute by attribute, each value
-decoded and compared ignoring case: never as a substring, so `CN=api` doesn't match
+decoded and compared ignoring the case of ASCII letters only (any other character must be the same,
+so a lookalike such as U+017F, long s, can't stand in for an `s`; .NET folds every character's
+case): never as a substring, so `CN=api` doesn't match
 `CN=api.example.com`; an RDN's attributes in any order, but the RDNs in order; and
 `DC=Contoso, DC=com` matches `dc=contoso, dc=COM`, which `X500Principal`'s canonical form wouldn't
 (it leaves DC, emailAddress and serialNumber as hex). Whitespace inside a value isn't folded, as in
@@ -237,12 +239,16 @@ and key URI - so `LinuxOpenSslProviderOptions` is kept for configuration parity,
 refuses it unless `requirePrivateKey` is false, when the certificate file alone is loaded.
 
 **From a file**, a PKCS#12 file is opened through `KeyStore` "PKCS12" (with an empty password when
-none is named), its key entry chosen; it needs its password even for the certificate alone. A PEM
+none is named), its one key entry chosen; it needs its password even for the certificate alone. A
+file with more than one key entry is refused, since which is meant isn't said, and the key must be
+its certificate's. A PEM
 certificate is read through `CertificateFactory` (every certificate in the file becomes the chain),
 and its key from `keyPath`: an "ENCRYPTED PRIVATE KEY" decrypted through `EncryptedPrivateKeyInfo`
-and the JDK's PBE ciphers - PBES2 (PBKDF2 with HMAC-SHA1/256/512, then AES-CBC), what OpenSSL 3 and
-.NET write, or a PKCS#12 PBE scheme - or, with `allowUnprotectedPrivateKey` and no password, a plain
-"PRIVATE KEY". Both must be PKCS#8: convert a PKCS#1 ("RSA PRIVATE KEY") or SEC1 key with
+and the JDK's PBES2 cipher - PBKDF2 with HMAC-SHA224/256/384/512, then AES-128 or AES-256 in CBC
+mode, what OpenSSL 3 and .NET write - or, with `allowUnprotectedPrivateKey` and no password, a plain
+"PRIVATE KEY". Any other scheme (PBES1, a PKCS#12 PBE scheme, DES, PBKDF2 with HMAC-SHA1) and more
+than 10,000,000 iterations are refused before the password is used: re-encrypt such a key with
+`openssl pkcs8 -topk8 -v2 aes-256-cbc -v2prf hmacWithSHA256`. Both must be PKCS#8: convert a PKCS#1 ("RSA PRIVATE KEY") or SEC1 key with
 `openssl pkcs8 -topk8`. The key must be the certificate's. The key file is read as bytes, never a
 String, and the DER and the PBE key are zeroed; the JDK's own copies, inside the key object, can't
 be. .NET re-imports a PEM key on Windows so SChannel can present it as a TLS server's; JSSE signs
@@ -304,10 +310,13 @@ hkdfguard:
   `my-service.api-key`. Spring would also find that value as `my-service.apikey`, but it would not
   decrypt under that spelling. An environment variable (`MY_SERVICE_API_KEY`) holding a value
   encrypted for `my-service.api-key` decrypts under that name.
-- **Health:** with Actuator, `/actuator/health` gains an `hkdfguard` component that encrypts and
-  decrypts a random probe with the current key. It reports `DOWN` when that key can't protect new
+- **Health:** with Actuator, `/actuator/health` gains an `hkdfguard` component that decrypts a
+  random probe the current key encrypted. It reports `DOWN` when that key can't protect new
   values, most often because it failed closed after its KEK was revoked or became unreachable.
-  It never calls the KMS. Its details are `currentVersion` (the key checked) and, when it is
+  It never calls the KMS. Every encryption counts against the key's AES-GCM limit, so a fresh
+  probe is encrypted at most once a minute per current key (`PROBE_REENCRYPT_INTERVAL`), and other
+  polls only decrypt: polling the endpoint, however often, can't exhaust the key. A key that can
+  no longer encrypt shows as `DOWN` within that minute. Its details are `currentVersion` (the key checked) and, when it is
   `DOWN`, `error`: a fixed message when the probe doesn't decrypt to what was encrypted, or, when
   the check throws, the exception's class and message (added by Spring's
   `AbstractHealthIndicator`). No key material, probe or ciphertext is reported. Turn it off with
@@ -355,9 +364,11 @@ On **macOS**, `MacOsNativeLibraryLoader` uses the system install whenever it exi
 per-user install only when there is none. `~` is the effective user's home from the account
 database (`getpwuid_r`), never the `user.home` property, which `-Duser.home` on the command line
 could point anywhere; with no usable entry, only the system install is considered. Besides the
-location, ownership and Developer ID signature checks, the library's own version - its
-`LC_ID_DYLIB` current version, in the Mach-O header the signature covers - must be at least
-`MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release, though genuinely signed, is refused. On
+location and ownership checks - which read each component's extended ACL too, so an allow entry
+letting anyone but its trusted owners modify it fails, as group write would - and the Developer ID
+signature, the library's own version - its `LC_ID_DYLIB` current version, in the Mach-O header
+the signature covers - must be at least `MINIMUM_LIBRARY_VERSION` (0.9.0), so an older release,
+though genuinely signed, is refused. On
 Windows the same 0.9.0 floor applies to `HkdfGuard.dll`'s signed version resource; a DLL with none
 is refused.
 
@@ -379,7 +390,8 @@ The file's content is not pinned: verify a release's Sigstore attestation (`cosi
 `gh attestation verify`) before installing the package, so path integrity is what the loader
 enforces. Before loading, it requires all of the following:
 - Every directory on the path, every symbolic link followed, and the file itself are owned by root,
-  and no directory or file is writable by its group or by others. Links are followed one component
+  and no directory or file is writable by its group or by others - nor, through a POSIX ACL, by any
+  named user or group but root. Links are followed one component
   at a time and each target is checked where it lies, so `/lib -> usr/lib` passes and a link into a
   user's directory does not.
 - The dynamic linker's environment is checked. The library is loaded by its
@@ -387,7 +399,9 @@ enforces. Before loading, it requires all of the following:
   `libtss2-esys` receives every ECDH shared secret. So every `LD_LIBRARY_PATH` directory, and every
   path-named `LD_PRELOAD` or `LD_AUDIT` object, must pass the same path checks, and none may be
   relative, empty (the working directory) or use `$ORIGIN`-style tokens. Both the environment the
-  process started with (`/proc/self/environ`) and the current one are checked.
+  process started with (`/proc/self/environ`) and the current one are checked. If
+  `/proc/self/environ` can't be read, or one of those three variables in it isn't valid UTF-8 (so
+  it couldn't be checked as the very bytes the linker reads), nothing is loaded.
   This check catches a misconfigured environment. It can't stop someone who controls the
   service's environment: whatever `LD_PRELOAD` or `LD_AUDIT` loads runs when the process starts,
   before the check, and can hide from it. Protect the service's environment (its unit file,
@@ -543,7 +557,9 @@ var wrapper = new AwsKmsKeyWrapperImpl(kms,
   ARN and needs nothing here.
 - The optional encryption context is KMS's AAD. It is bound into every wrapped DEK, required again
   to reveal it, and can be required by the key policy (`kms:EncryptionContext:purpose`). CloudTrail
-  logs it in plaintext, so it must never hold a secret.
+  logs it in plaintext, so it must never hold a secret. Without one, a key file wrapped under the
+  key for any service is accepted by every service sharing it, so a wrapper made without a context
+  logs a warning: give each application its own.
 - Failures complete the future with a `CryptographicException` naming KMS's error code (for example
   `AccessDeniedException` or `InvalidCiphertextException`) and the HTTP status, with the AWS
   exception as its cause; argument errors throw from the call. Cancellation - a cancelled future, or
@@ -553,8 +569,9 @@ var wrapper = new AwsKmsKeyWrapperImpl(kms,
   the native library's rules, checked in Java by `hkdfguard-securefile`: on Windows, a local fixed
   drive, reached through no link, junction or substituted drive, with the file and every folder
   above it owned and modifiable only by SYSTEM, Administrators or TrustedInstaller; on Linux and
-  macOS, the file and every directory above it owned by root and writable by no one else, following
-  only root-owned links. A `KeyFileTrust` passed to the constructor adds the deployment's own account
+  macOS, the file and every directory above it owned by root and writable by no one else, neither by
+  their mode bits nor through a POSIX ACL (Linux) or extended ACL (macOS), following only root-owned
+  links. A `KeyFileTrust` passed to the constructor adds the deployment's own account
   or group. A file that looks like an unwrapped key is refused too. A KMS ciphertext is about 184
   bytes, well inside `WrappedKeyLimits.MAX_BYTES`.
 - Plaintext the wrapper can reach is zeroed: its copy of the key sent to `Encrypt`, and the array
@@ -603,6 +620,9 @@ var wrapper = new AzureKeyVaultKeyWrapperImpl(
 - Both keys are pinned. Each wrapped DEK records only the versions of the two keys it was made
   with; the vault and key names always come from the constructor. Rotating either key in Key Vault
   needs nothing here, as long as versions in use stay enabled. Give identifiers without a version.
+- Disabling a signing key version revokes the key files it signed. The SDK verifies locally with a
+  public key it fetched once, so every unwrap first reads that version's state from Key Vault and
+  refuses a disabled one. Expiry doesn't revoke: Key Vault still verifies under an expired key.
 - The optional context is bound into the signature and must be given again, exactly, to reveal the
   DEK. It isn't secret.
 - Key Vault has no "generate data key": `generateAndWrapAsync` generates the DEK in the process,
@@ -641,7 +661,7 @@ authorized by the process's Google credential through IAM and recorded in Cloud 
 
 ```java
 // The application creates the client, keeps it open while anything uses the wrapper, and closes it.
-var kms = KeyManagementServiceClient.create();          // Application Default Credentials
+var kms = GoogleKmsKeyWrapperImpl.createClient();       // Application Default Credentials
 var wrapper = new GoogleKmsKeyWrapperImpl(kms,
         "projects/my-project/locations/us-east1/keyRings/myapp/cryptoKeys/myapp-wrap",
         "com.example.myapp");
@@ -655,7 +675,8 @@ var wrapper = new GoogleKmsKeyWrapperImpl(kms,
   here as long as versions in use stay enabled.
 - A fixed HkdfGuard label and the optional context are bound into every wrapped DEK as AAD, and must
   be presented again, exactly, to reveal it. The label stops a ciphertext the same key made for
-  anything else being accepted as a DEK. Neither is secret.
+  anything else being accepted as a DEK. Neither is secret. A wrapper made without a context logs a
+  warning, since it accepts a key file made for any service sharing the key.
 - Every request and response carries a CRC32C checksum, as Google recommends, so data corrupted in
   transit is refused rather than stored or used.
 - Wrapped DEKs are byte for byte the .NET `GoogleKmsKeyWrapper`'s, so a key file made by either is
@@ -668,7 +689,12 @@ var wrapper = new GoogleKmsKeyWrapperImpl(kms,
   failed unwrap zeroes the caller's buffer.
 - Plaintext the wrapper can reach is zeroed: its copy of the key sent to `Encrypt` (once the call,
   retries included, has completed), and the array inside the `ByteString` `Decrypt` returns. gRPC's
-  serialized request and response aren't exposed, so they can't be.
+  serialized request isn't exposed, so it can't be.
+- Create the client with `GoogleKmsKeyWrapperImpl.createClient()`, or from your own settings with
+  `KeyManagementServiceClient.create(GoogleKmsKeyWrapperImpl.withReceiveBufferScrubber(settings))`.
+  Either way the client reads each response into a buffer it zeroes afterwards. A client made any
+  other way leaves the last revealed DEK in a thread-local buffer gRPC reuses and never clears. The
+  wrapper can't add this to a client it is handed.
 - Key files are read through `hkdfguard-securefile`, by the same rules as for AWS KMS.
 - Symmetric encryption needs no secret beyond permission to use the key, so anyone allowed
   `useToEncrypt` can make a key file the application accepts. Give the application Cloud KMS
@@ -778,7 +804,9 @@ var config = vault.secrets().kvV2ReadAsync("myapp/config", VaultRequestOptions.b
 ```
 
 It differs from vault-client-go where the JVM does: no Unix domain sockets (`java.net.http` can't
-connect to one), and redirects are refused unless `followRedirects` is set. To read a secret into
+connect to one), and redirects are refused unless `followRedirects` is set - and even then followed
+only to the address's own origin or one `redirectOrigins` lists, such as the cluster's other nodes.
+To read a secret into
 memory your application uses, prefer `HashiCorpVaultSecretCacheImpl`, which never makes it a
 `String`; `VaultClient` returns data as ordinary `String`s and `JsonValue`s, like any API client.
 
@@ -826,8 +854,10 @@ secrets can be made to roll one back. Like the key wrappers that read key files 
 (see [Native access](#native-access)); it is a module of its own, not part of `hkdfguard-cache` as
 in .NET, so that `hkdfguard-cache` keeps running on Java 21.
 
-A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`, so it
-can't reach outside the folder. Any other name (for example `ConnectionStrings:Admin`), a missing
+A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, neither starting nor ending
+with `.`, and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`,
+in any case, with or without an extension), so it can't reach outside the folder or name a device,
+on any platform. Any other name (for example `ConnectionStrings:Admin`), a missing
 or empty file and a missing folder all return 0, so the cache can sit in a
 `ProtectedCacheCollectionImpl` beside other sources - before any secret-store cache, since a
 collection asks its sources in order and a source that throws fails the lookup. A missing secret
@@ -856,7 +886,9 @@ The file is delivered as one, so it is loaded as one: a value that fails authent
 key version the ring doesn't hold, or isn't a non-empty string, and a file that isn't exactly that
 object (malformed, not UTF-8, a name that isn't a `FilePerSecretCacheImpl` name, a name twice
 ignoring case), fails the whole load - `CryptographicException`, `NoSuchElementException` or
-`InvalidSecretDataException` - and nothing is kept, so the file is read again on the next lookup.
+`InvalidSecretDataException` - and nothing is kept. The failure is remembered for five seconds
+(`RETRY_AFTER_FAILURE`): lookups in that time fail at once with it, without reading the file, and
+the first lookup after reads it again, so a file that stays broken costs one read every few seconds.
 Names match ignoring ASCII case; a name that couldn't be one is reported missing, as is every name
 while the file (or its folder) is missing. A file over the maximum (1 MB by default, a constructor
 argument) throws `InvalidSecretDataException`. Trust, native access and Java 25 are as for
@@ -893,9 +925,12 @@ unprivileged service uses `LoadCredentialEncrypted=`, or `--user` credentials (`
 systemd 256+).
 
 The JVM's process pipes are buffered streams: stdout is read in reads large enough to bypass its
-8 KiB buffer, straight into the credential's array, and every smaller array it outgrows is zeroed;
-but a stdin write shorter than 8 KiB - a password - passes through the JDK's own buffer, which Java
-can't zero. A loaded credential is read through a direct buffer of its own, zeroed once copied. The
+8 KiB buffer, straight into the credential's array, and every smaller array it outgrows is zeroed.
+That holds only while `systemd-creds` is still running, though. Once it exits, the JDK's process
+reaper drains whatever stdout still holds into an array of its own, which Java can't reach to zero,
+and the read is served from that; `systemd-creds` writes the value and exits at once, so the whole
+value may pass through it, and stays in memory until collected. Likewise a stdin write shorter than
+8 KiB - a password - passes through the JDK's own buffer, which Java can't zero. A loaded credential is read through a direct buffer of its own, zeroed once copied. The
 unit tests run against a fake `systemd-creds`, and the runner itself against child JVMs, on any OS;
 `SystemdCredentialsIntegrationTest` runs the real one on Linux when `HKDFGUARD_TEST_SYSTEMD_CREDS`
 is 1.
@@ -934,7 +969,8 @@ The file name is the secret name with every `/` and `#` replaced by `__` -
 `myapp/db#password` is written as `myapp__db__password` - and each value is encrypted bound to that
 file name, the name `FilePerSecretCacheImpl` decrypts it under, so a renamed file fails
 authentication. A name the store can't hold, or whose file name `FilePerSecretCacheImpl` couldn't
-read (1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`), is refused by the
+read (1-255 ASCII letters, digits, `-`, `_` and `.`, neither starting nor ending with `.`, and not a
+Windows device name such as `NUL` or `com1.txt`), is refused by the
 constructor, and so are two names whose file names differ only in case.
 
 `pullSecretsAsync` reads every secret, one after another, replacing whatever an earlier pull kept;
@@ -947,12 +983,19 @@ secret, without a byte order mark, replacing a file by that name and leaving eve
 is; before a pull it throws `IllegalStateException`. Only ciphertext is written, but
 `FilePerSecretCacheImpl` refuses a folder or file anyone but administrators and the principals it
 trusts can modify, so write where the deployment can set that, or set it once they're written.
+Each file is written to a new file beside it, then renamed over the old one, so a reader never sees
+it half written. Whatever was there by that name, a symbolic or hard link included, is replaced
+rather than written through, so a link planted in the folder can't redirect the write. A replaced
+file keeps its POSIX permissions; on Windows the new file takes the folder's inheritable
+permissions. The folder itself is used as given: keep it, and the folders above it, out of reach of
+untrusted accounts.
 
 `writeJsonSecrets` writes the same values as one JSON file instead, the file
 `JsonSecretsFileReadOnlyCacheImpl` reads: one object, a member per file name in ordinal order,
 indented, `+` and `/` kept as they are, UTF-8 without a byte order mark - byte for byte what .NET
 writes on the same platform, lines ending in the platform's line separator as .NET's
-`Environment.NewLine` does (`{}` when nothing was found). A file already there is replaced.
+`Environment.NewLine` does (`{}` when nothing was found). A file already there is replaced, in the
+same way.
 
 To deliver to another host without a file on this one, write to a process's standard input and
 close it once the future completes. `writeProtectedSecretFilesAsync` writes a PAX tar archive of
@@ -980,7 +1023,7 @@ in `hkdfguard-cache-filepersecret`; they call nothing native.
 
 | Writer | Constructed from | Notes |
 |---|---|---|
-| `AwsSecretsManagerSecretPipelineWriterImpl` | `SecretsManagerAsyncClient client, protector, secretNames` | The client is yours to build and close (IRSA or EKS Pod Identity on EKS); the capture rides on each request as a plugin, and the SDK unmarshals an empty object. Needs only `secretsmanager:GetSecretValue`. A SecretBinary is refused. |
+| `AwsSecretsManagerSecretPipelineWriterImpl` | `SecretsManagerAsyncClient client, protector, secretNames` | The client is yours to build and close (IRSA or EKS Pod Identity on EKS); the capture rides on each request as a plugin, and the SDK unmarshals an empty object. Needs only `secretsmanager:GetSecretValue`. A SecretBinary is refused, and a response naming another secret is refused with `CryptographicException`. |
 | `AzureKeyVaultSecretPipelineWriterImpl` | `SecretClientBuilder builder, protector, secretNames` | Builds its own `SecretClient`, changing the builder as `AzureKeyVaultSecretCacheImpl` does (capture policy added, any `HttpPipeline` cleared, log options that never log bodies). Needs only the **Key Vault Secrets User** role. |
 | `GoogleSecretManagerSecretPipelineWriterImpl` | `create(projectId, protector, secretNames)` (Application Default Credentials, Workload Identity on GKE), or `SecretManagerServiceSettings settings, projectId, protector, secretNames` | Owns and closes its client. A payload whose CRC32C doesn't match, or a response naming another secret, is refused with `CryptographicException`. Needs only the **Secret Manager Secret Accessor** role. |
 | `HashiCorpVaultSecretPipelineWriterImpl` | `URI address, VaultTokenSource tokenSource, protector, secretNames, HashiCorpVaultPipelineOptions options` | KV version 1 or 2, the mount, default key, namespace, timeout, retries, an `HttpClient` and `VaultTlsOptions` (give it a PEM certificate and key: a key store's password needs a key ring) as for `HashiCorpVaultSecretCacheImpl`. The token is plaintext from the source, since there is no key ring yet, and becomes one `String` per request, as `java.net.http` takes headers; the policy needs only `read`. |
@@ -1067,8 +1110,9 @@ int written = secrets.decrypt("prod/Db-Password", buffer); // 0 if the secret do
 `GetSecretValue` reads the secret's `AWSCURRENT` version; the principal needs only
 `secretsmanager:GetSecretValue` (plus `kms:Decrypt` on a customer managed key that encrypts it).
 Names match exactly, as Secrets Manager's do: anything but 1-512 ASCII letters, digits and
-`/_+=.@-` returns 0 without a call, so look secrets up by name, not ARN. A `SecretString` is cached
-as its UTF-8 bytes and a `SecretBinary` as its bytes. The capture is attached to each request as a
+`/_+=.@-` returns 0 without a call, so look secrets up by name, not ARN. A response naming a
+secret other than the one asked for is refused with a `CryptographicException`, and nothing it held
+is cached. A `SecretString` is cached as its UTF-8 bytes and a `SecretBinary` as its bytes. The capture is attached to each request as a
 per-request plugin, so the application's client is left as it is and can be shared.
 
 ### Azure Key Vault
@@ -1200,6 +1244,72 @@ public final class MySecretStoreCache extends RemoteSecretCache {
 
 Override `fetchAsync` too if the client is asynchronous; without it, `decryptAsync` runs `fetch`
 on a virtual thread.
+
+## Known limitations
+
+These are the known gaps that remain, by design or because closing them costs more than it buys.
+Each says what can happen, when, and what to do about it.
+
+**File trust**
+
+- **Windows: a planted junction can make the process open an SMB connection before the file is
+  refused.** On Windows a key or secret file is opened first, and the folders it was reached through
+  are checked for reparse points and their ACLs afterwards, against the path the handle really
+  opened. A junction planted in a folder on the path that points at a UNC path (`\\server\share`)
+  is therefore followed, and an SMB connection made - which can send the service account's NTLM
+  credentials to that server - before the read is refused. Planting one needs write access to a
+  folder on the path, which the same check refuses, so this only arises where a folder is already
+  misconfigured. Block outbound SMB (TCP 445) from servers that don't need it, and restrict
+  outgoing NTLM (`Network security: Restrict NTLM: Outgoing NTLM traffic to remote servers`).
+- **Windows: some broad groups aren't refused when named in `KeyFileTrust`.** Naming Everyone,
+  Authenticated Users, Users, Interactive or Anonymous in `KeyFileTrust.withWindowsPrincipals` is
+  refused, since trusting any of them trusts every account. Guests (`S-1-5-32-546`), NETWORK
+  (`S-1-5-2`), and a domain's Domain Users, Domain Guests and Domain Computers (RIDs 513, 514 and
+  515) aren't on that list, so naming one would be accepted. Name only the deploying account or a
+  group that holds only deployers.
+- **Windows: anyone who can read a key file can stop it being read.** A trusted read opens the file
+  with read sharing only, so that nothing can write it while it's read; a process that holds it open
+  for writing, or opens it with no sharing at all, makes every trusted read fail until it lets go.
+  Doing that needs only read access, so keep read access to key files to administrators, the
+  deploying account and the service account.
+- **Linux: NFSv4 ACLs aren't read.** POSIX ACLs are checked (see [Native access](#native-access)),
+  but an NFSv4 ACL (`system.nfs4_acl`) granting write to an untrusted account isn't. Don't keep key
+  files on NFS.
+
+**Memory**
+
+- **Names are `String`s.** Secret names, and the names of the keys inside a JSON secret
+  (`prod/app#password`), become `String`s, which can't be zeroed and stay in memory until collected.
+  Never put secret material in a name.
+- **Copies the library can't reach.** What the JVM copies on its own - a compacting collector
+  moving an array, the JDK's process reaper draining `systemd-creds` output (see
+  [Reading systemd credentials](#reading-systemd-credentials)), an HTTP client's TLS and socket
+  buffers - isn't zeroed.
+- **Google Cloud KMS clients must be made through the wrapper.** Only a client from
+  `GoogleKmsKeyWrapperImpl.createClient()` or `withReceiveBufferScrubber(settings)` zeroes the
+  buffer each response is parsed from; a client the application builds any other way leaves the
+  last DEK it revealed in a buffer gRPC reuses.
+- **A `clientCertificateKeyPem` is held for the options' life.** `VaultTlsOptions` keeps that key
+  for as long as it lives, since each client built from it reads it again. Use
+  `clientCertificateKeyFile`, which is read only while a client is built.
+
+**Secret stores and key wrapping**
+
+- **A KV version 1 engine read as version 2 reports every secret missing.** The opposite mistake
+  fails loudly, with a `VaultRequestException` saying which version the engine is; this one can't be
+  told apart from a missing secret without permission to read the mount's configuration.
+- **AWS and Google KMS wrappers without a context accept any key file wrapped under their key.**
+  They log a warning when created without one; give each application a context of its own.
+- **Vault transit has no integrity check on the client side.** A wrapped DEK is trusted as far as
+  Vault's transit engine trusts it, as in .NET: keep the transit key's encrypt permission to the
+  pipeline that makes key files.
+
+**Behaviour that differs from .NET**
+
+The PEM key scheme allowlist, the KMS context warning, the Vault `redirectOrigins` list, the Vault
+response size cap, the KV version mismatch error, the Vault TLS skip-verify warning, the Unix ACL
+checks, the stricter Vault client retry, 3xx and path rules, and ASCII-only case folding in
+certificate subjects are in this library and not yet in .NET's.
 
 ## Building
 

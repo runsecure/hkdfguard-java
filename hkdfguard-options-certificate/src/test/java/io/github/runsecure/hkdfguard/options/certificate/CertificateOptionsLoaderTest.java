@@ -344,6 +344,35 @@ class CertificateOptionsLoaderTest {
         }
     }
 
+    // KeyStore lists entries in no set order, so a file with two keys could load either: refused.
+    @Test
+    void aPfx_WithMoreThanOneKey_IsRefused() throws Exception {
+        var first = TestCertificates.ec();
+        var second = TestCertificates.ec();
+        var keyStore = KeyStore.getInstance("PKCS12");
+        keyStore.load(null, null);
+        keyStore.setKeyEntry("one", first.getPrivate(), PASSWORD.toCharArray(),
+                new X509Certificate[] { TestCertificates.selfSigned(first, SUBJECT, days(-10), days(300)) });
+        keyStore.setKeyEntry("two", second.getPrivate(), PASSWORD.toCharArray(),
+                new X509Certificate[] { TestCertificates.selfSigned(second, SUBJECT, days(-10), days(300)) });
+        var out = new ByteArrayOutputStream();
+        keyStore.store(out, PASSWORD.toCharArray());
+        var path = write("two-keys.pfx", out.toByteArray());
+
+        var e = assertThrows(CryptographicException.class, () -> loader().load(pfx(path)));
+        assertTrue(e.getMessage().contains("2 private keys"), e.getMessage());
+    }
+
+    @Test
+    void aPfx_WhoseKeyIsntItsCertificates_IsRefused() throws Exception {
+        var key = TestCertificates.ec();
+        var other = TestCertificates.ec();
+        var path = write("mismatched.pfx", pkcs12(key, TestCertificates.selfSigned(other, SUBJECT, days(-10), days(300)), PASSWORD.toCharArray()));
+
+        var e = assertThrows(CryptographicException.class, () -> loader().load(pfx(path)));
+        assertTrue(e.getMessage().contains("isn't the key of the certificate"), e.getMessage());
+    }
+
     @Test
     void aPfx_NeedsItsPassword_EvenForTheCertificateAlone() throws Exception {
         var key = TestCertificates.ec();
@@ -360,13 +389,13 @@ class CertificateOptionsLoaderTest {
     // --- PEM -------------------------------------------------------------------------------------
 
     @Test
-    void aPemCertificate_WithAnEncryptedKey_IsOpenedWithItsPassword_UnderPbes2AndPkcs12Schemes() throws Exception {
+    void aPemCertificate_WithAnEncryptedKey_IsOpenedWithItsPassword_UnderPbes2WithSha2AndAes() throws Exception {
         var cases = List.of(
                 new Object[] { TestCertificates.rsa(), "PBEWithHmacSHA256AndAES_256" },
                 new Object[] { TestCertificates.ec(), "PBEWithHmacSHA256AndAES_256" },
-                new Object[] { TestCertificates.ec(), "PBEWithHmacSHA1AndAES_128" },
-                new Object[] { TestCertificates.ec(), "PBEWithHmacSHA512AndAES_256" },
-                new Object[] { TestCertificates.ec(), "PBEWithSHA1AndDESede" });
+                new Object[] { TestCertificates.ec(), "PBEWithHmacSHA256AndAES_128" },
+                new Object[] { TestCertificates.ec(), "PBEWithHmacSHA384AndAES_256" },
+                new Object[] { TestCertificates.ec(), "PBEWithHmacSHA512AndAES_256" });
         var i = 0;
         for (var c : cases) {
             var key = (KeyPair) c[0];
@@ -384,6 +413,38 @@ class CertificateOptionsLoaderTest {
                 assertSigns(loadedAsync);
             }
         }
+    }
+
+    // Legacy schemes - PBES1 and the PKCS#12 PBE schemes, PBKDF2 with HMAC-SHA1 - are refused, saying
+    // how to re-encrypt, even with the right password.
+    @Test
+    void aPemKey_UnderALegacyScheme_IsRefused_SayingHowToReEncrypt() throws Exception {
+        var key = TestCertificates.ec();
+        var original = TestCertificates.selfSigned(key, SUBJECT, days(-10), days(300));
+        var legacy = List.of(
+                TestCertificates.encryptedPbes1Pem(key.getPrivate(), PASSWORD.toCharArray(), "PBEWithSHA1AndDESede"),
+                TestCertificates.encryptedPbes1Pem(key.getPrivate(), PASSWORD.toCharArray(), "PBEWithMD5AndDES"),
+                TestCertificates.encryptedPbes2Pem(key.getPrivate(), PASSWORD.toCharArray(), "PBEWithHmacSHA1AndAES_128", 2048));
+        var i = 0;
+        for (var keyPem : legacy) {
+            var options = pem(write("legacy" + i + ".crt", TestCertificates.certificatePem(original)), write("legacy" + i + ".key", keyPem), "tls-password", false);
+            i++;
+
+            var e = assertThrows(CryptographicException.class, () -> loader().load(options));
+            assertTrue(e.getMessage().contains("openssl pkcs8 -topk8"), e.getMessage());
+        }
+    }
+
+    @Test
+    void aPemKey_AskingForMoreIterationsThanTheCap_IsRefused_BeforeDerivingAnything() throws Exception {
+        var original = TestCertificates.selfSigned(TestCertificates.ec(), SUBJECT, days(-10), days(300));
+        var keyPem = TestCertificates.pbes2PemWithoutKey("PBEWithHmacSHA256AndAES_256", PemKeys.MAX_ITERATIONS + 1);
+        var options = pem(write("slow.crt", TestCertificates.certificatePem(original)), write("slow.key", keyPem), "tls-password", false);
+
+        var started = System.nanoTime();
+        var e = assertThrows(CryptographicException.class, () -> loader().load(options));
+        assertTrue(e.getMessage().contains("iterations"), e.getMessage());
+        assertTrue(System.nanoTime() - started < java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
     }
 
     @Test

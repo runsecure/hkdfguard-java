@@ -56,6 +56,7 @@ class WindowsAccessRulesTest {
             WindowsAccessRules.APPEND_DATA,
             WindowsAccessRules.WRITE_EXTENDED_ATTRIBUTES,
             WindowsAccessRules.DELETE_SUBDIRECTORIES_AND_FILES,
+            WindowsAccessRules.WRITE_ATTRIBUTES,
             WindowsAccessRules.DELETE,
             WindowsAccessRules.CHANGE_PERMISSIONS,
             WindowsAccessRules.TAKE_OWNERSHIP,

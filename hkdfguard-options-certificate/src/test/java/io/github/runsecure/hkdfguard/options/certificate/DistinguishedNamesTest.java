@@ -9,7 +9,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.api.Test;
 
-/** How a configured subject is compared to a certificate's: decoded, ignoring case, whole. */
+/** How a configured subject is compared to a certificate's: decoded, ignoring the case of ASCII letters, whole. */
 class DistinguishedNamesTest {
     private static boolean equal(String a, String b) {
         return DistinguishedNames.sameName(new X500Principal(a), new X500Principal(b));
@@ -24,7 +24,7 @@ class DistinguishedNamesTest {
         "SERIALNUMBER=AB12 | serialnumber=ab12",
         "CN=a+O=b | O=b+CN=a", // an RDN is a set
         "2.5.4.3=api.example.com | CN=api.example.com",
-        "CN=Ünïcode | cn=ünïcode",
+        "CN=Ünïcode | cn=Ünïcode", // ASCII letters in either case; everything else as it is
         "'CN=a\\,b' | 'CN=\"a,b\"'",
     })
     void theSameName_Matches(String a, String b) {
@@ -39,6 +39,10 @@ class DistinguishedNamesTest {
         "OU=Contoso | O=Contoso", // another attribute
         "CN=a  b | CN=a b", // whitespace isn't folded, as in .NET
         "CN=a+O=b | CN=a, O=b",
+        "CN=Ünïcode | CN=ünïcode", // only ASCII letters match in another case
+        "CN=ſervice | CN=service", // U+017F long s upper-cases to 'S': a lookalike, not the same name
+        "CN=Key | CN=key", // U+212A Kelvin sign lower-cases to 'k'
+        "CN=İd | CN=id", // U+0130 dotted capital I lower-cases to 'i' (with a combining dot)
     })
     void anotherName_DoesNot(String a, String b) {
         assertFalse(equal(a, b), a + " vs " + b);

@@ -10,6 +10,7 @@ import io.github.runsecure.hkdfguard.cache.SecretValueSink;
 import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
 import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultRequestException;
 import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultTokenProvider;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -44,7 +45,10 @@ import org.slf4j.Logger;
  * <p>
  * A secret that doesn't exist (404 with no errors, as Vault answers), whose latest version is
  * deleted or destroyed, or that has no such key, or whose value there is empty or isn't cached, is
- * reported missing. Any other answer (403 for a token that is invalid or not allowed to read the
+ * reported missing. A KV version 2 engine read as version 1 is not: Vault's 404 then warns that the
+ * path is invalid for a versioned engine, and the read fails with a {@link VaultRequestException}
+ * saying so. The other mismatch can't be told apart - a version 1 engine read as version 2 holds
+ * nothing at {mount}/data/{path} - so every secret reads as missing. Any other answer (403 for a token that is invalid or not allowed to read the
  * path, a 404 naming an error such as a mount that doesn't exist, a redirect, Vault sealed)
  * propagates as a {@link VaultRequestException} carrying Vault's status and errors. A request that
  * fails transiently - no answer, a connection lost mid-response, a timed-out attempt, 429 or a 5xx
@@ -96,6 +100,9 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
      * it.
      */
     public static final String TOKEN_PURPOSE = "HkdfGuard.Cache.HashiCorpVault.Token";
+
+    // How a KV version 2 engine's 404 warns of a path a version 1 read made.
+    private static final String VERSIONED_ENGINE_WARNING = "Invalid path for a versioned K/V secrets engine";
 
     private final HttpClient http;
     private final boolean ownsHttp;
@@ -250,16 +257,34 @@ public final class HashiCorpVaultSecretCacheImpl extends RemoteSecretCache imple
             return;
         }
 
-        var errors = ErrorResponseBody.readStrings(body, "errors");
+        // An error response holds no secret: read whole, for its errors and warnings.
+        var bytes = body.readNBytes(ErrorResponseBody.MAX_BODY_LENGTH);
+        var errors = ErrorResponseBody.readStrings(new ByteArrayInputStream(bytes), "errors");
 
         // Nothing at the path: Vault answers 404 with an empty error list - or, for a KV version 2
         // secret whose latest version is deleted, with its metadata and none. A 404 naming an error
-        // (no such mount) or that isn't Vault's JSON (a proxy's page) is a failure.
-        if (status == 404 && errors != null && errors.isEmpty())
+        // (no such mount) or that isn't Vault's JSON (a proxy's page) is a failure. So is one warning
+        // that the path is invalid for a versioned engine: the engine is KV version 2, read as
+        // version 1, and every secret would otherwise read as missing.
+        if (status == 404 && errors != null && errors.isEmpty()) {
+            var mismatch = kvVersionMismatch(ErrorResponseBody.readStrings(new ByteArrayInputStream(bytes), "warnings"));
+            if (mismatch != null)
+                throw new VaultRequestException("Vault refused to read '" + path + "': HTTP 404: the engine is KV version 2, but this cache"
+                        + " reads it as version 1; set the options' kvVersion to V2. Vault warned: " + mismatch, status);
             return;
+        }
 
         var detail = errors != null && !errors.isEmpty() ? ": " + String.join("; ", errors) : "";
         throw new VaultRequestException("Vault refused to read '" + path + "': HTTP " + status + detail, status);
+    }
+
+    // The warning Vault gives for a KV version 1 read of a KV version 2 engine, or null.
+    private static String kvVersionMismatch(List<String> warnings) {
+        if (warnings != null)
+            for (var warning : warnings)
+                if (warning.contains(VERSIONED_ENGINE_WARNING))
+                    return warning;
+        return null;
     }
 
     private static CancellationException cancelled() {

@@ -10,8 +10,10 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 /**
  * When and how often a {@link VaultClient} retries a failed request: vault-client-go's
  * RetryConfiguration (its go-retryablehttp client). Retries happen within the request's timeout,
- * and the request is sent whole each time - its body is held in memory for that. Immutable: build
- * one with {@link #builder()}.
+ * and the request is sent whole each time - its body is held in memory for that. Unlike
+ * go-retryablehttp, a POST, PUT or PATCH that failed without an answer is sent again only when the
+ * connection was refused or never made: once sent, Vault may have applied it, and a second token or
+ * write would follow. Immutable: build one with {@link #builder()}.
  */
 public final class VaultRetryOptions {
     /** Whether to retry an attempt. */

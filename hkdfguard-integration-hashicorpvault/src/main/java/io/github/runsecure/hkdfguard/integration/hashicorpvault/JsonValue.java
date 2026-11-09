@@ -88,6 +88,26 @@ public final class JsonValue {
         }
     }
 
+    /**
+     * As {@link #read(JsonReader)}, but an object's members named in omitted - at its top level
+     * only - are skipped without being read, so a string among them never becomes a String.
+     */
+    static JsonValue read(JsonReader reader, java.util.Set<String> omitted) {
+        if (omitted.isEmpty() || reader.token() != Token.START_OBJECT)
+            return read(reader);
+
+        var members = new LinkedHashMap<String, JsonValue>();
+        while (reader.read() && reader.token() == Token.PROPERTY_NAME) {
+            var name = reader.getString();
+            reader.read();
+            if (omitted.contains(name))
+                reader.skip();
+            else
+                members.put(name, read(reader));
+        }
+        return new JsonValue(Kind.OBJECT, null, false, Collections.unmodifiableMap(members), null);
+    }
+
     /** The value reader has just read the first token of, leaving the reader at its last token. */
     static JsonValue read(JsonReader reader) {
         return switch (reader.token()) {

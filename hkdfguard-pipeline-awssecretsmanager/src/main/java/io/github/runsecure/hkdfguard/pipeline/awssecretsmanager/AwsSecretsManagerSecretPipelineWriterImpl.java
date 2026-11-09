@@ -1,6 +1,7 @@
 package io.github.runsecure.hkdfguard.pipeline.awssecretsmanager;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.KeyWrapperFutures;
 import io.github.runsecure.hkdfguard.abstractions.PipelineDataProtector;
 import io.github.runsecure.hkdfguard.cache.InvalidSecretDataException;
@@ -46,7 +47,8 @@ import software.amazon.awssdk.services.secretsmanager.model.ResourceNotFoundExce
  * managed key that encrypts them). A name holding '+', '=' or '@', which no file name can, is refused.
  * A SecretBinary is refused with an {@link InvalidSecretDataException}: the protector encrypts text.
  * A secret that doesn't exist (ResourceNotFoundException) is missing; any other AWS failure fails the
- * pull as the SDK's exception.
+ * pull as the SDK's exception. A response naming a secret other than the one asked for is refused
+ * with a {@link CryptographicException}.
  * <p>
  * The secret never becomes a String. Each GetSecretValue carries a plugin of its own, for that
  * request only, as hkdfguard-cache-awssecretsmanager's does, whose interceptor collects the
@@ -110,6 +112,7 @@ public final class AwsSecretsManagerSecretPipelineWriterImpl extends SecretPipel
      *                                    denied, a secret scheduled for deletion)
      * @throws InvalidSecretDataException the secret is a SecretBinary, the response isn't Secrets
      *                                    Manager's JSON, or a key/value secret holds a key twice
+     * @throws CryptographicException     the response names a secret other than the one asked for
      */
     @Override
     protected void readSecret(String name, List<SecretRequest> requests, Map<String, String> values) {
@@ -132,7 +135,7 @@ public final class AwsSecretsManagerSecretPipelineWriterImpl extends SecretPipel
         var read = newValues();
         var capture = new PipelineSecretCapture((body, length) -> {
             read.clear();
-            protectValues(body, length, requests, read);
+            protectValues(body, length, name, requests, read);
         });
         var request = GetSecretValueRequest.builder()
                 .secretId(name)
@@ -170,15 +173,27 @@ public final class AwsSecretsManagerSecretPipelineWriterImpl extends SecretPipel
         }), call);
     }
 
-    // Encrypts the top-level SecretString of a GetSecretValue body, and each requested key it holds.
-    private void protectValues(byte[] body, int length, List<SecretRequest> requests, Map<String, String> values) {
+    // Encrypts the top-level SecretString of a GetSecretValue body, and each requested key it holds,
+    // once the body has named the secret asked for: names are exact, and only a name is ever asked
+    // for, so Secrets Manager answers with that name exactly. A refusal discards what was encrypted.
+    private void protectValues(byte[] body, int length, String name, List<SecretRequest> requests, Map<String, String> values) {
         var reader = new JsonReader(body, length);
         try {
             if (!reader.read() || reader.token() != Token.START_OBJECT)
                 throw new InvalidSecretDataException("The response body isn't a JSON object.");
 
             var found = false;
+            var named = 0;
+            var namedAsked = false;
             while (nextProperty(reader)) {
+                if (reader.valueTextEquals("Name")) {
+                    reader.read();
+                    named++;
+                    namedAsked = reader.token() == Token.STRING && reader.valueTextEquals(name);
+                    reader.skip();
+                    continue;
+                }
+
                 var isText = reader.valueTextEquals("SecretString");
                 var isBinary = !isText && reader.valueTextEquals("SecretBinary");
                 reader.read();
@@ -194,6 +209,9 @@ public final class AwsSecretsManagerSecretPipelineWriterImpl extends SecretPipel
                 found = true;
                 protectSecretString(reader, requests, values);
             }
+
+            if (named != 1 || !namedAsked)
+                throw new CryptographicException("Secrets Manager answered a request for secret '" + name + "' with a response naming another.");
         } catch (JsonReader.Malformed e) {
             // Not chained: what the reader rejected may be in the secret.
             throw new InvalidSecretDataException("The response body isn't valid JSON (at byte " + e.position + " of line " + e.line + ").");

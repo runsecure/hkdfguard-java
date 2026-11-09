@@ -322,6 +322,18 @@ class FilePerSecretCacheImplTest {
         assertEquals(0, await(cache.decryptAsync(name, new char[16])));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"item.", "a..", "NUL", "nul", "Con", "prn.txt", "aux.tar.gz", "COM1", "com0", "lpt9", "LPT1.key"})
+    void aNameEndingInADotOrAWindowsDeviceName_IsInvalid(String name) {
+        assertFalse(FilePerSecretCacheImpl.isValidName(name));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"nulx", "con_1", "com10", "lpt", "comA", "my.nul", "a.con.txt", "aux-1.key"})
+    void aNameMerelyResemblingADeviceName_IsValid(String name) {
+        assertTrue(FilePerSecretCacheImpl.isValidName(name));
+    }
+
     @Test
     void isValidName_AcceptsUpToMaxNameLength_OfLettersDigitsAndPunctuation() {
         assertTrue(FilePerSecretCacheImpl.isValidName("Db-Password_v2.txt"));

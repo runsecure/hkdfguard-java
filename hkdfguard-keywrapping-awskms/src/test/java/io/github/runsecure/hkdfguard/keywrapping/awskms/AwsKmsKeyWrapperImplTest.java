@@ -65,6 +65,20 @@ class AwsKmsKeyWrapperImplTest {
     }
 
     @Test
+    void aWrapperWithoutAnEncryptionContext_LogsAWarning_AndOneWithAContextDoesnt() {
+        var kms = new FakeKms();
+        var logger = new RecordingLogger();
+
+        new AwsKmsKeyWrapperImpl(kms, KEY_ARN, Map.of(), null, logger);
+        assertEquals(1, logger.entries().size());
+        assertEquals(org.slf4j.event.Level.WARN, logger.entries().get(0).level());
+        assertTrue(logger.entries().get(0).message().contains(KEY_ARN), logger.entries().get(0).message());
+
+        new AwsKmsKeyWrapperImpl(kms, KEY_ARN, CONTEXT, null, logger);
+        assertEquals(1, logger.entries().size());
+    }
+
+    @Test
     void constructor_RejectsMissingArguments() {
         var kms = new FakeKms();
 

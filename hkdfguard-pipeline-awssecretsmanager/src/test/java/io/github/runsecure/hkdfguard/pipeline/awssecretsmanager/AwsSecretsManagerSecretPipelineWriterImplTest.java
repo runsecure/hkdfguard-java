@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.PipelineDataProtector;
 import io.github.runsecure.hkdfguard.abstractions.SecretPipelineWriter;
 import io.github.runsecure.hkdfguard.cache.InvalidSecretDataException;
@@ -147,6 +148,19 @@ class AwsSecretsManagerSecretPipelineWriterImplTest extends SecretPipelineWriter
         aws.rawBody = body.getBytes(StandardCharsets.UTF_8);
         try (var writer = createWriter("item")) {
             assertPullFails(InvalidSecretDataException.class, writer);
+            assertTrue(writer.getProtectedSecrets().isEmpty());
+        }
+    }
+
+    // A body naming another secret, none, or more than one name: refused, and nothing it held is kept.
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"Name\":\"other\",\"SecretString\":\"wrong\"}", "{\"Name\":\"ITEM\",\"SecretString\":\"wrong\"}",
+            "{\"SecretString\":\"wrong\"}", "{\"Name\":\"item\",\"Name\":\"other\",\"SecretString\":\"wrong\"}",
+            "{\"Name\":\"other\",\"Name\":\"item\",\"SecretString\":\"wrong\"}", "{\"Name\":null,\"SecretString\":\"wrong\"}"})
+    void aResponseNamingAnotherSecret_IsRefused(String body) {
+        aws.rawBody = body.getBytes(StandardCharsets.UTF_8);
+        try (var writer = createWriter("item")) {
+            assertPullFails(CryptographicException.class, writer);
             assertTrue(writer.getProtectedSecrets().isEmpty());
         }
     }

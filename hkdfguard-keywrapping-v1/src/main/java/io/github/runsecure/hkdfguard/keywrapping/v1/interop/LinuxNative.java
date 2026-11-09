@@ -146,14 +146,22 @@ final class LinuxNative {
     }
 
     /**
-     * The process's environment as it was at exec, which is what the dynamic linker read, or null
-     * if /proc/self/environ can't be read.
+     * The process's environment as it was at exec, which is what the dynamic linker read.
+     *
+     * @throws SecurityException /proc/self/environ can't be read: without it, what the dynamic linker
+     *                           started with can't be checked, so nothing is loaded
      */
     static byte[] readInitialEnvironment() {
+        return readInitialEnvironment(Path.of("/proc/self/environ"));
+    }
+
+    /** {@link #readInitialEnvironment()}, from file: the tests'. */
+    static byte[] readInitialEnvironment(Path file) {
         try {
-            return Files.readAllBytes(Path.of("/proc/self/environ"));
+            return Files.readAllBytes(file);
         } catch (IOException | SecurityException e) {
-            return null;
+            throw new SecurityException("Could not read " + file + ", the environment this process started with, so the dynamic linker's"
+                    + " variables can't be checked; refusing to load the HkdfGuard native library.", e);
         }
     }
 }

@@ -1,5 +1,6 @@
 package io.github.runsecure.hkdfguard.securefile;
 
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileStatus;
 import io.github.runsecure.hkdfguard.platform.unix.UnixFileType;
 import io.github.runsecure.hkdfguard.platform.unix.UnixPathResolver;
@@ -13,7 +14,10 @@ import java.nio.file.NoSuchFileException;
  * {@link TrustedFile} reads): resolves it the way the kernel would, from {@code /}, checking everything it passes through. Every directory and the file
  * itself must be owned by root or a {@link KeyFileTrust#unixUserIds()} user, must not be writable
  * by others, and may be writable by its group only if that is a {@link KeyFileTrust#unixGroupIds()}
- * group. A symbolic link is followed only if a trusted user owns it, and its target is then checked
+ * group. Its access control list may let only root, trusted users and trusted groups modify it: a
+ * POSIX ACL (Linux) or extended ACL (macOS) entry granting anyone else write - or, on macOS, any
+ * right that changes it, or an entry whose principal maps to no uid or gid - fails it (see
+ * {@link io.github.runsecure.hkdfguard.platform.unix.UnixFiles}). A symbolic link is followed only if a trusted user owns it, and its target is then checked
  * in turn - so macOS's root-owned /etc to private/etc works, and a link anyone else made doesn't.
  * Nothing under /tmp, /var/tmp or another world-writable directory passes, sticky or not.
  * <p>
@@ -75,7 +79,21 @@ final class UnixKeyFileChecks {
         if (status.groupWritable() && !trust.unixGroupIds().contains(status.groupId()))
             return "is writable by group " + status.groupId() + ", which is not a trusted group";
 
+        for (var writer : status.aclWriters()) {
+            if (!isTrustedAclWriter(writer, trust))
+                return "has an access control list that lets " + writer + " modify it, which is not trusted";
+        }
+
         return null;
+    }
+
+    private static boolean isTrustedAclWriter(UnixAclWriter writer, KeyFileTrust trust) {
+        return switch (writer.kind()) {
+            case USER -> isTrustedUser(writer.id(), trust);
+            // As for the owning group: trusted only when named, root's group included.
+            case GROUP -> trust.unixGroupIds().contains(writer.id());
+            case UNKNOWN -> false;
+        };
     }
 
     private static boolean isTrustedUser(long uid, KeyFileTrust trust) {

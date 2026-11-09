@@ -145,6 +145,15 @@ var wrapper = new AzureKeyVaultKeyWrapperImpl(
   and every key file records the versions it was made with, so both keys can be rotated in Key
   Vault with no change here. Keep an old version enabled for as long as key files made with it are
   in use.
+- **Revoking key files.** Disable the signing key version that signed them. Every unwrap - each key
+  ring refresh included - first reads that version's state from Key Vault and refuses it once it is
+  disabled, so running applications stop accepting those key files within one refresh interval
+  (and fail closed by the ring's refresh-failure policy). The read is needed because the SDK
+  verifies locally, with a public key it fetched once, and would otherwise never notice. Setting an
+  expiry date doesn't revoke: Key Vault still verifies under an expired key, so expiry only stops
+  the version signing new key files. An application without `keys/get` on the EC key can't read
+  its state; the SDK then verifies in Key Vault, which refuses a disabled key itself. Once a read
+  has succeeded, a later refusal to read is treated as revocation.
 - **The context** is bound into every key file's signature and must be given again, exactly, to
   reveal it. Use one value per application, so a key file made for one can't be used by another
   that shares the keys. It isn't secret.
@@ -183,8 +192,9 @@ as an account of its own.
 
 ## Choosing a refresh interval
 
-Every key in a ring re-reveals itself once per `withKeyRefreshInterval`: a verify, which the SDK
-does locally once it has the public key, and an unwrap call to Key Vault. See
+Every key in a ring re-reveals itself once per `withKeyRefreshInterval`: a read of the signing key
+version's state, a verify, which the SDK does locally once it has the public key, and an unwrap -
+two calls to Key Vault. See
 [Choosing a refresh interval](use-aws-kms.md#choosing-a-refresh-interval) for the trade-off, and
 [Key Vault pricing](https://azure.microsoft.com/pricing/details/key-vault/) for what each operation
 costs: RSA 3072 and EC keys are billed at a higher rate than RSA 2048.

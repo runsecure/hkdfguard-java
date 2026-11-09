@@ -139,10 +139,9 @@ on the module path, where this module is the automatic module
 neither does a descriptor here).
 
 ```java
-import com.google.cloud.kms.v1.KeyManagementServiceClient;
 import io.github.runsecure.hkdfguard.keywrapping.googlekms.GoogleKmsKeyWrapperImpl;
 
-var kms = KeyManagementServiceClient.create();   // Application Default Credentials
+var kms = GoogleKmsKeyWrapperImpl.createClient();   // Application Default Credentials
 var wrapper = new GoogleKmsKeyWrapperImpl(kms,
         "projects/my-project/locations/us-east1/keyRings/myapp/cryptoKeys/myapp-wrap",
         "com.example.myapp");
@@ -155,10 +154,15 @@ var wrapper = new GoogleKmsKeyWrapperImpl(kms,
   it is safe to share between threads and wrappers. The wrapper never closes it: close it when
   nothing uses the wrapper any more, a key ring's background refresh included. In Spring, declare
   it as a bean, which Spring closes.
-- **Client settings.** Retries, timeouts and the endpoint are the client's:
-  `KeyManagementServiceClient.create(KeyManagementServiceSettings.newBuilder()...build())`. By
-  default the client retries `UNAVAILABLE` and `DEADLINE_EXCEEDED` for up to 60 seconds before the
-  wrapper's future fails.
+- **Create the client through the wrapper.** `GoogleKmsKeyWrapperImpl.createClient()` is
+  `KeyManagementServiceClient.create()` with one change: the client zeroes the buffer each response
+  is read into. A plain client leaves the last DEK it revealed in a buffer gRPC reuses and never
+  clears. The wrapper can't change a client it is handed, so don't create one directly.
+- **Client settings.** Retries, timeouts and the endpoint are the client's. Pass your settings
+  through the wrapper too:
+  `KeyManagementServiceClient.create(GoogleKmsKeyWrapperImpl.withReceiveBufferScrubber(KeyManagementServiceSettings.newBuilder()...build()))`.
+  The transport must stay gRPC, the default. By default the client retries `UNAVAILABLE` and
+  `DEADLINE_EXCEEDED` for up to 60 seconds before the wrapper's future fails.
 
 Use it exactly as any other key wrapper: `new KeyRingBuilder().withKeyWrapper(wrapper)`, with
 ephemeral keys or key files, as in [Wrap keys with AWS KMS](use-aws-kms.md#5-build-a-key-ring-with-an-ephemeral-key).

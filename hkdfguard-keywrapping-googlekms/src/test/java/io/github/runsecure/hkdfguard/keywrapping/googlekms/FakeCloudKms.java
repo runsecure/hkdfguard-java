@@ -13,16 +13,26 @@ import com.google.cloud.kms.v1.KeyManagementServiceSettings;
 import com.google.cloud.kms.v1.ProtectionLevel;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Int64Value;
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
 import io.grpc.ManagedChannel;
+import io.grpc.MethodDescriptor;
 import io.grpc.Server;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -80,6 +90,9 @@ final class FakeCloudKms implements AutoCloseable {
     /** Counted down when the client cancels a call the fake is hanging on. */
     final CountDownLatch cancelled = new CountDownLatch(1);
 
+    /** Every array a {@link #receiveRecorder()} saw a response read into. */
+    final List<byte[]> receiveBuffers = new CopyOnWriteArrayList<>();
+
     FakeCloudKms() {
         RANDOM.nextBytes(key);
         var name = InProcessServerBuilder.generateName();
@@ -107,6 +120,44 @@ final class FakeCloudKms implements AutoCloseable {
     /** Makes a new version of the key its primary, as rotating it in Cloud KMS does. */
     void rotate(String keyName) {
         primaryVersions.put(keyName, primaryVersion(keyName) + 1);
+    }
+
+    /**
+     * Serves this fake over plaintext HTTP/2 on a loopback port, through gRPC's real (Netty)
+     * transport, until the returned server is shut down.
+     */
+    Server serveOnLoopback() {
+        try {
+            return NettyServerBuilder.forAddress(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
+                    .addService(new Service()).build().start();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Records in {@link #receiveBuffers} every array the response marshaller it wraps reads a message
+     * into. Placed inside the scrubber, which then reads from the stream it hands over.
+     */
+    ClientInterceptor receiveRecorder() {
+        return new ClientInterceptor() {
+            @Override
+            public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(MethodDescriptor<ReqT, RespT> method, CallOptions options, Channel next) {
+                var inner = method.getResponseMarshaller();
+                var recording = new MethodDescriptor.Marshaller<RespT>() {
+                    @Override
+                    public InputStream stream(RespT value) {
+                        return inner.stream(value);
+                    }
+
+                    @Override
+                    public RespT parse(InputStream stream) {
+                        return inner.parse(new RecordingStream(stream));
+                    }
+                };
+                return next.newCall(method.toBuilder().setResponseMarshaller(recording).build(), options);
+            }
+        };
     }
 
     /** What the fake would answer to the request, before a test changes it. */
@@ -254,5 +305,19 @@ final class FakeCloudKms implements AutoCloseable {
         System.arraycopy(prefix, 0, bytes, 0, prefix.length);
         aad.copyTo(bytes, prefix.length);
         return bytes;
+    }
+
+    // Records each array it is asked to read into.
+    private final class RecordingStream extends FilterInputStream {
+        RecordingStream(InputStream in) {
+            super(in);
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            if (receiveBuffers.stream().noneMatch(b -> b == buffer))
+                receiveBuffers.add(buffer);
+            return super.read(buffer, offset, length);
+        }
     }
 }

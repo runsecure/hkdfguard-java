@@ -194,7 +194,7 @@ class AzureKeyVaultKeyWrapperImplTest {
     }
 
     @Test
-    void unwrap_VerifiesTheSignatureFirst_ThenUnwrapsUnderTheRecordedVersions() {
+    void unwrap_ChecksTheSigningKeyThenVerifiesTheSignature_ThenUnwrapsUnderTheRecordedVersions() {
         var wrapper = wrapper();
         var wrapped = wrap(wrapper, random(32));
         var wrapVersion = vault.currentVersion(FakeKeyVault.WRAPPING_KEY_NAME);
@@ -203,8 +203,76 @@ class AzureKeyVaultKeyWrapperImplTest {
 
         unwrap(wrapper, wrapped);
 
-        assertEquals(List.of("verify " + FakeKeyVault.SIGNING_KEY_ID + "/" + signVersion, "unwrap " + FakeKeyVault.WRAPPING_KEY_ID + "/" + wrapVersion),
-                vault.calls);
+        assertEquals(List.of("read " + FakeKeyVault.SIGNING_KEY_ID + "/" + signVersion, "verify " + FakeKeyVault.SIGNING_KEY_ID + "/" + signVersion,
+                "unwrap " + FakeKeyVault.WRAPPING_KEY_ID + "/" + wrapVersion), vault.calls);
+    }
+
+    @Test
+    void unwrap_AfterTheSigningKeyVersionIsDisabled_IsRefused_WithoutVerifyingOrUnwrapping() {
+        var wrapper = wrapper();
+        var wrapped = wrap(wrapper, random(32));
+        unwrap(wrapper, wrapped);
+        vault.disable(FakeKeyVault.SIGNING_KEY_NAME, vault.currentVersion(FakeKeyVault.SIGNING_KEY_NAME));
+        vault.calls.clear();
+        var revealed = filled(32, 0xAA);
+
+        var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(wrapped, revealed));
+
+        assertTrue(exception.getMessage().contains("is disabled in Azure Key Vault"), exception.getMessage());
+        assertTrue(vault.calls.stream().allMatch(call -> call.startsWith("read ")), vault.calls.toString());
+        assertTrue(ArrayUtility.isNullOrEmpty(revealed));
+    }
+
+    @Test
+    void unwrap_WhenTheSigningKeyCanNeverBeRead_VerifiesInTheVault() {
+        // No keys/get: the SDK can't fetch the public key either, so the verify goes to Key Vault,
+        // which refuses a disabled key itself.
+        vault.failures.put("read", FakeKeyVault.refusal(403, "Forbidden"));
+        var wrapper = wrapper();
+        var dek = random(32);
+        var wrapped = wrap(wrapper, dek);
+
+        assertArrayEquals(dek, unwrap(wrapper, wrapped));
+        assertTrue(vault.calls.stream().anyMatch(call -> call.startsWith("verify ")), vault.calls.toString());
+    }
+
+    @Test
+    void unwrap_WhenAReadThatSucceededBeforeIsForbidden_IsRefused() {
+        // Once read, the SDK may hold the public key and verify locally: a later 403 may be a
+        // disabled key, and is refused rather than trusted to a local verify.
+        var wrapper = wrapper();
+        var wrapped = wrap(wrapper, random(32));
+        unwrap(wrapper, wrapped);
+        vault.failures.put("read", FakeKeyVault.refusal(403, "Forbidden"));
+        vault.calls.clear();
+
+        var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(wrapped, new byte[32]));
+
+        assertTrue(exception.getMessage().contains("could be read before and now can't"), exception.getMessage());
+        assertTrue(vault.calls.stream().noneMatch(call -> call.startsWith("verify ") || call.startsWith("unwrap ")), vault.calls.toString());
+    }
+
+    @Test
+    void unwrap_WhenTheSigningKeyReadFailsOtherwise_IsRefused() {
+        vault.failures.put("read", FakeKeyVault.refusal(500, "InternalServerError"));
+        var wrapper = wrapper();
+        var wrapped = wrap(wrapper, random(32));
+
+        var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(wrapped, new byte[32]));
+
+        assertTrue(exception.getMessage().contains("read failed for key '" + FakeKeyVault.SIGNING_KEY_NAME + "'"), exception.getMessage());
+    }
+
+    @Test
+    void unwrap_UnderAnExpiredButEnabledSigningKey_StillReveals() {
+        // Expiry stops a key signing new key files; Key Vault still verifies under it, and so does
+        // the wrapper. Only disabling revokes. (Nothing here sets expiry: the read reports enabled.)
+        var wrapper = wrapper();
+        var dek = random(32);
+        var wrapped = wrap(wrapper, dek);
+        vault.addVersion(FakeKeyVault.SIGNING_KEY_NAME, FakeKeyVault.p256());
+
+        assertArrayEquals(dek, unwrap(wrapper, wrapped));
     }
 
     @Test
@@ -529,7 +597,8 @@ class AzureKeyVaultKeyWrapperImplTest {
         assertTrue(future.cancel(true));
         verify.complete(new VerifyResult(true, SignatureAlgorithm.ES256, FakeKeyVault.SIGNING_KEY_ID));
 
-        assertTrue(vault.calls.isEmpty(), vault.calls.toString());
+        // The signing key's state was read before the verify; nothing after it was sent.
+        assertTrue(vault.calls.stream().allMatch(call -> call.startsWith("read ")), vault.calls.toString());
         assertTrue(ArrayUtility.isNullOrEmpty(result));
     }
 
@@ -560,7 +629,8 @@ class AzureKeyVaultKeyWrapperImplTest {
         for (int i = 0; i < 20; i++) {
             var forged = withSigningVersion(wrapped, HexFormat.of().formatHex(random(WrappedDekEnvelope.KEY_VERSION_LENGTH)));
             var exception = assertFailsWith(CryptographicException.class, wrapper.unwrapAsync(forged, new byte[64]));
-            assertTrue(exception.getMessage().contains("verify failed"), exception.getMessage());
+            // Key Vault has no such version: the read of its state is refused first.
+            assertTrue(exception.getMessage().contains("read failed"), exception.getMessage());
         }
 
         assertEquals(cached, wrapper.cachedClientCount());
@@ -654,6 +724,11 @@ class AzureKeyVaultKeyWrapperImplTest {
 
         DelegatingClient(KeyVaultKeyClient inner) {
             this.inner = inner;
+        }
+
+        @Override
+        public CompletableFuture<KeyState> getKeyState() {
+            return inner.getKeyState();
         }
 
         @Override

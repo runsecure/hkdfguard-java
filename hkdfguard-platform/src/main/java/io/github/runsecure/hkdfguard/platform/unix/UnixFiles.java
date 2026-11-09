@@ -12,11 +12,16 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
 import java.lang.foreign.MemoryLayout;
+import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -27,6 +32,18 @@ import java.util.Locale;
  * searched, so LD_LIBRARY_PATH cannot substitute it - and statx (glibc 2.28 or later) has one struct
  * layout on every architecture. macOS uses lstat and readlink from libSystem, named by absolute
  * path, on arm64 only, whose struct stat this reads. Bound only on first use, so inert elsewhere.
+ * <p>
+ * A regular file's or directory's access control list is read too, for who it lets modify the path
+ * beyond its permission bits ({@link UnixFileStatus#aclWriters()}). On Linux that is the POSIX ACL
+ * (lgetxattr of system.posix_acl_access, never following a link): each named user or group whose
+ * write permission survives the mask. The owner, owning group and others are already in the mode
+ * bits - with a mask, the group bits are the mask, which bounds every named entry. NFSv4 ACLs
+ * (system.nfs4_acl) aren't read. On macOS it is the extended ACL (acl_get_link_np): each allow entry
+ * that applies to the path itself and grants any right that changes it - write or append data (add
+ * a file or subdirectory), delete, delete a child, write attributes or extended attributes, change
+ * the ACL or the owner - by the uid or gid its GUID maps to (mbr_uuid_to_id), or as
+ * {@link UnixAclWriter.Kind#UNKNOWN} when it maps to neither. Deny entries are ignored: they can only
+ * take rights away.
  */
 @SuppressWarnings("restricted") // Native access is this class's purpose; the module requires --enable-native-access.
 public final class UnixFiles {
@@ -57,6 +74,43 @@ public final class UnixFiles {
     private static final int ENOTDIR = 20;
     private static final int EINVAL = 22;
 
+    // Linux: no such attribute, and a filesystem without attributes (ENOTSUP is EOPNOTSUPP there).
+    private static final int LINUX_ENODATA = 61;
+    private static final int LINUX_EOPNOTSUPP = 95;
+    // macOS: ENOTSUP and EOPNOTSUPP differ.
+    private static final int MAC_OS_ENOTSUP = 45;
+    private static final int MAC_OS_EOPNOTSUPP = 102;
+
+    // Linux POSIX ACL xattr: a u32 version (2), then 8-byte entries of u16 tag, u16 perm, u32 id, little-endian.
+    private static final String POSIX_ACL_ACCESS = "system.posix_acl_access";
+    private static final int POSIX_ACL_XATTR_VERSION = 2;
+    private static final int ACL_USER = 0x02;
+    private static final int ACL_GROUP = 0x08;
+    private static final int ACL_MASK = 0x10;
+    private static final int ACL_WRITE = 0x02;
+    // Far beyond any ACL a filesystem stores (ext4 holds one in a 4 KiB block).
+    private static final int ACL_BUFFER_SIZE = 64 * 1024;
+
+    // macOS <sys/acl.h>.
+    private static final int ACL_TYPE_EXTENDED = 0x00000100;
+    private static final int ACL_FIRST_ENTRY = 0;
+    private static final int ACL_NEXT_ENTRY = -1;
+    private static final int ACL_EXTENDED_ALLOW = 1;
+    private static final int ACL_ENTRY_ONLY_INHERIT = 1 << 8;
+    private static final int[] ACL_MODIFYING_PERMISSIONS = {
+            1 << 2,  // ACL_WRITE_DATA, ACL_ADD_FILE
+            1 << 4,  // ACL_DELETE
+            1 << 5,  // ACL_APPEND_DATA, ACL_ADD_SUBDIRECTORY
+            1 << 6,  // ACL_DELETE_CHILD
+            1 << 8,  // ACL_WRITE_ATTRIBUTES
+            1 << 10, // ACL_WRITE_EXTATTRIBUTES
+            1 << 12, // ACL_WRITE_SECURITY
+            1 << 13, // ACL_CHANGE_OWNER
+    };
+    // <membership.h>
+    private static final int ID_TYPE_UID = 0;
+    private static final int ID_TYPE_GID = 1;
+
     // Longer than PATH_MAX on either system (4096 on Linux, 1024 on macOS), so a full buffer means a
     // truncated target.
     private static final int LINK_BUFFER_SIZE = 4097;
@@ -77,6 +131,7 @@ public final class UnixFiles {
         static final SymbolLookup LIBRARY = LINKER.defaultLookup();
         static final MethodHandle STATX = bind(LIBRARY, "statx", FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS));
         static final MethodHandle READLINK = bind(LIBRARY, "readlink", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG));
+        static final MethodHandle LGETXATTR = bind(LIBRARY, "lgetxattr", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, ADDRESS, JAVA_LONG));
     }
 
     private static final class MacOs {
@@ -84,6 +139,25 @@ public final class UnixFiles {
         static final SymbolLookup LIBRARY = SymbolLookup.libraryLookup(MAC_OS_LIB_SYSTEM, Arena.global());
         static final MethodHandle LSTAT = bind(LIBRARY, "lstat", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle READLINK = bind(LIBRARY, "readlink", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG));
+    }
+
+    // The macOS ACL calls, bound only when an ACL is read. Every one but acl_get_link_np reports
+    // failure by its return value alone; errno is captured for that one.
+    private static final class MacOsAcl {
+        static final MethodHandle GET_LINK = bind(MacOs.LIBRARY, "acl_get_link_np", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT));
+        static final MethodHandle GET_ENTRY = plain("acl_get_entry", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
+        static final MethodHandle GET_TAG_TYPE = plain("acl_get_tag_type", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle GET_FLAGSET = plain("acl_get_flagset_np", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle GET_FLAG = plain("acl_get_flag_np", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
+        static final MethodHandle GET_PERMSET = plain("acl_get_permset", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle GET_PERM = plain("acl_get_perm_np", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
+        static final MethodHandle GET_QUALIFIER = plain("acl_get_qualifier", FunctionDescriptor.of(ADDRESS, ADDRESS));
+        static final MethodHandle FREE = plain("acl_free", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle UUID_TO_ID = plain("mbr_uuid_to_id", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
+
+        private static MethodHandle plain(String name, FunctionDescriptor descriptor) {
+            return NativeCalls.bind(MacOs.LIBRARY, "C library", name, descriptor);
+        }
     }
 
     private static boolean isLinux() {
@@ -113,7 +187,7 @@ public final class UnixFiles {
         var status = new UnixFileStatus[1];
         var errno = status(path, status);
         return switch (errno) {
-            case 0 -> status[0];
+            case 0 -> withAcl(path, status[0]);
             case ENOENT, ENOTDIR -> null;
             case EACCES -> throw new AccessDeniedException(path, null, "This account may not look up '" + path + "' (EACCES).");
             default -> throw new IOException("Could not look up '" + path + "' (errno " + errno + ").");
@@ -218,6 +292,150 @@ public final class UnixFiles {
             return 0;
         } catch (Throwable t) {
             throw rethrow(t);
+        }
+    }
+
+    // A regular file's or directory's status with its ACL writers; any other kind as it is.
+    private static UnixFileStatus withAcl(String path, UnixFileStatus status) throws IOException {
+        if (status.type() != UnixFileType.REGULAR_FILE && status.type() != UnixFileType.DIRECTORY)
+            return status;
+        var writers = isLinux() ? linuxAclWriters(path) : macOsAclWriters(path);
+        return writers.isEmpty() ? status : status.withAclWriters(writers);
+    }
+
+    private static List<UnixAclWriter> linuxAclWriters(String path) throws IOException {
+        long length;
+        int errno;
+        byte[] acl;
+        try (var arena = Arena.ofConfined()) {
+            var capture = arena.allocate(CAPTURE_LAYOUT);
+            var buffer = arena.allocate(ACL_BUFFER_SIZE);
+            length = (long) Linux.LGETXATTR.invokeExact(capture, arena.allocateFrom(path), arena.allocateFrom(POSIX_ACL_ACCESS), buffer,
+                    (long) ACL_BUFFER_SIZE);
+            errno = length < 0 ? (int) ERRNO.get(capture, 0L) : 0;
+            acl = length > 0 ? buffer.asSlice(0, length).toArray(JAVA_BYTE) : new byte[0];
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+
+        if (length < 0) {
+            if (errno == LINUX_ENODATA || errno == LINUX_EOPNOTSUPP)
+                return List.of();
+            if (errno == EACCES)
+                throw new AccessDeniedException(path, null, "This account may not read the ACL of '" + path + "' (EACCES).");
+            throw new IOException("Could not read the ACL of '" + path + "' (errno " + errno + ").");
+        }
+        return parseLinuxAcl(acl, path);
+    }
+
+    /**
+     * The named users and groups a Linux system.posix_acl_access value lets write, after the mask.
+     *
+     * @throws IOException the value isn't a version 2 POSIX ACL
+     */
+    static List<UnixAclWriter> parseLinuxAcl(byte[] xattr, String path) throws IOException {
+        if (xattr.length < 4 || (xattr.length - 4) % 8 != 0)
+            throw new IOException("The ACL of '" + path + "' is " + xattr.length + " bytes, which isn't a POSIX ACL.");
+        var data = ByteBuffer.wrap(xattr).order(ByteOrder.LITTLE_ENDIAN);
+        if (data.getInt(0) != POSIX_ACL_XATTR_VERSION)
+            throw new IOException("The ACL of '" + path + "' is version " + data.getInt(0) + ", not " + POSIX_ACL_XATTR_VERSION + ".");
+
+        var mask = 0xFFFF;
+        for (var at = 4; at < xattr.length; at += 8) {
+            if (Short.toUnsignedInt(data.getShort(at)) == ACL_MASK)
+                mask = Short.toUnsignedInt(data.getShort(at + 2));
+        }
+
+        var writers = new ArrayList<UnixAclWriter>();
+        for (var at = 4; at < xattr.length; at += 8) {
+            var tag = Short.toUnsignedInt(data.getShort(at));
+            var permissions = Short.toUnsignedInt(data.getShort(at + 2)) & mask;
+            if ((permissions & ACL_WRITE) == 0)
+                continue;
+            var id = Integer.toUnsignedLong(data.getInt(at + 4));
+            if (tag == ACL_USER)
+                writers.add(new UnixAclWriter(UnixAclWriter.Kind.USER, id));
+            else if (tag == ACL_GROUP)
+                writers.add(new UnixAclWriter(UnixAclWriter.Kind.GROUP, id));
+        }
+        return writers;
+    }
+
+    private static List<UnixAclWriter> macOsAclWriters(String path) throws IOException {
+        requireAppleSilicon();
+        try (var arena = Arena.ofConfined()) {
+            var capture = arena.allocate(CAPTURE_LAYOUT);
+            var acl = (MemorySegment) MacOsAcl.GET_LINK.invokeExact(capture, arena.allocateFrom(path), ACL_TYPE_EXTENDED);
+            if (acl.equals(MemorySegment.NULL)) {
+                var errno = (int) ERRNO.get(capture, 0L);
+                if (errno == ENOENT || errno == MAC_OS_ENOTSUP || errno == MAC_OS_EOPNOTSUPP)
+                    return List.of();
+                if (errno == EACCES)
+                    throw new AccessDeniedException(path, null, "This account may not read the ACL of '" + path + "' (EACCES).");
+                throw new IOException("Could not read the ACL of '" + path + "' (errno " + errno + ").");
+            }
+
+            try {
+                return macOsAllowedWriters(acl, arena);
+            } finally {
+                var ignored = (int) MacOsAcl.FREE.invokeExact(acl);
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // Who the ACL's allow entries let modify the path itself.
+    private static List<UnixAclWriter> macOsAllowedWriters(MemorySegment acl, Arena arena) throws Throwable {
+        var writers = new ArrayList<UnixAclWriter>();
+        var entry = arena.allocate(ADDRESS);
+        var out = arena.allocate(ADDRESS);
+        var tag = arena.allocate(JAVA_INT);
+        for (var which = ACL_FIRST_ENTRY; (int) MacOsAcl.GET_ENTRY.invokeExact(acl, which, entry) == 0; which = ACL_NEXT_ENTRY) {
+            var current = entry.get(ADDRESS, 0);
+            if ((int) MacOsAcl.GET_TAG_TYPE.invokeExact(current, tag) != 0)
+                throw new IOException("acl_get_tag_type failed.");
+            if (tag.get(JAVA_INT, 0) != ACL_EXTENDED_ALLOW)
+                continue;
+
+            // An entry only inherited by what is created inside grants nothing on the path itself.
+            if ((int) MacOsAcl.GET_FLAGSET.invokeExact(current, out) != 0)
+                throw new IOException("acl_get_flagset_np failed.");
+            if ((int) MacOsAcl.GET_FLAG.invokeExact(out.get(ADDRESS, 0), ACL_ENTRY_ONLY_INHERIT) == 1)
+                continue;
+
+            if ((int) MacOsAcl.GET_PERMSET.invokeExact(current, out) != 0)
+                throw new IOException("acl_get_permset failed.");
+            var permset = out.get(ADDRESS, 0);
+            var modifies = false;
+            for (var permission : ACL_MODIFYING_PERMISSIONS)
+                modifies |= (int) MacOsAcl.GET_PERM.invokeExact(permset, permission) == 1;
+            if (modifies)
+                writers.add(macOsPrincipal(current, arena));
+        }
+        return writers;
+    }
+
+    // The uid or gid an entry's GUID maps to.
+    private static UnixAclWriter macOsPrincipal(MemorySegment entry, Arena arena) throws Throwable {
+        var qualifier = (MemorySegment) MacOsAcl.GET_QUALIFIER.invokeExact(entry);
+        if (qualifier.equals(MemorySegment.NULL))
+            return new UnixAclWriter(UnixAclWriter.Kind.UNKNOWN, -1);
+        try {
+            var id = arena.allocate(JAVA_INT);
+            var idType = arena.allocate(JAVA_INT);
+            if ((int) MacOsAcl.UUID_TO_ID.invokeExact(qualifier.reinterpret(16), id, idType) != 0)
+                return new UnixAclWriter(UnixAclWriter.Kind.UNKNOWN, -1);
+            var value = Integer.toUnsignedLong(id.get(JAVA_INT, 0));
+            return switch (idType.get(JAVA_INT, 0)) {
+                case ID_TYPE_UID -> new UnixAclWriter(UnixAclWriter.Kind.USER, value);
+                case ID_TYPE_GID -> new UnixAclWriter(UnixAclWriter.Kind.GROUP, value);
+                default -> new UnixAclWriter(UnixAclWriter.Kind.UNKNOWN, -1);
+            };
+        } finally {
+            var ignored = (int) MacOsAcl.FREE.invokeExact(qualifier);
         }
     }
 

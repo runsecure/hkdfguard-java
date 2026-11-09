@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.runsecure.hkdfguard.abstractions.CryptographicException;
 import io.github.runsecure.hkdfguard.abstractions.ProtectedReadOnlyCache;
 import io.github.runsecure.hkdfguard.cache.InvalidSecretDataException;
 import io.github.runsecure.hkdfguard.cache.ProtectedCacheCollectionImpl;
@@ -299,6 +300,24 @@ class AwsSecretsManagerSecretCacheImplTest {
         assertThrows(InvalidSecretDataException.class, () -> cache.decrypt("item", new byte[16]));
         assertFailsWith(InvalidSecretDataException.class, cache.decryptAsync("item", new byte[16]));
         assertTrue(unmarshalled.responses.isEmpty());
+    }
+
+    // A body naming another secret, or none: refused, and nothing it held is cached, so the next
+    // lookup asks again.
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"Name\":\"other\",\"SecretString\":\"wrong\"}", "{\"Name\":\"ITEM\",\"SecretString\":\"wrong\"}",
+            "{\"SecretString\":\"wrong\"}"})
+    void aResponseNamingAnotherSecret_IsRefused_AndNothingIsCached(String body) {
+        aws.rawBody = utf8(body);
+
+        var e = assertThrows(CryptographicException.class, () -> cache.decrypt("item", new byte[16]));
+        assertFalse(e.getMessage().contains("wrong"), e.getMessage());
+        assertFailsWith(CryptographicException.class, cache.decryptAsync("item", new byte[16]));
+
+        aws.rawBody = null;
+        aws.setString("item", "right");
+        assertEquals("right", decryptString(cache, "item"));
+        assertEquals(3, aws.gets.size());
     }
 
     @Test

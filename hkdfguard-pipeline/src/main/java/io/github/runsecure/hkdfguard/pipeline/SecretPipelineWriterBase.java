@@ -14,12 +14,19 @@ import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -75,6 +82,10 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
 
     // rw-r--r--: what each file in a tar archive is unpacked as.
     private static final int SECRET_FILE_MODE = 0644;
+
+    // Names the file each write goes to before it is renamed into place: unguessable, so no one can
+    // make a write fail by creating that name first.
+    private static final SecureRandom TEMPORARY_NAMES = new SecureRandom();
 
     private final PipelineDataProtector protector;
 
@@ -175,9 +186,16 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
      * formatted value as UTF-8, without a byte order mark. A file already there by that name is
      * replaced; any other file is left as it is.
      * <p>
+     * Each file is written to a new file beside it and renamed over it, so a reader never sees it
+     * half written, and whatever was there by that name - a symbolic link, a hard link - is
+     * replaced, never written through: a link planted in the folder can't make the writer overwrite
+     * a file elsewhere. A replaced file's POSIX permissions are kept; on Windows the new file takes
+     * the folder's inheritable permissions, as a newly created one always has.
+     * <p>
      * Only encrypted values are written, but FilePerSecretCacheImpl refuses a folder or file anyone
      * but administrators and the principals it trusts can modify: write them where the deployment
-     * can set that, or set it once they're written.
+     * can set that, or set it once they're written. The folder itself is trusted as given, so it
+     * must not be one an untrusted account can replace.
      *
      * @param folderPath the folder to write to, absolute or relative to the working directory
      * @throws NullPointerException     folderPath is null
@@ -195,7 +213,42 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
         var folder = folderPath.toAbsolutePath().normalize();
         Files.createDirectories(folder);
         for (var secret : writableProtectedSecrets.entrySet())
-            Files.writeString(folder.resolve(secret.getKey()), secret.getValue(), StandardCharsets.UTF_8);
+            replaceFile(folder.resolve(secret.getKey()), secret.getValue().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Replaces the file at {@code path} with {@code content}: writes a new file beside it - created,
+     * never opened, so nothing already there is written through - flushes it to disk, carries over
+     * the POSIX permissions of a regular file it replaces, and renames it over {@code path}. The
+     * rename replaces a link by that name rather than following it. On failure the new file is
+     * deleted and whatever was at {@code path} is left as it was.
+     */
+    private static void replaceFile(Path path, byte[] content) throws IOException {
+        var suffix = new byte[8];
+        TEMPORARY_NAMES.nextBytes(suffix);
+        // A leading '.' is never a secret's file name, so FilePerSecretCacheImpl never reads it.
+        var temporary = path.resolveSibling("." + path.getFileName() + "." + HexFormat.of().formatHex(suffix) + ".tmp");
+        try {
+            try (var channel = FileChannel.open(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                var buffer = ByteBuffer.wrap(content);
+                while (buffer.hasRemaining())
+                    channel.write(buffer);
+                channel.force(true);
+            }
+
+            if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                    && Files.getFileStore(temporary).supportsFileAttributeView(PosixFileAttributeView.class))
+                Files.setPosixFilePermissions(temporary, Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS));
+
+            Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException | RuntimeException e) {
+            try {
+                Files.deleteIfExists(temporary);
+            } catch (IOException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     /**
@@ -206,6 +259,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
      * SecretPipelineWriter writes on the same platform, whose line separator ends its lines. A file
      * already there is replaced. Each value is bound to its member's name -
      * {@code decrypt(value, name)} - as it is to its file name in {@link #writeProtectedSecretFiles}.
+     * The file is written and renamed into place as each of those files is.
      *
      * @param filePath the file to write, absolute or relative to the working directory
      * @throws NullPointerException     filePath is null
@@ -223,7 +277,7 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
         // An absolute path always has a parent: at the least, its root.
         var path = filePath.toAbsolutePath().normalize();
         Files.createDirectories(path.getParent());
-        Files.write(path, JsonSecretsText.of(inFileNameOrder()));
+        replaceFile(path, JsonSecretsText.of(inFileNameOrder()));
     }
 
     /**
@@ -489,7 +543,8 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
                         + KEY_SEPARATOR + "' if any.");
             if (!FilePerSecretCacheImpl.isValidName(fileName))
                 throw new IllegalArgumentException("'" + secretName + "' can't be written as a file: its file name '" + fileName + "' must be 1-"
-                        + FilePerSecretCacheImpl.MAX_NAME_LENGTH + " ASCII letters, digits, '-', '_' and '.', not starting with '.'.");
+                        + FilePerSecretCacheImpl.MAX_NAME_LENGTH + " ASCII letters, digits, '-', '_' and '.', neither starting nor ending with '.', and not"
+                        + " a Windows device name (CON, PRN, AUX, NUL, COM0-COM9, LPT0-LPT9), with or without an extension.");
             if (!fileNames.add(fileName))
                 throw new IllegalArgumentException("'" + secretName + "' would be written as '" + fileName + "', as another secret named is.");
 

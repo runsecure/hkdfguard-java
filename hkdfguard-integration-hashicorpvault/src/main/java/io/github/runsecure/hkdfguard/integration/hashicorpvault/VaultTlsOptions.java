@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -178,7 +179,12 @@ public final class VaultTlsOptions {
         return clientCertificateKeyFile;
     }
 
-    /** The client certificate's PEM-encoded private key, a copy. */
+    /**
+     * The client certificate's PEM-encoded private key, a copy. These options hold their own copy
+     * for as long as they live, since each client built from them reads it again: prefer
+     * {@link #clientCertificateKeyFile()}, which is read only while a client is built, and whose
+     * bytes are zeroed then.
+     */
     public byte[] clientCertificateKeyPem() {
         return clientCertificateKeyPem == null ? null : clientCertificateKeyPem.clone();
     }
@@ -377,7 +383,10 @@ public final class VaultTlsOptions {
 
     private ClientKey clientKeyFromPem() {
         var certificatePem = clientCertificateFile != null ? read(clientCertificateFile) : clientCertificatePem;
-        var keyPem = clientCertificateKeyFile != null ? read(clientCertificateKeyFile) : clientCertificateKeyPem;
+        // A key read from its file is this call's own, zeroed once the key is made; the options'
+        // copy is read again by the next client, so is left as it is.
+        var keyFromFile = clientCertificateKeyFile != null;
+        var keyPem = keyFromFile ? read(clientCertificateKeyFile) : clientCertificateKeyPem;
         List<X509Certificate> chain;
         PrivateKey key;
         try {
@@ -385,6 +394,9 @@ public final class VaultTlsOptions {
             key = privateKey(keyPem);
         } catch (GeneralSecurityException | IllegalArgumentException e) {
             throw new IllegalArgumentException("Could not read the client certificate and key: " + e.getMessage(), e);
+        } finally {
+            if (keyFromFile)
+                ArrayUtility.zeroMemory(keyPem);
         }
         if (chain.isEmpty())
             throw new IllegalArgumentException("Could not read the client certificate and key: the certificate PEM holds no certificate.");
@@ -504,18 +516,42 @@ public final class VaultTlsOptions {
         return certificates;
     }
 
-    private static PrivateKey privateKey(byte[] pem) throws GeneralSecurityException {
-        for (var block : pemBlocks(pem)) {
-            var pkcs8 = switch (block.label()) {
-                case "PRIVATE KEY" -> block.der();
-                case "RSA PRIVATE KEY" -> Der.rsaToPkcs8(block.der());
-                case "EC PRIVATE KEY" -> Der.ecToPkcs8(block.der());
-                case "ENCRYPTED PRIVATE KEY" -> throw new IllegalArgumentException("the key is encrypted; give it unencrypted, as vault-client-go reads it");
-                default -> null;
-            };
-            if (pkcs8 == null)
-                continue;
+    // The PEM labels a private key may have.
+    private static final List<String> KEY_LABELS = List.of("PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY");
 
+    // The first private key in pem. Found and decoded as bytes - never a String, which can't be
+    // zeroed - and every array that held the key (the DER, and the PKCS#8 it is wrapped in) is
+    // zeroed once the key is made. The JDK's own copies, in the spec and the key, can't be.
+    private static PrivateKey privateKey(byte[] pem) throws GeneralSecurityException {
+        String label = null;
+        var bodyStart = -1;
+        var bodyEnd = -1;
+        for (var candidate : KEY_LABELS) {
+            var begin = ("-----BEGIN " + candidate + "-----").getBytes(StandardCharsets.US_ASCII);
+            var at = indexOf(pem, begin, 0);
+            if (at < 0 || (bodyStart >= 0 && at >= bodyStart))
+                continue;
+            var end = indexOf(pem, ("-----END " + candidate + "-----").getBytes(StandardCharsets.US_ASCII), at + begin.length);
+            if (end < 0)
+                continue;
+            label = candidate;
+            bodyStart = at + begin.length;
+            bodyEnd = end;
+        }
+        if (label == null)
+            throw new IllegalArgumentException("the key PEM holds no private key");
+        if (label.equals("ENCRYPTED PRIVATE KEY"))
+            throw new IllegalArgumentException("the key is encrypted; give it unencrypted, as vault-client-go reads it");
+
+        byte[] der = null;
+        byte[] pkcs8 = null;
+        try {
+            der = decodeBase64(pem, bodyStart, bodyEnd);
+            pkcs8 = switch (label) {
+                case "RSA PRIVATE KEY" -> Der.rsaToPkcs8(der);
+                case "EC PRIVATE KEY" -> Der.ecToPkcs8(der);
+                default -> der;
+            };
             for (var algorithm : List.of("RSA", "EC", "Ed25519", "Ed448", "RSASSA-PSS")) {
                 try {
                     return KeyFactory.getInstance(algorithm).generatePrivate(new PKCS8EncodedKeySpec(pkcs8));
@@ -524,8 +560,38 @@ public final class VaultTlsOptions {
                 }
             }
             throw new IllegalArgumentException("the private key's algorithm isn't RSA, EC or EdDSA");
+        } finally {
+            ArrayUtility.zeroMemory(der);
+            if (pkcs8 != der)
+                ArrayUtility.zeroMemory(pkcs8);
         }
-        throw new IllegalArgumentException("the key PEM holds no private key");
+    }
+
+    // pem[start, end) decoded from MIME base64 into an exact array; the decoder's own is zeroed.
+    private static byte[] decodeBase64(byte[] pem, int start, int end) {
+        ByteBuffer decoded;
+        try {
+            decoded = Base64.getMimeDecoder().decode(ByteBuffer.wrap(pem, start, end - start));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("the private key PEM isn't valid base64");
+        }
+        var bytes = new byte[decoded.remaining()];
+        decoded.get(bytes);
+        if (decoded.hasArray())
+            ArrayUtility.zeroMemory(decoded.array());
+        return bytes;
+    }
+
+    private static int indexOf(byte[] haystack, byte[] needle, int from) {
+        outer:
+        for (var i = from; i <= haystack.length - needle.length; i++) {
+            for (var j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j])
+                    continue outer;
+            }
+            return i;
+        }
+        return -1;
     }
 
     private record PemBlock(String label, byte[] der) {
@@ -764,14 +830,25 @@ public final class VaultTlsOptions {
         private static final byte[] EC_PUBLIC_KEY_OID = {0x06, 0x07, 0x2a, (byte) 0x86, 0x48, (byte) 0xce, 0x3d, 0x02, 0x01};
         private static final byte[] VERSION_0 = {0x02, 0x01, 0x00};
 
+        // The result holds the key; every intermediate array that did is zeroed.
         static byte[] rsaToPkcs8(byte[] pkcs1) {
-            return sequence(VERSION_0, RSA_ALGORITHM, tlv(0x04, pkcs1));
+            var octets = tlv(0x04, pkcs1);
+            try {
+                return sequence(VERSION_0, RSA_ALGORITHM, octets);
+            } finally {
+                ArrayUtility.zeroMemory(octets);
+            }
         }
 
         // ECPrivateKey ::= SEQUENCE { version, privateKey OCTET STRING, [0] parameters, [1] publicKey }
         static byte[] ecToPkcs8(byte[] sec1) {
             var curve = curveOid(sec1);
-            return sequence(VERSION_0, sequence(EC_PUBLIC_KEY_OID, curve), tlv(0x04, sec1));
+            var octets = tlv(0x04, sec1);
+            try {
+                return sequence(VERSION_0, sequence(EC_PUBLIC_KEY_OID, curve), octets);
+            } finally {
+                ArrayUtility.zeroMemory(octets);
+            }
         }
 
         private static byte[] curveOid(byte[] sec1) {
@@ -829,7 +906,11 @@ public final class VaultTlsOptions {
                 System.arraycopy(part, 0, contents, offset, part.length);
                 offset += part.length;
             }
-            return tlv(0x30, contents);
+            try {
+                return tlv(0x30, contents);
+            } finally {
+                ArrayUtility.zeroMemory(contents);
+            }
         }
 
         private static byte[] tlv(int tag, byte[] contents) {

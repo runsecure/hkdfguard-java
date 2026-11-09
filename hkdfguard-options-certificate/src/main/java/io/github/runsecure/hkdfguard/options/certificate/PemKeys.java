@@ -16,16 +16,21 @@ import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 import java.util.Map;
+import java.util.regex.Pattern;
 import javax.crypto.Cipher;
 import javax.crypto.EncryptedPrivateKeyInfo;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.PBEParameterSpec;
 import javax.security.auth.DestroyFailedException;
 
 /**
  * A PKCS#8 private key from a PEM file: "ENCRYPTED PRIVATE KEY", decrypted with its password through
- * the JDK's PBE ciphers - PBES2 (PBKDF2 with an HMAC, then AES-CBC), what OpenSSL 3 and .NET write,
- * and the PKCS#12 PBE schemes - or, only when no password is given, a plain "PRIVATE KEY". The file
+ * the JDK's PBES2 cipher - PBKDF2 with HMAC-SHA224/256/384/512, then AES-128 or AES-256 in CBC mode,
+ * what OpenSSL 3 and .NET write - or, only when no password is given, a plain "PRIVATE KEY". Any
+ * other scheme the file names (PBES1, the PKCS#12 PBE schemes, DES, RC2, RC4, PBKDF2 with HMAC-SHA1)
+ * is refused before the password is used, as is an iteration count over
+ * {@link #MAX_ITERATIONS}, so a hostile file can't make startup derive a key for hours. The file
  * is read as bytes, never as a String, and every buffer that held the decrypted key is zeroed: the
  * DER, and the PBE key the password derived. The JDK's own copies - inside the PKCS8EncodedKeySpec,
  * and the key object itself - can't be.
@@ -35,6 +40,14 @@ final class PemKeys {
     private static final String ENCRYPTED = "ENCRYPTED PRIVATE KEY";
     private static final String PLAIN = "PRIVATE KEY";
     private static final String PBES2_OID = "1.2.840.113549.1.5.13";
+
+    /** The most PBKDF2 iterations accepted: far above what OpenSSL (2048) and .NET write. */
+    static final int MAX_ITERATIONS = 10_000_000;
+
+    // The JDK's names for the PBES2 schemes accepted: PBKDF2 with an HMAC-SHA2, then AES.
+    private static final Pattern ALLOWED_PBES2 = Pattern.compile("PBEWithHmacSHA(224|256|384|512)AndAES_(128|256)");
+
+    private static final String REENCRYPT = "re-encrypt it with openssl pkcs8 -topk8 -v2 aes-256-cbc -v2prf hmacWithSHA256";
 
     // The PKCS#8 algorithms the JDK has a KeyFactory for, by OID.
     private static final Map<String, String> KEY_ALGORITHMS = Map.of(
@@ -156,10 +169,23 @@ final class PemKeys {
 
         // PBES2 names its key derivation and cipher in its parameters: the JDK's cipher name for them
         // ("PBEWithHmacSHA256AndAES_256") is the parameters' toString.
+        // Some JDKs name a PBES2 scheme by its OID or "PBES2", others already by the cipher name.
         var algorithm = info.getAlgName();
         var parameters = info.getAlgParameters();
         if (parameters != null && (PBES2_OID.equals(algorithm) || "PBES2".equalsIgnoreCase(algorithm)))
             algorithm = parameters.toString();
+        if (parameters == null || !ALLOWED_PBES2.matcher(algorithm).matches())
+            throw new CryptographicException("The key in '" + path + "' is encrypted with " + algorithm + ", which isn't accepted (PBKDF2 with"
+                    + " HMAC-SHA224/256/384/512 and AES-128 or AES-256 is): " + REENCRYPT + ".");
+        int iterations;
+        try {
+            iterations = parameters.getParameterSpec(PBEParameterSpec.class).getIterationCount();
+        } catch (GeneralSecurityException e) {
+            throw new CryptographicException("The key in '" + path + "' has PBES2 parameters the JDK can't read.", e);
+        }
+        if (iterations < 1 || iterations > MAX_ITERATIONS)
+            throw new CryptographicException("The key in '" + path + "' asks for " + iterations + " PBKDF2 iterations; 1-" + MAX_ITERATIONS
+                    + " are accepted: " + REENCRYPT + ".");
 
         var spec = new PBEKeySpec(password);
         javax.crypto.SecretKey key = null;

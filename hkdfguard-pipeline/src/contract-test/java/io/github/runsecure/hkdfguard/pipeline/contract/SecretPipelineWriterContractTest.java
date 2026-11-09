@@ -177,7 +177,7 @@ public abstract class SecretPipelineWriterContractTest {
         }
     }
 
-    private List<String> filesInFolder() throws IOException {
+    protected List<String> filesInFolder() throws IOException {
         try (Stream<Path> files = Files.list(folder)) {
             return files.map(f -> f.getFileName().toString()).sorted().toList();
         }

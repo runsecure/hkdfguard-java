@@ -192,15 +192,20 @@ try {
 |---|---|---|
 | Tokens | Plain strings (`SetToken(string)`) | Protected by the token protector; decrypted only into the request's header |
 | Login and wrapping tokens in responses | Strings | Protected as they're read (`StaticVaultToken`) |
+| A token lookup's `data.id` (the token itself) | A string | Left out unread: it's the token the caller already holds |
+| 3xx not followed (303, 304, 308, or any with redirects off) | Success | `VaultResponseException` (or `VaultRedirectException`) |
+| Response body size | Unlimited | At most 32 MiB (`MAX_RESPONSE_LENGTH`) |
 | Address | Any scheme | `https`, or `http` on loopback; any other `http` needs `allowUnencryptedHttp` |
 | Unix domain sockets | Yes | No: `java.net.http` can't connect to one |
-| Redirects | Follows one, never `https` to `http` | Refused (`VaultRedirectException`) unless `followRedirects` is set; then as vault-client-go |
+| Redirects | Follows one, never `https` to `http` | Refused (`VaultRedirectException`) unless `followRedirects` is set; then one, never `https` to `http`, and only to the address's own origin or one `redirectOrigins` lists (the cluster's other nodes, for raft calls a standby redirects) |
 | Address with a path | Path dropped | Kept as a prefix, for Vault behind a reverse proxy |
 | Free-form values | `map[string]interface{}` | `Map<String, Object>` sent, `Map<String, JsonValue>` returned |
 | Optional fields | Zero values left out (`omitempty`) | Boxed and nullable; null left out, so `false` and `0` can be sent |
 | Response fields Vault types differently from its spec | Decoding fails | A number where the spec says string is read as its text |
 | Rate limiting | `rate.Limiter` | `VaultRateLimiter`, the same token bucket |
-| Retries, MFA, namespaces, replication, callbacks, TLS | Yes | Yes, as vault-client-go |
+| Retries, MFA, namespaces, replication, callbacks, TLS | Yes | Yes, as vault-client-go - except that a POST, PUT or PATCH that failed without an answer is resent only if it never connected |
+| Generic paths (`readAsync`, `writeAsync`, ...) | Sent as given | `.` and `..` segments, `?`, `#`, `%`, backslashes, spaces and control characters refused (`IllegalArgumentException`) |
+| Client certificate key | Read into strings | Parsed as bytes, zeroed once the key is made; a `clientCertificateKeyPem` stays in the options for their life, so prefer `clientCertificateKeyFile` |
 | Every request | | Sends `X-Vault-Request: true`, as the `vault` CLI does |
 | Typed endpoints | All 907 | The 103 `generator.json` names: logins and tokens, KV, cubbyhole, transit, and a few of `sys/` |
 

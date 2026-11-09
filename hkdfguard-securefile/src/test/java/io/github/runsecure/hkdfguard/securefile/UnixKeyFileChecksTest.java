@@ -13,6 +13,8 @@ import java.nio.file.NoSuchFileException;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import io.github.runsecure.hkdfguard.platform.unix.UnixAclWriter;
+import java.util.List;
 
 /**
  * The Linux and macOS key-file location rules, checked against simulated filesystems so they run
@@ -264,4 +266,55 @@ class UnixKeyFileChecksTest {
     void relativePath_IsAnArgumentError() {
         assertThrows(IllegalArgumentException.class, () -> standard().resolve("keys/v1.key"));
     }
+    // --- Access control lists ------------------------------------------------------------------
+
+    private static UnixFileStatus withAcl(UnixFileStatus status, UnixAclWriter... writers) {
+        return status.withAclWriters(List.of(writers));
+    }
+
+    @Test
+    void anAclLettingAnUntrustedUserWriteTheFile_IsRefused_NamingThem() {
+        var fs = standard().file(KEY_FILE);
+        fs.entries.put(KEY_FILE, withAcl(fs.entries.get(KEY_FILE), new UnixAclWriter(UnixAclWriter.Kind.USER, APP)));
+
+        var ex = assertThrows(AccessDeniedException.class, () -> fs.resolve(KEY_FILE, DEPLOYER_TRUST));
+        assertTrue(ex.getMessage().contains("access control list") && ex.getMessage().contains("uid " + APP), ex.getMessage());
+    }
+
+    @Test
+    void anAclLettingAnUntrustedGroupWriteADirectory_IsRefused() {
+        var fs = standard().file(KEY_FILE);
+        fs.entries.put("/etc/hkdfguard", withAcl(fs.entries.get("/etc/hkdfguard"), new UnixAclWriter(UnixAclWriter.Kind.GROUP, APP)));
+
+        var ex = assertThrows(AccessDeniedException.class, () -> fs.resolve(KEY_FILE, DEPLOYER_TRUST));
+        assertTrue(ex.getMessage().contains("'/etc/hkdfguard'") && ex.getMessage().contains("group " + APP), ex.getMessage());
+    }
+
+    @Test
+    void anAclWriterThatMapsToNoId_IsRefused() {
+        var fs = standard().file(KEY_FILE);
+        fs.entries.put(KEY_FILE, withAcl(fs.entries.get(KEY_FILE), new UnixAclWriter(UnixAclWriter.Kind.UNKNOWN, -1)));
+
+        assertThrows(AccessDeniedException.class, () -> fs.resolve(KEY_FILE, DEPLOYER_TRUST));
+    }
+
+    @Test
+    void anAclLettingOnlyRootAndTrustedPrincipalsWrite_Resolves() throws IOException {
+        var fs = standard().file(KEY_FILE);
+        fs.entries.put(KEY_FILE, withAcl(fs.entries.get(KEY_FILE), new UnixAclWriter(UnixAclWriter.Kind.USER, ROOT),
+                new UnixAclWriter(UnixAclWriter.Kind.USER, DEPLOYER), new UnixAclWriter(UnixAclWriter.Kind.GROUP, DEPLOYERS_GROUP)));
+
+        assertEquals(KEY_FILE, fs.resolve(KEY_FILE, DEPLOYER_TRUST));
+        assertThrows(AccessDeniedException.class, () -> fs.resolve(KEY_FILE));
+    }
+
+    @Test
+    void anAclForRootsGroup_IsTrustedOnlyWhenNamed_AsTheOwningGroupIs() throws IOException {
+        var fs = standard().file(KEY_FILE);
+        fs.entries.put(KEY_FILE, withAcl(fs.entries.get(KEY_FILE), new UnixAclWriter(UnixAclWriter.Kind.GROUP, ROOT)));
+
+        assertThrows(AccessDeniedException.class, () -> fs.resolve(KEY_FILE));
+        assertEquals(KEY_FILE, fs.resolve(KEY_FILE, KeyFileTrust.ADMINISTRATORS_ONLY.withUnixGroupIds(ROOT)));
+    }
+
 }

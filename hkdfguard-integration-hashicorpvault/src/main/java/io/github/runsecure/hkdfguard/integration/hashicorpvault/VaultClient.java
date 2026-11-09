@@ -68,6 +68,18 @@ public final class VaultClient implements VaultApis, AutoCloseable {
 
     private static final String HEALTH_PATH = "/v1/sys/health";
 
+    // A token lookup answers with the token itself as data.id - one the caller already holds (its
+    // own, or the one it sent). Left out unread, so it never becomes a String; the token auth method
+    // is always mounted at auth/token.
+    private static final java.util.Set<String> TOKEN_LOOKUP_PATHS = java.util.Set.of("/v1/auth/token/lookup", "/v1/auth/token/lookup-self");
+    private static final java.util.Set<String> TOKEN_LOOKUP_OMITTED = java.util.Set.of("id");
+
+    /**
+     * The largest response body read, in bytes: 32 MiB, Vault's own default limit on a request. A
+     * larger one fails the request with a {@link VaultRequestException} instead of being buffered.
+     */
+    public static final int MAX_RESPONSE_LENGTH = 32 * 1024 * 1024;
+
     private final VaultClientOptions options;
     private final DataProtector tokenProtector;
     private final Logger logger;
@@ -109,7 +121,8 @@ public final class VaultClient implements VaultApis, AutoCloseable {
      * @throws NullPointerException     tokenProtector is null
      * @throws IllegalArgumentException the address isn't https (or http on loopback, or with
      *                                  allowUnencryptedHttp), or holds credentials, a query or a
-     *                                  fragment; the namespace can't be sent; the request timeout or a
+     *                                  fragment; a redirect origin isn't an https (or permitted http)
+     *                                  origin; the namespace can't be sent; the request timeout or a
      *                                  retry wait is negative; the HttpClient follows redirects, or is
      *                                  given together with TLS options; or a certificate can't be read
      */
@@ -122,6 +135,8 @@ public final class VaultClient implements VaultApis, AutoCloseable {
             throw new IllegalArgumentException("The request timeout must not be negative; it is " + options.requestTimeout() + ".");
         if (options.retry().retryWaitMin().isNegative() || options.retry().retryWaitMax().isNegative())
             throw new IllegalArgumentException("The retry waits must not be negative.");
+        for (var origin : options.redirectOrigins())
+            checkRedirectOrigin(origin, options);
         var ns = options.namespace();
         if (ns != null && !ns.isEmpty() && !isValidNamespace(ns))
             throw new IllegalArgumentException("The namespace '" + ns + "' contains non-printable characters.");
@@ -341,9 +356,16 @@ public final class VaultClient implements VaultApis, AutoCloseable {
 
     /**
      * Reads the value at path (GET /v1/path).
+     * <p>
+     * Every generic method takes path as it is sent, so it is refused (IllegalArgumentException)
+     * when it could reach elsewhere than it says: a "." or ".." segment, '?' or '#' (a query or
+     * fragment), '%' (either, encoded), a backslash, a space or a control character. Query
+     * parameters go in the request options; escape a segment that needs any of those with the
+     * generated methods, which do.
      *
      * @param path the path under /v1/, with or without that prefix
      * @return completes with Vault's response; null if it has no body
+     * @throws IllegalArgumentException path holds what is refused above
      */
     public CompletableFuture<VaultResponse<Map<String, JsonValue>>> readAsync(String path) {
         return readAsync(path, null);
@@ -573,8 +595,14 @@ public final class VaultClient implements VaultApis, AutoCloseable {
         return true;
     }
 
-    /** path under /v1/, whether or not it starts with "/", "v1/" or "/v1/" already. */
+    /**
+     * path under /v1/, whether or not it starts with "/", "v1/" or "/v1/" already.
+     *
+     * @throws IllegalArgumentException path holds a "." or ".." segment, '?', '#', '%', '\', a
+     *                                  space or a control character
+     */
     static String v1Path(String path) {
+        checkGenericPath(path);
         if (path.startsWith("/v1/"))
             return path;
         if (path.startsWith("v1/"))
@@ -582,6 +610,29 @@ public final class VaultClient implements VaultApis, AutoCloseable {
         if (path.startsWith("/"))
             return "/v1" + path;
         return "/v1/" + path;
+    }
+
+    // A path sent as given must name what it says: no segment that walks elsewhere, nothing that
+    // starts a query or fragment, no encoding that could hide either.
+    private static void checkGenericPath(String path) {
+        for (var i = 0; i < path.length(); i++) {
+            var c = path.charAt(i);
+            if (c == '?' || c == '#' || c == '%' || c == '\\' || c <= ' ' || c == 0x7F)
+                throw new IllegalArgumentException("The Vault path '" + VaultResponseException.quote(path, 256)
+                        + "' holds '" + (c <= ' ' || c == 0x7F ? "a space or control character" : String.valueOf(c))
+                        + "', which would change what the request reaches.");
+        }
+        var start = 0;
+        while (start <= path.length()) {
+            var end = path.indexOf('/', start);
+            if (end < 0)
+                end = path.length();
+            var segment = path.substring(start, end);
+            if (segment.equals(".") || segment.equals(".."))
+                throw new IllegalArgumentException("The Vault path '" + VaultResponseException.quote(path, 256) + "' holds a '" + segment
+                        + "' segment, which would change what the request reaches.");
+            start = end + 1;
+        }
     }
 
     // --- Sending -----------------------------------------------------------------------------
@@ -625,7 +676,9 @@ public final class VaultClient implements VaultApis, AutoCloseable {
             var expired = new AtomicBoolean();
             var watchdog = hasDeadline ? VaultHttp.watchDeadline(deadline, stream, expired) : null;
             try {
-                content.readFrom(stream);
+                if (!content.readFrom(stream, MAX_RESPONSE_LENGTH))
+                    throw new VaultRequestException("Vault's response to " + method + " " + path + " is over " + MAX_RESPONSE_LENGTH
+                            + " bytes, so it wasn't read.", response.statusCode());
             } catch (IOException e) {
                 if (expired.get())
                     throw new DeadlineExceeded(timedOut);
@@ -635,12 +688,15 @@ public final class VaultClient implements VaultApis, AutoCloseable {
                     watchdog.interrupt();
             }
 
-            // sys/health answers 429, 472, 473, 501 and 503 with the health status itself.
+            // sys/health answers 429, 472, 473, 501 and 503 with the health status itself. Any other
+            // 3xx reaching here is a redirect the client doesn't follow (303, 308, ...), whose body
+            // isn't Vault's answer: a failure, not a success with an empty or foreign body.
             var status = response.statusCode();
-            if ((status < 200 || status > 399) && !path.equals(HEALTH_PATH))
+            if ((status < 200 || status > 299) && !path.equals(HEALTH_PATH))
                 throw VaultResponseException.create(status, content.array(), content.length(), sent.request().method(), sent.request().uri());
 
-            return VaultResponseReader.read(content.array(), content.length(), tokenProtector, reader);
+            return VaultResponseReader.read(content.array(), content.length(), tokenProtector, reader,
+                    TOKEN_LOOKUP_PATHS.contains(path) ? TOKEN_LOOKUP_OMITTED : java.util.Set.of());
         }
     }
 
@@ -730,8 +786,36 @@ public final class VaultClient implements VaultApis, AutoCloseable {
             throw new VaultRedirectException(status, "the redirect would cause a protocol downgrade", location, request.method(), from);
         if (!scheme.equals("https") && !(scheme.equals("http") && (VaultHttp.isLoopback(location.getHost()) || options.allowUnencryptedHttp())))
             throw new VaultRedirectException(status, "the redirect would send the token over unencrypted http", location, request.method(), from);
+        var target = location;
+        if (!sameOrigin(from, location) && options.redirectOrigins().stream().noneMatch(origin -> sameOrigin(origin, target)))
+            throw new VaultRedirectException(status, "the redirect would send the token to another origin, which redirectOrigins doesn't list",
+                    location, request.method(), from);
 
         return location;
+    }
+
+    // Whether a and b have the same scheme, host and port, the scheme's default port standing in
+    // for none.
+    static boolean sameOrigin(URI a, URI b) {
+        if (a.getScheme() == null || b.getScheme() == null || a.getHost() == null || b.getHost() == null)
+            return false;
+        return a.getScheme().equalsIgnoreCase(b.getScheme()) && a.getHost().equalsIgnoreCase(b.getHost()) && port(a) == port(b);
+    }
+
+    private static int port(URI uri) {
+        if (uri.getPort() >= 0)
+            return uri.getPort();
+        return uri.getScheme().equalsIgnoreCase("https") ? 443 : 80;
+    }
+
+    // A redirect origin must be an origin the address itself could be: https, or http where allowed.
+    private static void checkRedirectOrigin(URI origin, VaultClientOptions options) {
+        var scheme = origin.getScheme() == null ? "" : origin.getScheme().toLowerCase(Locale.ROOT);
+        if (!origin.isAbsolute() || origin.isOpaque() || origin.getHost() == null || origin.getRawUserInfo() != null)
+            throw new IllegalArgumentException("The redirect origin '" + origin + "' isn't scheme://host[:port], e.g. https://vault-2.example.com:8200.");
+        if (!scheme.equals("https") && !(scheme.equals("http") && (VaultHttp.isLoopback(origin.getHost()) || options.allowUnencryptedHttp())))
+            throw new IllegalArgumentException("The redirect origin '" + origin + "' must be https; http is allowed only on a loopback address, or with"
+                    + " allowUnencryptedHttp, since a redirect carries the token.");
     }
 
     // One request, sent until it succeeds, fails in a way not worth retrying, or runs out of retries.
@@ -755,7 +839,7 @@ public final class VaultClient implements VaultApis, AutoCloseable {
                 // A send that was interrupted fails as an IOException, the interrupt status set.
                 if (Thread.currentThread().isInterrupted())
                     throw new InterruptedException();
-                if (attempt >= retry.retryMax() || !checkRetry.shouldRetry(0, e))
+                if (attempt >= retry.retryMax() || !mayResend(method, e) || !checkRetry.shouldRetry(0, e))
                     throw e;
                 failure = e;
             }
@@ -776,6 +860,17 @@ public final class VaultClient implements VaultApis, AutoCloseable {
                     failure != null ? failure.toString() : status + VaultHttp.reasonPhrase(status), attempt + 1, retry.retryMax(), delay);
             Thread.sleep(delay);
         }
+    }
+
+    // Whether a request that failed with e may be sent again. GET, HEAD, DELETE and LIST change
+    // nothing more the second time; a POST, PUT or PATCH that reached Vault may have been applied -
+    // a token created, a secret written - before the connection failed, so it is sent again only
+    // when it certainly never left: the connection was refused or never made.
+    static boolean mayResend(String method, IOException e) {
+        return switch (method) {
+            case "GET", "HEAD", "DELETE", "LIST" -> true;
+            default -> e instanceof java.net.ConnectException || e instanceof java.net.http.HttpConnectTimeoutException;
+        };
     }
 
     // Sends the request with the token, if any, in its header (VaultHttp.withToken).

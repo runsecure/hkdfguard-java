@@ -16,6 +16,8 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.core.exception.AbortedException;
@@ -43,7 +45,9 @@ import software.amazon.awssdk.services.kms.model.GenerateDataKeyWithoutPlaintext
  * The encryption context, if any, is bound into every wrapped DEK as authenticated data: Decrypt
  * fails unless it is presented again exactly, and key policies can require it
  * ({@code kms:EncryptionContext:*}). It is logged in plaintext by CloudTrail, so it must not hold
- * secrets.
+ * secrets. Without one, a key file wrapped under this key for any service is accepted by every
+ * other service that shares the key, so a wrapper made without a context logs a warning: give each
+ * application a context of its own.
  * <p>
  * Key files are read only from where an untrusted account can't have written or replaced them (see
  * {@link #readKeyFileAsync} and {@link KeyFileTrust}). Pinning the key stops a key file wrapped
@@ -126,6 +130,11 @@ public final class AwsKmsKeyWrapperImpl implements KeyWrapper {
      * @throws IllegalArgumentException keyId is empty or whitespace, or the context holds an empty or null key
      */
     public AwsKmsKeyWrapperImpl(KmsAsyncClient client, String keyId, Map<String, String> encryptionContext, KeyFileTrust keyFileTrust) {
+        this(client, keyId, encryptionContext, keyFileTrust, LoggerFactory.getLogger(AwsKmsKeyWrapperImpl.class));
+    }
+
+    /** The public constructor's, warning logger: the tests'. */
+    AwsKmsKeyWrapperImpl(KmsAsyncClient client, String keyId, Map<String, String> encryptionContext, KeyFileTrust keyFileTrust, Logger logger) {
         this.client = Objects.requireNonNull(client, "client");
         Objects.requireNonNull(keyId, "keyId");
         if (keyId.isBlank())
@@ -146,6 +155,10 @@ public final class AwsKmsKeyWrapperImpl implements KeyWrapper {
             }
             this.encryptionContext = Collections.unmodifiableMap(copy);
         }
+
+        if (this.encryptionContext == null)
+            logger.warn("The AWS KMS key wrapper for '{}' binds no encryption context, so it accepts a key file wrapped under that key for any"
+                    + " service that shares it. Give each application an encryption context of its own.", keyId);
     }
 
     /**

@@ -6,6 +6,8 @@ import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -27,6 +29,7 @@ public final class VaultClientOptions {
     private final VaultRateLimiter rateLimiter;
     private final boolean enforceReadYourWritesConsistency;
     private final boolean followRedirects;
+    private final List<URI> redirectOrigins;
     private final VaultTokenProvider token;
     private final String namespace;
 
@@ -40,6 +43,7 @@ public final class VaultClientOptions {
         rateLimiter = builder.rateLimiter;
         enforceReadYourWritesConsistency = builder.enforceReadYourWritesConsistency;
         followRedirects = builder.followRedirects;
+        redirectOrigins = builder.redirectOrigins;
         token = builder.token;
         namespace = builder.namespace;
     }
@@ -61,6 +65,7 @@ public final class VaultClientOptions {
                 .rateLimiter(rateLimiter)
                 .enforceReadYourWritesConsistency(enforceReadYourWritesConsistency)
                 .followRedirects(followRedirects)
+                .redirectOrigins(redirectOrigins)
                 .token(token)
                 .namespace(namespace);
     }
@@ -127,12 +132,25 @@ public final class VaultClientOptions {
     }
 
     /**
-     * Follows one redirect (301, 302 or 307) per request, never from https to http. Off: a redirect
-     * fails with {@link VaultRedirectException}, since it would carry the token wherever it points.
-     * Some calls need it - raft operations sent to a standby are redirected to the active node.
+     * Follows one redirect (301, 302 or 307) per request, never from https to http, and only to the
+     * address's own origin or one {@link #redirectOrigins()} lists. Off: a redirect fails with
+     * {@link VaultRedirectException}, since it would carry the token wherever it points. Some calls
+     * need it - raft operations sent to a standby are redirected to the active node, at that node's
+     * own address, so list every node's address in redirectOrigins.
      */
     public boolean followRedirects() {
         return followRedirects;
+    }
+
+    /**
+     * The origins - scheme://host:port, compared without regard to case, with the scheme's default
+     * port when none is given - a followed redirect may lead to besides the address's own: the other
+     * nodes of the Vault cluster. A redirect anywhere else fails with {@link VaultRedirectException},
+     * because it would carry the token there. Each must be https, or http where the address may be.
+     * Default none.
+     */
+    public List<URI> redirectOrigins() {
+        return redirectOrigins;
     }
 
     /** The token every request is made with unless the request sets its own; null for none until {@link VaultClient#setToken(VaultTokenProvider)}. */
@@ -291,6 +309,7 @@ public final class VaultClientOptions {
         private VaultRateLimiter rateLimiter;
         private boolean enforceReadYourWritesConsistency;
         private boolean followRedirects;
+        private List<URI> redirectOrigins = List.of();
         private VaultTokenProvider token;
         private String namespace;
 
@@ -348,6 +367,12 @@ public final class VaultClientOptions {
         /** See {@link VaultClientOptions#followRedirects()}. */
         public Builder followRedirects(boolean followRedirects) {
             this.followRedirects = followRedirects;
+            return this;
+        }
+
+        /** See {@link VaultClientOptions#redirectOrigins()}; copied, null for none. */
+        public Builder redirectOrigins(Collection<URI> redirectOrigins) {
+            this.redirectOrigins = redirectOrigins == null ? List.of() : List.copyOf(redirectOrigins);
             return this;
         }
 

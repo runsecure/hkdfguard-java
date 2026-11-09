@@ -15,8 +15,12 @@ import javax.security.auth.x500.X500Principal;
  * <p>Compared attribute by attribute from their encodings: the same relative distinguished names in
  * the same order, each RDN's attributes as a set (so "CN=a+O=b" is "O=b+CN=a"), each attribute by
  * its OID, and each value, when it is a string type - UTF8String, PrintableString, IA5String,
- * BMPString and the rest - decoded and compared ignoring case, so how either side encodes it doesn't
- * matter. Values of any other type are compared byte for byte.
+ * BMPString and the rest - decoded and compared ignoring the case of ASCII letters only, so how
+ * either side encodes it doesn't matter. Every other character must be the same: Unicode case
+ * folding would let a lookalike stand in for an ASCII letter - U+017F (long s) for 's', U+212A
+ * (Kelvin) for 'k' - so a certificate could be issued with a name that isn't the configured one and
+ * still match it. (.NET's OrdinalIgnoreCase upper-cases every character, so there a non-ASCII value
+ * also matches in another case.) Values of any other type are compared byte for byte.
  *
  * <p>Not X500Principal's CANONICAL form, which leaves the values of attributes it has no keyword for
  * as hex: DC, emailAddress and serialNumber would then match only in the same case, and an
@@ -35,7 +39,7 @@ final class DistinguishedNames {
             if (!Arrays.equals(oid, other.oid))
                 return false;
             if (text != null && other.text != null)
-                return text.equalsIgnoreCase(other.text);
+                return asciiEqualsIgnoreCase(text, other.text);
             return text == null && other.text == null && Arrays.equals(raw, other.raw);
         }
 
@@ -54,6 +58,21 @@ final class DistinguishedNames {
         public String toString() {
             return "Attribute[oid=" + Arrays.toString(oid) + ", text=" + text + ", raw=" + Arrays.toString(raw) + "]";
         }
+    }
+
+    /** Whether a and b are the same, but for the case of ASCII letters. */
+    static boolean asciiEqualsIgnoreCase(String a, String b) {
+        if (a.length() != b.length())
+            return false;
+        for (var i = 0; i < a.length(); i++) {
+            if (asciiLower(a.charAt(i)) != asciiLower(b.charAt(i)))
+                return false;
+        }
+        return true;
+    }
+
+    private static char asciiLower(char c) {
+        return c >= 'A' && c <= 'Z' ? (char) (c + ('a' - 'A')) : c;
     }
 
     /** Whether {@code a} and {@code b} name the same subject. */

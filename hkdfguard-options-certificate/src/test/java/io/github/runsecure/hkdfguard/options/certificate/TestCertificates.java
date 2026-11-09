@@ -143,6 +143,25 @@ final class TestCertificates {
         }
     }
 
+    /**
+     * An encrypted PKCS#8 PEM naming PBES2 with cipherName and iterations, over bytes that aren't a
+     * key: for a scheme or iteration count refused before anything is decrypted.
+     */
+    static String pbes2PemWithoutKey(String cipherName, int iterations) {
+        try {
+            var salt = new byte[16];
+            var iv = new byte[16];
+            RANDOM.nextBytes(salt);
+            RANDOM.nextBytes(iv);
+            var parameters = java.security.AlgorithmParameters.getInstance(cipherName);
+            parameters.init(new PBEParameterSpec(salt, iterations, new IvParameterSpec(iv)));
+            var info = sequence(sequence(PBES2, parameters.getEncoded()), tlv(0x04, new byte[48]));
+            return pem("ENCRYPTED PRIVATE KEY", info);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** The key as an encrypted PKCS#8 PEM under a PKCS#12 PBE scheme ("PBEWithSHA1AndDESede"). */
     static String encryptedPbes1Pem(PrivateKey key, char[] password, String cipherName) {
         try {
