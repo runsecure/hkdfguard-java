@@ -131,7 +131,7 @@
          hkdfguard-pipeline-googlesecretmanager. Google's libraries
          BOM pins the Cloud KMS and Secret Manager clients with the gax, gRPC, Protobuf and auth
          versions they were released and tested with. -->
-    <googlecloud.version>26.91.0</googlecloud.version>
+    <googlecloud.version>26.92.0</googlecloud.version>
     <!-- Newer than libraries-bom 26.91.0's 33.6.0-jre, which has GHSA-xxph-c9ww-hj94 (CVE-2026-102554:
          deserializing some Guava collections can force a huge allocation). The Cloud KMS and Secret
          Manager clients are the only modules that bring Guava; drop this once the BOM's own version
