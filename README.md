@@ -647,7 +647,7 @@ authorized by the process's Google credential through IAM and recorded in Cloud 
 
 ```java
 // The application creates the client, keeps it open while anything uses the wrapper, and closes it.
-var kms = KeyManagementServiceClient.create();          // Application Default Credentials
+var kms = GoogleKmsKeyWrapperImpl.createClient();       // Application Default Credentials
 var wrapper = new GoogleKmsKeyWrapperImpl(kms,
         "projects/my-project/locations/us-east1/keyRings/myapp/cryptoKeys/myapp-wrap",
         "com.example.myapp");
@@ -674,7 +674,12 @@ var wrapper = new GoogleKmsKeyWrapperImpl(kms,
   failed unwrap zeroes the caller's buffer.
 - Plaintext the wrapper can reach is zeroed: its copy of the key sent to `Encrypt` (once the call,
   retries included, has completed), and the array inside the `ByteString` `Decrypt` returns. gRPC's
-  serialized request and response aren't exposed, so they can't be.
+  serialized request isn't exposed, so it can't be.
+- Create the client with `GoogleKmsKeyWrapperImpl.createClient()`, or from your own settings with
+  `KeyManagementServiceClient.create(GoogleKmsKeyWrapperImpl.withReceiveBufferScrubber(settings))`.
+  Either way the client reads each response into a buffer it zeroes afterwards. A client made any
+  other way leaves the last revealed DEK in a thread-local buffer gRPC reuses and never clears. The
+  wrapper can't add this to a client it is handed.
 - Key files are read through `hkdfguard-securefile`, by the same rules as for AWS KMS.
 - Symmetric encryption needs no secret beyond permission to use the key, so anyone allowed
   `useToEncrypt` can make a key file the application accepts. Give the application Cloud KMS
@@ -832,8 +837,10 @@ secrets can be made to roll one back. Like the key wrappers that read key files 
 (see [Native access](#native-access)); it is a module of its own, not part of `hkdfguard-cache` as
 in .NET, so that `hkdfguard-cache` keeps running on Java 21.
 
-A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`, so it
-can't reach outside the folder. Any other name (for example `ConnectionStrings:Admin`), a missing
+A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, neither starting nor ending
+with `.`, and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`,
+in any case, with or without an extension), so it can't reach outside the folder or name a device,
+on any platform. Any other name (for example `ConnectionStrings:Admin`), a missing
 or empty file and a missing folder all return 0, so the cache can sit in a
 `ProtectedCacheCollectionImpl` beside other sources - before any secret-store cache, since a
 collection asks its sources in order and a source that throws fails the lookup. A missing secret
@@ -940,7 +947,8 @@ The file name is the secret name with every `/` and `#` replaced by `__` -
 `myapp/db#password` is written as `myapp__db__password` - and each value is encrypted bound to that
 file name, the name `FilePerSecretCacheImpl` decrypts it under, so a renamed file fails
 authentication. A name the store can't hold, or whose file name `FilePerSecretCacheImpl` couldn't
-read (1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`), is refused by the
+read (1-255 ASCII letters, digits, `-`, `_` and `.`, neither starting nor ending with `.`, and not a
+Windows device name such as `NUL` or `com1.txt`), is refused by the
 constructor, and so are two names whose file names differ only in case.
 
 `pullSecretsAsync` reads every secret, one after another, replacing whatever an earlier pull kept;
@@ -993,7 +1001,7 @@ in `hkdfguard-cache-filepersecret`; they call nothing native.
 
 | Writer | Constructed from | Notes |
 |---|---|---|
-| `AwsSecretsManagerSecretPipelineWriterImpl` | `SecretsManagerAsyncClient client, protector, secretNames` | The client is yours to build and close (IRSA or EKS Pod Identity on EKS); the capture rides on each request as a plugin, and the SDK unmarshals an empty object. Needs only `secretsmanager:GetSecretValue`. A SecretBinary is refused. |
+| `AwsSecretsManagerSecretPipelineWriterImpl` | `SecretsManagerAsyncClient client, protector, secretNames` | The client is yours to build and close (IRSA or EKS Pod Identity on EKS); the capture rides on each request as a plugin, and the SDK unmarshals an empty object. Needs only `secretsmanager:GetSecretValue`. A SecretBinary is refused, and a response naming another secret is refused with `CryptographicException`. |
 | `AzureKeyVaultSecretPipelineWriterImpl` | `SecretClientBuilder builder, protector, secretNames` | Builds its own `SecretClient`, changing the builder as `AzureKeyVaultSecretCacheImpl` does (capture policy added, any `HttpPipeline` cleared, log options that never log bodies). Needs only the **Key Vault Secrets User** role. |
 | `GoogleSecretManagerSecretPipelineWriterImpl` | `create(projectId, protector, secretNames)` (Application Default Credentials, Workload Identity on GKE), or `SecretManagerServiceSettings settings, projectId, protector, secretNames` | Owns and closes its client. A payload whose CRC32C doesn't match, or a response naming another secret, is refused with `CryptographicException`. Needs only the **Secret Manager Secret Accessor** role. |
 | `HashiCorpVaultSecretPipelineWriterImpl` | `URI address, VaultTokenSource tokenSource, protector, secretNames, HashiCorpVaultPipelineOptions options` | KV version 1 or 2, the mount, default key, namespace, timeout, retries, an `HttpClient` and `VaultTlsOptions` (give it a PEM certificate and key: a key store's password needs a key ring) as for `HashiCorpVaultSecretCacheImpl`. The token is plaintext from the source, since there is no key ring yet, and becomes one `String` per request, as `java.net.http` takes headers; the policy needs only `read`. |
@@ -1080,8 +1088,9 @@ int written = secrets.decrypt("prod/Db-Password", buffer); // 0 if the secret do
 `GetSecretValue` reads the secret's `AWSCURRENT` version; the principal needs only
 `secretsmanager:GetSecretValue` (plus `kms:Decrypt` on a customer managed key that encrypts it).
 Names match exactly, as Secrets Manager's do: anything but 1-512 ASCII letters, digits and
-`/_+=.@-` returns 0 without a call, so look secrets up by name, not ARN. A `SecretString` is cached
-as its UTF-8 bytes and a `SecretBinary` as its bytes. The capture is attached to each request as a
+`/_+=.@-` returns 0 without a call, so look secrets up by name, not ARN. A response naming a
+secret other than the one asked for is refused with a `CryptographicException`, and nothing it held
+is cached. A `SecretString` is cached as its UTF-8 bytes and a `SecretBinary` as its bytes. The capture is attached to each request as a
 per-request plugin, so the application's client is left as it is and can be shared.
 
 ### Azure Key Vault

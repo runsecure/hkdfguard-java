@@ -2,6 +2,7 @@ package io.github.runsecure.hkdfguard.pipeline.hashicorpvault;
 
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
 import io.github.runsecure.hkdfguard.abstractions.PipelineDataProtector;
+import io.github.runsecure.hkdfguard.cache.ErrorResponseBody;
 import io.github.runsecure.hkdfguard.cache.InvalidSecretDataException;
 import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultHttp;
 import io.github.runsecure.hkdfguard.integration.hashicorpvault.VaultRequestException;
@@ -11,6 +12,7 @@ import io.github.runsecure.hkdfguard.pipeline.SecretPipelineWriterBase;
 import io.github.runsecure.hkdfguard.pipeline.SecretRequest;
 import io.github.runsecure.hkdfguard.remote.JsonReader;
 import io.github.runsecure.hkdfguard.remote.JsonReader.Token;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -53,7 +55,10 @@ import java.util.concurrent.TimeoutException;
  * {@code list}.
  * <p>
  * A secret that doesn't exist (404 with no errors, as Vault answers), whose latest version is
- * deleted or destroyed, or that has no such key, is missing. Any other answer (403, a 404 naming an
+ * deleted or destroyed, or that has no such key, is missing. A KV version 2 engine read as version 1
+ * isn't: Vault's 404 then warns that the path is invalid for a versioned engine, and the pull fails
+ * with a {@link VaultRequestException} saying so. (A version 1 engine read as version 2 holds nothing
+ * at {mount}/data/{path}, so every secret is missing.) Any other answer (403, a 404 naming an
  * error such as a mount that doesn't exist, Vault sealed) fails the pull with a
  * {@link VaultRequestException} carrying Vault's status and errors. A request that fails
  * transiently is retried as {@link HashiCorpVaultPipelineOptions} says; once the retries are spent,
@@ -73,6 +78,9 @@ import java.util.concurrent.TimeoutException;
 public final class HashiCorpVaultSecretPipelineWriterImpl extends SecretPipelineWriterBase {
     /** The longest secret path read. */
     public static final int MAX_SECRET_NAME_LENGTH = 512;
+
+    // How a KV version 2 engine's 404 warns of a path a version 1 read made.
+    private static final String VERSIONED_ENGINE_WARNING = "Invalid path for a versioned K/V secrets engine";
 
     private final HttpClient http;
     private final boolean ownsHttp;
@@ -234,13 +242,30 @@ public final class HashiCorpVaultSecretPipelineWriterImpl extends SecretPipeline
 
             // Nothing at the path: Vault answers 404 with an empty error list - or, for a KV version
             // 2 secret whose latest version is deleted, with its metadata and none. A 404 naming an
-            // error (no such mount) or that isn't Vault's JSON (a proxy's page) is a failure.
-            if (status == 404 && errors != null && errors.isEmpty())
+            // error (no such mount) or that isn't Vault's JSON (a proxy's page) is a failure. So is
+            // one warning that the path is invalid for a versioned engine: the engine is KV version
+            // 2, read as version 1, and every secret would otherwise be missing.
+            if (status == 404 && errors != null && errors.isEmpty()) {
+                var mismatch = kvVersionMismatch(ErrorResponseBody.readStrings(new ByteArrayInputStream(body.buffer(), 0, body.length()), "warnings"));
+                if (mismatch != null)
+                    throw new VaultRequestException("Vault refused to read '" + path + "': 404" + VaultHttp.reasonPhrase(status)
+                            + ": the engine is KV version 2, but this writer reads it as version 1; set the options' kvVersion to V2."
+                            + " Vault warned: " + mismatch, status);
                 return Map.of();
+            }
 
             var detail = errors != null && !errors.isEmpty() ? ": " + String.join("; ", errors) : "";
             throw new VaultRequestException("Vault refused to read '" + path + "': " + status + VaultHttp.reasonPhrase(status) + detail, status);
         }
+    }
+
+    // The warning Vault gives for a KV version 1 read of a KV version 2 engine, or null.
+    private static String kvVersionMismatch(List<String> warnings) {
+        if (warnings != null)
+            for (var warning : warnings)
+                if (warning.contains(VERSIONED_ENGINE_WARNING))
+                    return warning;
+        return null;
     }
 
     // Encrypts the value of each requested key in the secret's data object, by file name.

@@ -543,7 +543,8 @@ public abstract class SecretPipelineWriterBase implements SecretPipelineWriter {
                         + KEY_SEPARATOR + "' if any.");
             if (!FilePerSecretCacheImpl.isValidName(fileName))
                 throw new IllegalArgumentException("'" + secretName + "' can't be written as a file: its file name '" + fileName + "' must be 1-"
-                        + FilePerSecretCacheImpl.MAX_NAME_LENGTH + " ASCII letters, digits, '-', '_' and '.', not starting with '.'.");
+                        + FilePerSecretCacheImpl.MAX_NAME_LENGTH + " ASCII letters, digits, '-', '_' and '.', neither starting nor ending with '.', and not"
+                        + " a Windows device name (CON, PRN, AUX, NUL, COM0-COM9, LPT0-LPT9), with or without an extension.");
             if (!fileNames.add(fileName))
                 throw new IllegalArgumentException("'" + secretName + "' would be written as '" + fileName + "', as another secret named is.");
 

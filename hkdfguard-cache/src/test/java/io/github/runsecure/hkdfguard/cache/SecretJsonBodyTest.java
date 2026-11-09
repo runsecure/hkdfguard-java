@@ -125,6 +125,9 @@ class SecretJsonBodyTest {
             "[\"value\"]|value|-",
             "{\"value\":\"unterminated|value|-",
             "\"value\"|value|-",
+            "{\"value\":\"a\"}{\"value\":\"b\"}|value|-",
+            "{\"value\":\"a\"} x|value|-",
+            "{\"SecretString\":\"a\"},|SecretString|SecretBinary",
     })
     void aBodyThatCantBeTrusted_IsRefused_AndNothingIsCached(String body, String text, String base64) {
         var cache = createCache();
@@ -134,6 +137,13 @@ class SecretJsonBodyTest {
 
         cache.onFetch = null;
         assertEquals(0, cache.decrypt("item", new byte[16]));
+    }
+
+    @Test
+    void whitespaceAfterTheObject_IsAccepted() {
+        var captured = capture("{\"value\":\"s3cret\"}\r\n \t");
+
+        assertEquals("s3cret", new String(captured.cached(), StandardCharsets.UTF_8));
     }
 
     @Test
@@ -269,7 +279,8 @@ class SecretJsonBodyTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"{\"data\":{\"k\":\"a\"},\"data\":{\"k\":\"b\"}}", "{\"data\":{\"k\":\"a\",\"k\":\"b\"}}", "{\"data\":{\"k\":\"a\",}}", "[\"data\"]"})
+    @ValueSource(strings = {"{\"data\":{\"k\":\"a\"},\"data\":{\"k\":\"b\"}}", "{\"data\":{\"k\":\"a\",\"k\":\"b\"}}", "{\"data\":{\"k\":\"a\",}}", "[\"data\"]",
+            "{\"data\":{\"k\":\"a\"}}{\"data\":{\"k\":\"b\"}}", "{\"data\":{\"k\":\"a\"}}]"})
     void captureKeys_RefusesABodyThatCantBeTrusted_AndCachesNothing(String body) {
         var cache = createCache();
         cache.onFetch = (name, sink) -> SecretJsonBody.captureKeys(stream(body), sink, List.of("data"));

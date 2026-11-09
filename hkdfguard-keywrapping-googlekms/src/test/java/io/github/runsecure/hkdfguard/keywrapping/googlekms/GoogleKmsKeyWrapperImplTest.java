@@ -10,12 +10,17 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.httpjson.HttpJsonStatusCode;
+import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.InvalidArgumentException;
 import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.kms.v1.DecryptResponse;
 import com.google.cloud.kms.v1.EncryptRequest;
+import com.google.cloud.kms.v1.KeyManagementServiceClient;
+import com.google.cloud.kms.v1.KeyManagementServiceSettings;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Int64Value;
 import io.github.runsecure.hkdfguard.abstractions.ArrayUtility;
@@ -25,6 +30,7 @@ import io.github.runsecure.hkdfguard.cryptoprovider.aesgcm256.AesGcmCryptoProvid
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.testsupport.WindowsTempDirectory;
 import io.grpc.Status;
+import io.grpc.inprocess.InProcessChannelBuilder;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
@@ -32,6 +38,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
@@ -623,6 +630,67 @@ class GoogleKmsKeyWrapperImplTest {
         var wrapper = wrapper(KEY_NAME, null);
 
         assertThrows(NullPointerException.class, () -> wrapper.readKeyFileAsync((Path) null));
+    }
+
+    // Over gRPC's real (Netty) transport on a loopback port: the scrubber is added to the channel the
+    // settings' provider builds, after the channel configurator and interceptors already set
+    // (plaintext here: without the configurator the call would fail), and the buffer Decrypt's
+    // response, the revealed DEK, was read into is zeroed.
+    @Test
+    void withReceiveBufferScrubber_ZeroesTheBufferEachResponseIsParsedFrom_KeepingTheChannelConfigurator() throws Exception {
+        var server = kms.serveOnLoopback();
+        var configured = new AtomicInteger();
+        try {
+            var provider = KeyManagementServiceSettings.defaultGrpcTransportProviderBuilder()
+                    .setEndpoint("127.0.0.1:" + server.getPort())
+                    .setChannelConfigurator(builder -> {
+                        configured.incrementAndGet();
+                        return builder.usePlaintext();
+                    })
+                    .setInterceptorProvider(() -> List.of(kms.receiveRecorder()))
+                    .build();
+            var settings = KeyManagementServiceSettings.newBuilder()
+                    .setTransportChannelProvider(provider)
+                    .setCredentialsProvider(NoCredentialsProvider.create())
+                    .build();
+
+            try (var client = KeyManagementServiceClient.create(GoogleKmsKeyWrapperImpl.withReceiveBufferScrubber(settings))) {
+                var wrapper = new GoogleKmsKeyWrapperImpl(client, KEY_NAME, CONTEXT);
+                var dek = random(32);
+                var expected = dek.clone();
+                var wrapped = new byte[WrappedKeyLimits.MAX_BYTES];
+                int length = await(wrapper.wrapAsync(dek, wrapped));
+                var revealed = new byte[32];
+
+                assertEquals(32, await(wrapper.unwrapAsync(Arrays.copyOf(wrapped, length), revealed)));
+                assertArrayEquals(expected, revealed);
+            }
+
+            assertTrue(configured.get() > 0);
+            // One buffer for Encrypt's response, one for Decrypt's: both zeroed.
+            assertEquals(2, kms.receiveBuffers.size());
+            for (var buffer : kms.receiveBuffers)
+                assertArrayEquals(new byte[buffer.length], buffer);
+        } finally {
+            server.shutdownNow();
+            server.awaitTermination(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void withReceiveBufferScrubber_RefusesATransportOtherThanGrpc() throws IOException {
+        var channel = InProcessChannelBuilder.forName("unused").build();
+        try {
+            // A fixed channel was built already, so nothing can be added to it.
+            var settings = KeyManagementServiceSettings.newBuilder()
+                    .setTransportChannelProvider(FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel)))
+                    .build();
+
+            assertThrows(IllegalArgumentException.class, () -> GoogleKmsKeyWrapperImpl.withReceiveBufferScrubber(settings));
+            assertThrows(NullPointerException.class, () -> GoogleKmsKeyWrapperImpl.withReceiveBufferScrubber(null));
+        } finally {
+            channel.shutdownNow();
+        }
     }
 
     /** Trusts the account running the tests, which owns, and may modify, its own temp folder. */

@@ -145,6 +145,11 @@ public final class SecretJsonBody {
                 throw new InvalidSecretDataException("The response body isn't a JSON object.");
 
             readObject(reader, objectPath, target);
+            // Nothing may follow the object but whitespace, as every other reader of a response
+            // insists: the reader itself refuses anything else. A refusal fails the fetch, so
+            // nothing already handed over is cached.
+            if (reader.read())
+                throw new InvalidSecretDataException("The response body holds more than one JSON value.");
         } catch (JsonReader.Malformed e) {
             // Not chained, and never quoting the byte rejected, which may be in the secret.
             throw new InvalidSecretDataException("The response body isn't valid JSON (at byte " + e.position + " of line " + e.line + ").");

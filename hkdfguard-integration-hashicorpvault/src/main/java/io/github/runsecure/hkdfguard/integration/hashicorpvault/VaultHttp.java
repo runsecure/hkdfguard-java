@@ -40,6 +40,8 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import javax.net.ssl.SSLParameters;
 
 /**
@@ -51,6 +53,8 @@ import javax.net.ssl.SSLParameters;
  * what Vault's error responses say. Each caller keeps its own messages.
  */
 public final class VaultHttp {
+    private static final Logger LOG = LoggerFactory.getLogger(VaultHttp.class);
+
     /** The longest token a fixed-size token buffer holds, in characters: what a {@link VaultTokenSource} may supply. */
     public static final int MAX_TOKEN_LENGTH = 2048;
 
@@ -186,7 +190,9 @@ public final class VaultHttp {
     /**
      * The client to send requests to Vault with: supplied when it isn't null, otherwise
      * {@link #newHttpClient()}'s, using tls's SSLContext when tls sets anything. Close the client
-     * this creates when done.
+     * this creates when done. A client that skips certificate verification
+     * ({@link VaultTlsOptions#insecureSkipVerify()}, VAULT_SKIP_VERIFY) is logged as a warning each
+     * time one is created.
      *
      * @param tls null, or empty, for the JDK's defaults
      * @throws IllegalArgumentException supplied and TLS options are both given - TLS options can't be
@@ -194,6 +200,11 @@ public final class VaultHttp {
      *                                  key stores can't be read
      */
     public static HttpClient httpClient(HttpClient supplied, VaultTlsOptions tls) {
+        return httpClient(supplied, tls, LOG);
+    }
+
+    /** {@link #httpClient(HttpClient, VaultTlsOptions)}, warning logger: the tests'. */
+    static HttpClient httpClient(HttpClient supplied, VaultTlsOptions tls, Logger logger) {
         var hasTls = tls != null && !tls.isEmpty();
         if (supplied != null) {
             if (hasTls)
@@ -202,8 +213,12 @@ public final class VaultHttp {
         }
 
         var builder = newHttpClientBuilder();
-        if (hasTls)
+        if (hasTls) {
+            if (tls.insecureSkipVerify())
+                logger.warn("TLS certificate verification is off for HashiCorp Vault (insecureSkipVerify, or VAULT_SKIP_VERIFY): anyone between"
+                        + " this process and Vault can read every token and secret sent. Use it only against a throwaway dev server.");
             builder.sslContext(tls.createSslContext());
+        }
         return builder.build();
     }
 

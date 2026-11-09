@@ -122,6 +122,22 @@ class HashiCorpVaultSecretPipelineWriterImplTest extends SecretPipelineWriterCon
         }
     }
 
+    // A KV version 2 engine read as version 1: Vault answers 404 with no errors and a warning, as
+    // here; the pull fails saying so, rather than reporting every secret missing.
+    @Test
+    void aKvVersion2EngineReadAsVersion1_FailsThePull_SayingSo() {
+        // Served at the version 1 path the writer asks for, with the answer a version 2 engine gives there.
+        try (var v1 = new FakeVault("kv", VaultKvVersion.V1, "");
+                var writer = new HashiCorpVaultSecretPipelineWriterImpl(v1.address(), token, protector, List.of("item"),
+                        HashiCorpVaultPipelineOptions.builder().kvVersion(VaultKvVersion.V1).mountPath("kv").retryDelay(Duration.ZERO).build())) {
+            v1.answer = new Answer(404, "{\"request_id\":\"x\",\"data\":null,\"warnings\":[\"Invalid path for a versioned K/V secrets engine. See the API docs for the appropriate API endpoints to use. If using the Vault CLI, use 'vault kv get' for this operation.\"],\"auth\":null}");
+            var e = assertPullFails(VaultRequestException.class, writer);
+
+            assertEquals(404, e.statusCode());
+            assertTrue(e.getMessage().startsWith("Vault refused to read 'item': 404 Not Found: the engine is KV version 2"), e.getMessage());
+        }
+    }
+
     @Test
     void kvVersion1_IsReadAtTheMountPath() {
         try (var v1 = new FakeVault("kv", VaultKvVersion.V1, "");

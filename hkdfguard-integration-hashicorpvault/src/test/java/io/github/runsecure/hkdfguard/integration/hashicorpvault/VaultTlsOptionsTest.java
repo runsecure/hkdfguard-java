@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLHandshakeException;
 import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 /** The client's TLS against a real https fake Vault, with certificates keytool made. */
 class VaultTlsOptionsTest {
@@ -159,6 +160,21 @@ class VaultTlsOptionsTest {
         try (var vault = new FakeVault(TLS.serverContext(TLS.serverForNameOnly, false));
                 var client = client(vault, VaultTlsOptions.builder().insecureSkipVerify(true).build())) {
             await(client.readAsync("a"));
+        }
+    }
+
+    @Test
+    void insecureSkipVerify_IsLoggedAsAWarning_EachTimeAClientIsMade() {
+        var logger = new RecordingLogger();
+        try (var insecure = VaultHttp.httpClient(null, VaultTlsOptions.builder().insecureSkipVerify(true).build(), logger)) {
+            assertEquals(1, logger.entries().size());
+            assertEquals(Level.WARN, logger.entries().get(0).level());
+            assertTrue(logger.entries().get(0).message().contains("VAULT_SKIP_VERIFY"), logger.entries().get(0).message());
+        }
+
+        try (var verifying = VaultHttp.httpClient(null, VaultTlsOptions.builder().serverName("vault.example").build(), logger);
+                var plain = VaultHttp.httpClient(null, null, logger)) {
+            assertEquals(1, logger.entries().size());
         }
     }
 

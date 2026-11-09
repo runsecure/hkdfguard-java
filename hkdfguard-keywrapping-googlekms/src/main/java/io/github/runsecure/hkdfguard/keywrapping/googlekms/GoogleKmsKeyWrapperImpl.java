@@ -3,6 +3,7 @@ package io.github.runsecure.hkdfguard.keywrapping.googlekms;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.ApiException;
 import com.google.cloud.kms.v1.CryptoKeyName;
 import com.google.cloud.kms.v1.DecryptRequest;
@@ -10,6 +11,7 @@ import com.google.cloud.kms.v1.DecryptResponse;
 import com.google.cloud.kms.v1.EncryptRequest;
 import com.google.cloud.kms.v1.EncryptResponse;
 import com.google.cloud.kms.v1.KeyManagementServiceClient;
+import com.google.cloud.kms.v1.KeyManagementServiceSettings;
 import com.google.protobuf.ByteOutput;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Int64Value;
@@ -23,6 +25,7 @@ import io.github.runsecure.hkdfguard.abstractions.Utf8Utility;
 import io.github.runsecure.hkdfguard.abstractions.WrappedKeyLimits;
 import io.github.runsecure.hkdfguard.securefile.KeyFileTrust;
 import io.github.runsecure.hkdfguard.securefile.TrustedKeyFile;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -67,8 +70,10 @@ import java.util.zip.CRC32C;
  * Encrypt (wrapped into the request without a copy, and zeroed only once the call has completed,
  * since the client may send it again on a retry), and the array inside the {@link ByteString}
  * Decrypt returns (reached through {@link UnsafeByteOperations#unsafeWriteTo}, which hands over the
- * array itself). gRPC's serialized request and response aren't exposed, so they can't be, and live
- * until collected.
+ * array itself). gRPC's serialized request isn't exposed, so it can't be, and lives until collected.
+ * The buffer gRPC parses each response from is zeroed only on a client made through
+ * {@link #createClient()} or {@link #withReceiveBufferScrubber}; on any other, gRPC keeps it in a
+ * thread-local and reuses it, so a revealed DEK stays there until a later message overwrites it.
  * <p>
  * The {@link KeyManagementServiceClient} is the application's: it creates the client (credentials,
  * endpoint, retry settings), keeps it open for as long as anything uses this wrapper - a key ring's
@@ -295,6 +300,59 @@ public final class GoogleKmsKeyWrapperImpl implements KeyWrapper {
     @Override
     public CompletableFuture<byte[]> readKeyFileAsync(Path path) {
         return TrustedKeyFile.readAsync(path, keyFileTrust);
+    }
+
+    /**
+     * A new Cloud KMS client with the default settings - the global endpoint, over gRPC, signed in
+     * with Application Default Credentials - whose channel zeroes the buffer each response is parsed
+     * from: see {@link #withReceiveBufferScrubber}. The caller owns and closes it.
+     *
+     * @return the client
+     * @throws IOException the client could not be created, e.g. no credentials were found
+     */
+    public static KeyManagementServiceClient createClient() throws IOException {
+        return KeyManagementServiceClient.create(withReceiveBufferScrubber(KeyManagementServiceSettings.newBuilder().build()));
+    }
+
+    /**
+     * The settings, with every channel their provider builds parsing each response from a buffer it
+     * zeroes afterwards. Without it, gRPC's protobuf marshaller reads each response into a
+     * thread-local buffer it reuses and never clears, so the DEK a Decrypt revealed stays in memory,
+     * on whichever of the client's threads parsed it, until a later message overwrites it. A client
+     * made from these settings ({@code KeyManagementServiceClient.create(settings)}) is still the
+     * application's to own and close. The wrapper can't add this to a client it is handed, so
+     * create every client it uses this way, or through {@link #createClient()}.
+     * <p>
+     * The zeroing is added through the provider's channel configurator, after any configurator and
+     * interceptor provider already set, which are kept. What it can't reach is below gRPC's
+     * marshaller: the transport's own buffers (Netty's pooled buffers, TLS decryption).
+     *
+     * @param settings the client's settings - credentials, endpoint, retries - e.g. from
+     *                 {@link KeyManagementServiceSettings#newBuilder()}. Its transport must be gRPC
+     *                 (an {@link InstantiatingGrpcChannelProvider}, the default).
+     * @return settings like {@code settings}, with the zeroing added
+     * @throws NullPointerException     settings is null
+     * @throws IllegalArgumentException the settings' transport isn't an InstantiatingGrpcChannelProvider
+     * @throws IOException              the settings could not be copied
+     */
+    public static KeyManagementServiceSettings withReceiveBufferScrubber(KeyManagementServiceSettings settings) throws IOException {
+        Objects.requireNonNull(settings, "settings");
+        if (!(settings.getTransportChannelProvider() instanceof InstantiatingGrpcChannelProvider provider))
+            throw new IllegalArgumentException("The settings' transport must be gRPC, through an InstantiatingGrpcChannelProvider, so the "
+                    + "client can zero the buffer each response is parsed from; got "
+                    + settings.getTransportChannelProvider().getClass().getName() + ".");
+
+        var builder = provider.toBuilder();
+        var configurator = builder.getChannelConfigurator();
+        var scrubber = new ReceiveBufferScrubber();
+        var scrubbing = builder
+                .setChannelConfigurator(channel -> scrubbing(configurator == null ? channel : configurator.apply(channel), scrubber))
+                .build();
+        return settings.toBuilder().setTransportChannelProvider(scrubbing).build();
+    }
+
+    private static ManagedChannelBuilder<?> scrubbing(ManagedChannelBuilder<?> builder, ReceiveBufferScrubber scrubber) {
+        return builder.intercept(scrubber);
     }
 
     /** CRC32C (Castagnoli), as Cloud KMS checksums requests and responses. */

@@ -59,8 +59,9 @@ import org.slf4j.LoggerFactory;
  * is loaded, rather than decrypting as that name's value. A file that fails is not cached, so it is
  * read again on the next lookup.
  * <p>
- * A name is a file name: 1-{@link #MAX_NAME_LENGTH} ASCII letters, digits, '-', '_' and '.', not
- * starting with '.' (see {@link #isValidName}), so it can never reach outside the folder. Any other
+ * A name is a file name: 1-{@link #MAX_NAME_LENGTH} ASCII letters, digits, '-', '_' and '.', neither
+ * starting nor ending with '.', and not one of Windows' reserved device names (see
+ * {@link #isValidName}), so it can never reach outside the folder, or name a device. Any other
  * name, a missing file, a missing folder and an empty file are all reported missing - decrypt
  * returns 0 - so the cache can sit in a {@link ProtectedCacheCollectionImpl} beside sources with
  * other naming rules. A missing secret isn't remembered: its file is looked for again on the next
@@ -155,11 +156,15 @@ public final class FilePerSecretCacheImpl implements ProtectedReadOnlyCache {
     }
 
     /**
-     * Whether name can be a secret's file name: 1-{@link #MAX_NAME_LENGTH} ASCII letters, digits,
-     * '-', '_' and '.', not starting with '.'.
+     * Whether name can be a secret's file name, on every platform: 1-{@link #MAX_NAME_LENGTH} ASCII
+     * letters, digits, '-', '_' and '.', neither starting nor ending with '.', and not one of Windows'
+     * reserved device names (CON, PRN, AUX, NUL, COM0-COM9, LPT0-LPT9), with or without an
+     * extension, in any case. Windows drops a trailing '.', so "a." would be the file "a", and opens
+     * the device for a reserved name, so a value written there is lost and a read gets the device.
+     * The same rule as the .NET FilePerSecretCache.IsValidName.
      */
     public static boolean isValidName(String name) {
-        if (name == null || name.isEmpty() || name.length() > MAX_NAME_LENGTH || name.charAt(0) == '.')
+        if (name == null || name.isEmpty() || name.length() > MAX_NAME_LENGTH || name.charAt(0) == '.' || name.charAt(name.length() - 1) == '.')
             return false;
 
         for (var i = 0; i < name.length(); i++) {
@@ -167,7 +172,17 @@ public final class FilePerSecretCacheImpl implements ProtectedReadOnlyCache {
             if (!(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.'))
                 return false;
         }
-        return true;
+        return !isReservedDeviceName(name);
+    }
+
+    // CON, PRN, AUX, NUL, COM0-9 and LPT0-9, as the whole name or before its first '.', ignoring case.
+    private static boolean isReservedDeviceName(String name) {
+        var dot = name.indexOf('.');
+        var stem = dot < 0 ? name : name.substring(0, dot);
+        if (stem.length() == 3)
+            return stem.equalsIgnoreCase("CON") || stem.equalsIgnoreCase("PRN") || stem.equalsIgnoreCase("AUX") || stem.equalsIgnoreCase("NUL");
+        return stem.length() == 4 && stem.charAt(3) >= '0' && stem.charAt(3) <= '9'
+                && (stem.regionMatches(true, 0, "COM", 0, 3) || stem.regionMatches(true, 0, "LPT", 0, 3));
     }
 
     /**

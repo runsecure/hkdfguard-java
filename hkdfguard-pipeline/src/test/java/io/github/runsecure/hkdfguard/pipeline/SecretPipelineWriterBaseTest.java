@@ -31,6 +31,7 @@ import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** The shared writer's contract over an in-memory store, and what only it does: the default key, file names, its own arguments. */
 class SecretPipelineWriterBaseTest extends SecretPipelineWriterContractTest {
@@ -433,6 +434,14 @@ class SecretPipelineWriterBaseTest extends SecretPipelineWriterContractTest {
     @CsvSource({"prod/app#password, prod__app__password", "prod/app, prod__app", "app, app"})
     void getFileName_ReplacesEachSeparator(String secretName, String fileName) {
         assertEquals(fileName, SecretPipelineWriterBase.getFileName(secretName));
+    }
+
+    // Windows would write these to a device, or drop the trailing '.', so FilePerSecretCacheImpl
+    // could never read them back under the name they were encrypted for.
+    @ParameterizedTest
+    @ValueSource(strings = {"NUL", "con", "AUX.json", "com1.txt", "app."})
+    void namesWhoseFileNameIsAWindowsDeviceOrEndsInADot_AreRefused(String secretName) {
+        assertThrows(IllegalArgumentException.class, () -> new FakeWriter(protector, List.of(secretName), store));
     }
 
     @Test
