@@ -379,8 +379,10 @@ public final class CertificateOptionsLoader {
         }
     }
 
-    // A PKCS#12 file's key entry, else (the key not required) its first certificate. With no password
-    // it is opened with an empty one, as .NET opens one.
+    // A PKCS#12 file's one key entry, else (it has none) its first certificate. A file with more than
+    // one key entry is refused - which is meant isn't said, and KeyStore lists them in no set order -
+    // and the key must be its certificate's. With no password it is opened with an empty one, as
+    // .NET opens one.
     private static LoadedCertificate fromPkcs12(String path, boolean requirePrivateKey, char[] password) {
         var contents = readFile(path);
         var pfxPassword = password == null ? new char[0] : password;
@@ -388,15 +390,20 @@ public final class CertificateOptionsLoader {
             var keyStore = KeyStore.getInstance("PKCS12");
             keyStore.load(new ByteArrayInputStream(contents), pfxPassword);
 
-            String chosen = null;
+            var keyEntries = new ArrayList<String>();
+            String firstCertificate = null;
             for (var alias : Collections.list(keyStore.aliases())) {
-                if (keyStore.isKeyEntry(alias) && keyStore.getCertificate(alias) instanceof X509Certificate) {
-                    chosen = alias;
-                    break;
-                }
-                if (chosen == null && keyStore.getCertificate(alias) instanceof X509Certificate)
-                    chosen = alias;
+                if (!(keyStore.getCertificate(alias) instanceof X509Certificate))
+                    continue;
+                if (keyStore.isKeyEntry(alias))
+                    keyEntries.add(alias);
+                else if (firstCertificate == null)
+                    firstCertificate = alias;
             }
+            if (keyEntries.size() > 1)
+                throw new CryptographicException("The PKCS#12 file '" + path + "' holds " + keyEntries.size()
+                        + " private keys, so which certificate is meant isn't clear: export the one certificate, with its key and chain, on its own.");
+            var chosen = keyEntries.isEmpty() ? firstCertificate : keyEntries.get(0);
             if (chosen == null)
                 throw new CryptographicException("The PKCS#12 file '" + path + "' holds no certificate.");
 
@@ -404,6 +411,8 @@ public final class CertificateOptionsLoader {
                     ? privateKey
                     : null;
             var leaf = (X509Certificate) keyStore.getCertificate(chosen);
+            if (key != null && !PemKeys.matches(key, leaf.getPublicKey()))
+                throw new CryptographicException("The private key in the PKCS#12 file '" + path + "' isn't the key of the certificate stored with it.");
             return new LoadedCertificate(leaf, chain(keyStore.getCertificateChain(chosen)), key);
         } catch (IOException | GeneralSecurityException e) {
             throw new CryptographicException("The PKCS#12 file '" + path + "' couldn't be opened: its password is wrong, or it isn't PKCS#12.", e);

@@ -344,6 +344,35 @@ class CertificateOptionsLoaderTest {
         }
     }
 
+    // KeyStore lists entries in no set order, so a file with two keys could load either: refused.
+    @Test
+    void aPfx_WithMoreThanOneKey_IsRefused() throws Exception {
+        var first = TestCertificates.ec();
+        var second = TestCertificates.ec();
+        var keyStore = KeyStore.getInstance("PKCS12");
+        keyStore.load(null, null);
+        keyStore.setKeyEntry("one", first.getPrivate(), PASSWORD.toCharArray(),
+                new X509Certificate[] { TestCertificates.selfSigned(first, SUBJECT, days(-10), days(300)) });
+        keyStore.setKeyEntry("two", second.getPrivate(), PASSWORD.toCharArray(),
+                new X509Certificate[] { TestCertificates.selfSigned(second, SUBJECT, days(-10), days(300)) });
+        var out = new ByteArrayOutputStream();
+        keyStore.store(out, PASSWORD.toCharArray());
+        var path = write("two-keys.pfx", out.toByteArray());
+
+        var e = assertThrows(CryptographicException.class, () -> loader().load(pfx(path)));
+        assertTrue(e.getMessage().contains("2 private keys"), e.getMessage());
+    }
+
+    @Test
+    void aPfx_WhoseKeyIsntItsCertificates_IsRefused() throws Exception {
+        var key = TestCertificates.ec();
+        var other = TestCertificates.ec();
+        var path = write("mismatched.pfx", pkcs12(key, TestCertificates.selfSigned(other, SUBJECT, days(-10), days(300)), PASSWORD.toCharArray()));
+
+        var e = assertThrows(CryptographicException.class, () -> loader().load(pfx(path)));
+        assertTrue(e.getMessage().contains("isn't the key of the certificate"), e.getMessage());
+    }
+
     @Test
     void aPfx_NeedsItsPassword_EvenForTheCertificateAlone() throws Exception {
         var key = TestCertificates.ec();

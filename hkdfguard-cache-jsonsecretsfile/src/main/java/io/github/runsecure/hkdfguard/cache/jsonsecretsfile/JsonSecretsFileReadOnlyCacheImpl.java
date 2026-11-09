@@ -35,6 +35,7 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -42,6 +43,7 @@ import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.function.ToIntFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,7 +68,10 @@ import org.slf4j.LoggerFactory;
  * any other name fails authentication. The file is delivered as one, so it is loaded as one: a
  * value that fails authentication, or names a key version the ring doesn't hold, fails the whole
  * load with a {@link CryptographicException} or {@link NoSuchElementException}, and nothing is
- * kept, so the file is read again on the next lookup.
+ * kept. A load that fails - for that or any reason below but a missing file - is remembered for
+ * {@link #RETRY_AFTER_FAILURE}: lookups in that time fail at once with the same exception, without
+ * reading the file or waiting for one another, and the first lookup after it reads the file again.
+ * A file that stays invalid therefore costs one read every few seconds, not one per lookup.
  * <p>
  * <b>The file must be exactly that object</b> - UTF-8 JSON, one member per secret, each name a
  * valid FilePerSecretCacheImpl name ({@link FilePerSecretCacheImpl#isValidName}), no name twice
@@ -95,6 +100,9 @@ import org.slf4j.LoggerFactory;
  * a value) are logged.
  */
 public final class JsonSecretsFileReadOnlyCacheImpl implements ProtectedReadOnlyCache {
+    /** How long a failed load is remembered before the file is read again. */
+    public static final Duration RETRY_AFTER_FAILURE = Duration.ofSeconds(5);
+
     /** The longest file read by default, in bytes: room for hundreds of formatted secrets. */
     public static final int DEFAULT_MAX_FILE_LENGTH = 1024 * 1024;
 
@@ -112,6 +120,15 @@ public final class JsonSecretsFileReadOnlyCacheImpl implements ProtectedReadOnly
     // One load at a time; once a load succeeds, its values are kept and the lock is never needed again.
     private final ReentrantLock loading = new ReentrantLock();
     private volatile Map<String, KeyTrackingValue> values;
+
+    // The last load's failure and when it happened, until a load succeeds or finds no file.
+    private record Failure(RuntimeException error, long at) {
+    }
+
+    private volatile Failure lastFailure;
+
+    // Tests: the monotonic clock a failure's age is measured with.
+    LongSupplier nanoTime = System::nanoTime;
 
     /**
      * A cache reading files of up to {@link #DEFAULT_MAX_FILE_LENGTH} bytes, logging through this
@@ -271,15 +288,26 @@ public final class JsonSecretsFileReadOnlyCacheImpl implements ProtectedReadOnly
         return loaded == null ? null : loaded.get(name);
     }
 
+    // Throws the last load's failure again while it is recent; the same exception, so callers see
+    // the same type and message as the lookup that read the file.
+    private void throwIfRecentlyFailed() {
+        var failed = lastFailure;
+        if (failed != null && nanoTime.getAsLong() - failed.at() < RETRY_AFTER_FAILURE.toNanos())
+            throw failed.error();
+    }
+
     // Reads, parses and authenticates the whole file, keeping its values once every one passes;
     // null if the file is missing.
     private Map<String, KeyTrackingValue> load() {
+        // A recent failure answers without the lock, so lookups don't queue behind each other.
+        throwIfRecentlyFailed();
         loading.lock();
         try {
-            // Another lookup may have loaded it while this one waited.
+            // Another lookup may have loaded it, or failed to, while this one waited.
             var loaded = values;
             if (loaded != null)
                 return loaded;
+            throwIfRecentlyFailed();
 
             try (var op = HkdfGuardTelemetry.CACHE.startSpan(SpanNames.Cache.POPULATE)) {
                 if (HkdfGuardTelemetry.CACHE.isSensitiveLoggingEnabled()) {
@@ -290,6 +318,7 @@ public final class JsonSecretsFileReadOnlyCacheImpl implements ProtectedReadOnly
                 try {
                     var contents = read();
                     if (contents == null) {
+                        lastFailure = null;
                         recordOperation("not_found");
                         return null;
                     }
@@ -299,12 +328,14 @@ public final class JsonSecretsFileReadOnlyCacheImpl implements ProtectedReadOnly
                         authenticate(secret.getKey(), secret.getValue());
 
                     recordOperation("success");
+                    lastFailure = null;
                     values = parsed;
                     return parsed;
                 } catch (RuntimeException e) {
                     op.recordException(e);
                     HkdfGuardLog.operationFailed(logger, SpanNames.Cache.POPULATE, e);
                     recordOperation("error");
+                    lastFailure = new Failure(e, nanoTime.getAsLong());
                     throw e;
                 }
             }

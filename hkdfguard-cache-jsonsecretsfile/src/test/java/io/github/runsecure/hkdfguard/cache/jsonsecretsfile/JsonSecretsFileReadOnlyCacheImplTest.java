@@ -1,5 +1,6 @@
 package io.github.runsecure.hkdfguard.cache.jsonsecretsfile;
 
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -54,6 +55,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.event.Level;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * JsonSecretsFileReadOnlyCacheImpl over a real file TrustedFile accepts, with values written by a
@@ -322,6 +324,8 @@ class JsonSecretsFileReadOnlyCacheImplTest {
         var ring = newRing();
         writeRaw(json.replace("{0}", encrypt(ring, "item", "value")));
         var cache = createCache(ring);
+        var clock = new AtomicLong();
+        cache.nanoTime = clock::get;
 
         var e = assertThrows(InvalidSecretDataException.class, () -> cache.decrypt("item", new byte[16]));
         assertTrue(e.getMessage().contains(problem), e.getMessage());
@@ -329,7 +333,10 @@ class JsonSecretsFileReadOnlyCacheImplTest {
         assertThrows(InvalidSecretDataException.class, () -> cache.decrypt("item", new char[16]));
         assertFailsWith(InvalidSecretDataException.class, cache.decryptAsync("item", new byte[16]));
 
+        // Fixed, but the failure is remembered until RETRY_AFTER_FAILURE has passed; then read again.
         write(ring, "item", "fixed");
+        assertSame(e, assertThrows(InvalidSecretDataException.class, () -> cache.decrypt("item", new byte[16])));
+        clock.addAndGet(JsonSecretsFileReadOnlyCacheImpl.RETRY_AFTER_FAILURE.toNanos());
         assertEquals("fixed", decryptString(cache, "item"));
     }
 
@@ -360,15 +367,26 @@ class JsonSecretsFileReadOnlyCacheImplTest {
         var logger = new RecordingLogger();
         var cache = createCache(ring, JsonSecretsFileReadOnlyCacheImpl.DEFAULT_MAX_FILE_LENGTH, logger);
 
+        var clock = new AtomicLong();
+        cache.nanoTime = clock::get;
+
         assertThrows(CryptographicException.class, () -> cache.decrypt("reader", new byte[16]));
         assertFailsWith(CryptographicException.class, cache.decryptAsync("reader", new char[16]));
         assertThrows(CryptographicException.class, () -> cache.findMaxDecryptedLength("reader"));
 
-        // Each failed load, logged as an error.
+        // One failed load, logged as an error: the lookups after it are answered from it, not by
+        // reading and authenticating the file again - until RETRY_AFTER_FAILURE has passed.
         var entries = logger.entries();
-        assertEquals(3, entries.size());
+        assertEquals(1, entries.size());
         assertEquals(Level.ERROR, entries.getFirst().level());
         assertInstanceOf(CryptographicException.class, entries.getFirst().exception());
+
+        clock.addAndGet(JsonSecretsFileReadOnlyCacheImpl.RETRY_AFTER_FAILURE.toNanos() - 1);
+        assertThrows(CryptographicException.class, () -> cache.decrypt("reader", new byte[16]));
+        assertEquals(1, logger.entries().size());
+        clock.addAndGet(1);
+        assertThrows(CryptographicException.class, () -> cache.decrypt("reader", new byte[16]));
+        assertEquals(2, logger.entries().size());
     }
 
     @Test

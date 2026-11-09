@@ -207,7 +207,9 @@ soon as the key is read, however the load ends. A `java.time.Clock` given to the
 **From a store**, the certificates whose subject is the one named are found, and the one valid now -
 with its private key, when one is required - that expires last is returned, so a renewal under the
 same subject needs no configuration change. Subjects are compared attribute by attribute, each value
-decoded and compared ignoring case: never as a substring, so `CN=api` doesn't match
+decoded and compared ignoring the case of ASCII letters only (any other character must be the same,
+so a lookalike such as U+017F, long s, can't stand in for an `s`; .NET folds every character's
+case): never as a substring, so `CN=api` doesn't match
 `CN=api.example.com`; an RDN's attributes in any order, but the RDNs in order; and
 `DC=Contoso, DC=com` matches `dc=contoso, dc=COM`, which `X500Principal`'s canonical form wouldn't
 (it leaves DC, emailAddress and serialNumber as hex). Whitespace inside a value isn't folded, as in
@@ -237,7 +239,9 @@ and key URI - so `LinuxOpenSslProviderOptions` is kept for configuration parity,
 refuses it unless `requirePrivateKey` is false, when the certificate file alone is loaded.
 
 **From a file**, a PKCS#12 file is opened through `KeyStore` "PKCS12" (with an empty password when
-none is named), its key entry chosen; it needs its password even for the certificate alone. A PEM
+none is named), its one key entry chosen; it needs its password even for the certificate alone. A
+file with more than one key entry is refused, since which is meant isn't said, and the key must be
+its certificate's. A PEM
 certificate is read through `CertificateFactory` (every certificate in the file becomes the chain),
 and its key from `keyPath`: an "ENCRYPTED PRIVATE KEY" decrypted through `EncryptedPrivateKeyInfo`
 and the JDK's PBES2 cipher - PBKDF2 with HMAC-SHA224/256/384/512, then AES-128 or AES-256 in CBC
@@ -880,7 +884,9 @@ The file is delivered as one, so it is loaded as one: a value that fails authent
 key version the ring doesn't hold, or isn't a non-empty string, and a file that isn't exactly that
 object (malformed, not UTF-8, a name that isn't a `FilePerSecretCacheImpl` name, a name twice
 ignoring case), fails the whole load - `CryptographicException`, `NoSuchElementException` or
-`InvalidSecretDataException` - and nothing is kept, so the file is read again on the next lookup.
+`InvalidSecretDataException` - and nothing is kept. The failure is remembered for five seconds
+(`RETRY_AFTER_FAILURE`): lookups in that time fail at once with it, without reading the file, and
+the first lookup after reads it again, so a file that stays broken costs one read every few seconds.
 Names match ignoring ASCII case; a name that couldn't be one is reported missing, as is every name
 while the file (or its folder) is missing. A file over the maximum (1 MB by default, a constructor
 argument) throws `InvalidSecretDataException`. Trust, native access and Java 25 are as for
