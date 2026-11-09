@@ -399,7 +399,9 @@ enforces. Before loading, it requires all of the following:
   `libtss2-esys` receives every ECDH shared secret. So every `LD_LIBRARY_PATH` directory, and every
   path-named `LD_PRELOAD` or `LD_AUDIT` object, must pass the same path checks, and none may be
   relative, empty (the working directory) or use `$ORIGIN`-style tokens. Both the environment the
-  process started with (`/proc/self/environ`) and the current one are checked.
+  process started with (`/proc/self/environ`) and the current one are checked. If
+  `/proc/self/environ` can't be read, or one of those three variables in it isn't valid UTF-8 (so
+  it couldn't be checked as the very bytes the linker reads), nothing is loaded.
   This check catches a misconfigured environment. It can't stop someone who controls the
   service's environment: whatever `LD_PRELOAD` or `LD_AUDIT` loads runs when the process starts,
   before the check, and can hide from it. Protect the service's environment (its unit file,
@@ -1242,6 +1244,72 @@ public final class MySecretStoreCache extends RemoteSecretCache {
 
 Override `fetchAsync` too if the client is asynchronous; without it, `decryptAsync` runs `fetch`
 on a virtual thread.
+
+## Known limitations
+
+These are the known gaps that remain, by design or because closing them costs more than it buys.
+Each says what can happen, when, and what to do about it.
+
+**File trust**
+
+- **Windows: a planted junction can make the process open an SMB connection before the file is
+  refused.** On Windows a key or secret file is opened first, and the folders it was reached through
+  are checked for reparse points and their ACLs afterwards, against the path the handle really
+  opened. A junction planted in a folder on the path that points at a UNC path (`\\server\share`)
+  is therefore followed, and an SMB connection made - which can send the service account's NTLM
+  credentials to that server - before the read is refused. Planting one needs write access to a
+  folder on the path, which the same check refuses, so this only arises where a folder is already
+  misconfigured. Block outbound SMB (TCP 445) from servers that don't need it, and restrict
+  outgoing NTLM (`Network security: Restrict NTLM: Outgoing NTLM traffic to remote servers`).
+- **Windows: some broad groups aren't refused when named in `KeyFileTrust`.** Naming Everyone,
+  Authenticated Users, Users, Interactive or Anonymous in `KeyFileTrust.withWindowsPrincipals` is
+  refused, since trusting any of them trusts every account. Guests (`S-1-5-32-546`), NETWORK
+  (`S-1-5-2`), and a domain's Domain Users, Domain Guests and Domain Computers (RIDs 513, 514 and
+  515) aren't on that list, so naming one would be accepted. Name only the deploying account or a
+  group that holds only deployers.
+- **Windows: anyone who can read a key file can stop it being read.** A trusted read opens the file
+  with read sharing only, so that nothing can write it while it's read; a process that holds it open
+  for writing, or opens it with no sharing at all, makes every trusted read fail until it lets go.
+  Doing that needs only read access, so keep read access to key files to administrators, the
+  deploying account and the service account.
+- **Linux: NFSv4 ACLs aren't read.** POSIX ACLs are checked (see [Native access](#native-access)),
+  but an NFSv4 ACL (`system.nfs4_acl`) granting write to an untrusted account isn't. Don't keep key
+  files on NFS.
+
+**Memory**
+
+- **Names are `String`s.** Secret names, and the names of the keys inside a JSON secret
+  (`prod/app#password`), become `String`s, which can't be zeroed and stay in memory until collected.
+  Never put secret material in a name.
+- **Copies the library can't reach.** What the JVM copies on its own - a compacting collector
+  moving an array, the JDK's process reaper draining `systemd-creds` output (see
+  [Reading systemd credentials](#reading-systemd-credentials)), an HTTP client's TLS and socket
+  buffers - isn't zeroed.
+- **Google Cloud KMS clients must be made through the wrapper.** Only a client from
+  `GoogleKmsKeyWrapperImpl.createClient()` or `withReceiveBufferScrubber(settings)` zeroes the
+  buffer each response is parsed from; a client the application builds any other way leaves the
+  last DEK it revealed in a buffer gRPC reuses.
+- **A `clientCertificateKeyPem` is held for the options' life.** `VaultTlsOptions` keeps that key
+  for as long as it lives, since each client built from it reads it again. Use
+  `clientCertificateKeyFile`, which is read only while a client is built.
+
+**Secret stores and key wrapping**
+
+- **A KV version 1 engine read as version 2 reports every secret missing.** The opposite mistake
+  fails loudly, with a `VaultRequestException` saying which version the engine is; this one can't be
+  told apart from a missing secret without permission to read the mount's configuration.
+- **AWS and Google KMS wrappers without a context accept any key file wrapped under their key.**
+  They log a warning when created without one; give each application a context of its own.
+- **Vault transit has no integrity check on the client side.** A wrapped DEK is trusted as far as
+  Vault's transit engine trusts it, as in .NET: keep the transit key's encrypt permission to the
+  pipeline that makes key files.
+
+**Behaviour that differs from .NET**
+
+The PEM key scheme allowlist, the KMS context warning, the Vault `redirectOrigins` list, the Vault
+response size cap, the KV version mismatch error, the Vault TLS skip-verify warning, the Unix ACL
+checks, the stricter Vault client retry, 3xx and path rules, and ASCII-only case folding in
+certificate subjects are in this library and not yet in .NET's.
 
 ## Building
 
