@@ -10,8 +10,10 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Vault answered a {@link VaultClient} request with a status outside 200-399 (vault-client-go's
- * ResponseError). A request that gets no answer - Vault unreachable, say - fails with the
+ * Vault answered a {@link VaultClient} request with a status outside 200-299 (vault-client-go's
+ * ResponseError, which counts 3xx as success; here a redirect the client doesn't follow - any but
+ * 301, 302 and 307, or those with followRedirects off - fails with this or
+ * {@link VaultRedirectException}). A request that gets no answer - Vault unreachable, say - fails with the
  * IOException java.net.http threw.
  */
 public final class VaultResponseException extends VaultRequestException {

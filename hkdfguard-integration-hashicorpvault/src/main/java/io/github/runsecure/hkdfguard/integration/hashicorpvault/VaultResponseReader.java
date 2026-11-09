@@ -15,7 +15,8 @@ import java.util.function.Function;
  * "data" member (as vault-client-go decides) - or "auth" or "wrap_info", so a token is never
  * mistaken for data - otherwise the body whole as its data (sys/health, sys/leader...). The tokens
  * in auth.client_token and wrap_info.token are protected straight from the response's bytes, so
- * neither ever becomes a String.
+ * neither ever becomes a String; members of data named in omittedData - a token lookup's id, which
+ * is the token itself - are skipped unread.
  */
 final class VaultResponseReader {
     private VaultResponseReader() {
@@ -27,6 +28,12 @@ final class VaultResponseReader {
      * @throws VaultJsonException the body isn't JSON, or not of the shape reader reads
      */
     static <T> VaultResponse<T> read(byte[] body, int length, DataProtector tokenProtector, Function<JsonValue, T> reader) {
+        return read(body, length, tokenProtector, reader, java.util.Set.of());
+    }
+
+    /** As {@link #read(byte[], int, DataProtector, Function)}, skipping data's members named in omittedData. */
+    static <T> VaultResponse<T> read(byte[] body, int length, DataProtector tokenProtector, Function<JsonValue, T> reader,
+            java.util.Set<String> omittedData) {
         if (length == 0)
             return null;
         if (!isEnvelope(body, length))
@@ -50,7 +57,7 @@ final class VaultResponseReader {
                     case "auth" -> auth = readAuth(json, tokenProtector);
                     case "wrap_info" -> wrapInfo = readWrapInfo(json, tokenProtector);
                     default -> {
-                        var value = JsonValue.read(json);
+                        var value = name.equals("data") ? JsonValue.read(json, omittedData) : JsonValue.read(json);
                         switch (name) {
                             case "request_id" -> requestId = value.readString();
                             case "lease_id" -> leaseId = value.readString();

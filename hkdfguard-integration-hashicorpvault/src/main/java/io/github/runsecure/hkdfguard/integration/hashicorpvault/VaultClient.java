@@ -68,6 +68,12 @@ public final class VaultClient implements VaultApis, AutoCloseable {
 
     private static final String HEALTH_PATH = "/v1/sys/health";
 
+    // A token lookup answers with the token itself as data.id - one the caller already holds (its
+    // own, or the one it sent). Left out unread, so it never becomes a String; the token auth method
+    // is always mounted at auth/token.
+    private static final java.util.Set<String> TOKEN_LOOKUP_PATHS = java.util.Set.of("/v1/auth/token/lookup", "/v1/auth/token/lookup-self");
+    private static final java.util.Set<String> TOKEN_LOOKUP_OMITTED = java.util.Set.of("id");
+
     /**
      * The largest response body read, in bytes: 32 MiB, Vault's own default limit on a request. A
      * larger one fails the request with a {@link VaultRequestException} instead of being buffered.
@@ -350,9 +356,16 @@ public final class VaultClient implements VaultApis, AutoCloseable {
 
     /**
      * Reads the value at path (GET /v1/path).
+     * <p>
+     * Every generic method takes path as it is sent, so it is refused (IllegalArgumentException)
+     * when it could reach elsewhere than it says: a "." or ".." segment, '?' or '#' (a query or
+     * fragment), '%' (either, encoded), a backslash, a space or a control character. Query
+     * parameters go in the request options; escape a segment that needs any of those with the
+     * generated methods, which do.
      *
      * @param path the path under /v1/, with or without that prefix
      * @return completes with Vault's response; null if it has no body
+     * @throws IllegalArgumentException path holds what is refused above
      */
     public CompletableFuture<VaultResponse<Map<String, JsonValue>>> readAsync(String path) {
         return readAsync(path, null);
@@ -582,8 +595,14 @@ public final class VaultClient implements VaultApis, AutoCloseable {
         return true;
     }
 
-    /** path under /v1/, whether or not it starts with "/", "v1/" or "/v1/" already. */
+    /**
+     * path under /v1/, whether or not it starts with "/", "v1/" or "/v1/" already.
+     *
+     * @throws IllegalArgumentException path holds a "." or ".." segment, '?', '#', '%', '\', a
+     *                                  space or a control character
+     */
     static String v1Path(String path) {
+        checkGenericPath(path);
         if (path.startsWith("/v1/"))
             return path;
         if (path.startsWith("v1/"))
@@ -591,6 +610,29 @@ public final class VaultClient implements VaultApis, AutoCloseable {
         if (path.startsWith("/"))
             return "/v1" + path;
         return "/v1/" + path;
+    }
+
+    // A path sent as given must name what it says: no segment that walks elsewhere, nothing that
+    // starts a query or fragment, no encoding that could hide either.
+    private static void checkGenericPath(String path) {
+        for (var i = 0; i < path.length(); i++) {
+            var c = path.charAt(i);
+            if (c == '?' || c == '#' || c == '%' || c == '\\' || c <= ' ' || c == 0x7F)
+                throw new IllegalArgumentException("The Vault path '" + VaultResponseException.quote(path, 256)
+                        + "' holds '" + (c <= ' ' || c == 0x7F ? "a space or control character" : String.valueOf(c))
+                        + "', which would change what the request reaches.");
+        }
+        var start = 0;
+        while (start <= path.length()) {
+            var end = path.indexOf('/', start);
+            if (end < 0)
+                end = path.length();
+            var segment = path.substring(start, end);
+            if (segment.equals(".") || segment.equals(".."))
+                throw new IllegalArgumentException("The Vault path '" + VaultResponseException.quote(path, 256) + "' holds a '" + segment
+                        + "' segment, which would change what the request reaches.");
+            start = end + 1;
+        }
     }
 
     // --- Sending -----------------------------------------------------------------------------
@@ -646,12 +688,15 @@ public final class VaultClient implements VaultApis, AutoCloseable {
                     watchdog.interrupt();
             }
 
-            // sys/health answers 429, 472, 473, 501 and 503 with the health status itself.
+            // sys/health answers 429, 472, 473, 501 and 503 with the health status itself. Any other
+            // 3xx reaching here is a redirect the client doesn't follow (303, 308, ...), whose body
+            // isn't Vault's answer: a failure, not a success with an empty or foreign body.
             var status = response.statusCode();
-            if ((status < 200 || status > 399) && !path.equals(HEALTH_PATH))
+            if ((status < 200 || status > 299) && !path.equals(HEALTH_PATH))
                 throw VaultResponseException.create(status, content.array(), content.length(), sent.request().method(), sent.request().uri());
 
-            return VaultResponseReader.read(content.array(), content.length(), tokenProtector, reader);
+            return VaultResponseReader.read(content.array(), content.length(), tokenProtector, reader,
+                    TOKEN_LOOKUP_PATHS.contains(path) ? TOKEN_LOOKUP_OMITTED : java.util.Set.of());
         }
     }
 
@@ -794,7 +839,7 @@ public final class VaultClient implements VaultApis, AutoCloseable {
                 // A send that was interrupted fails as an IOException, the interrupt status set.
                 if (Thread.currentThread().isInterrupted())
                     throw new InterruptedException();
-                if (attempt >= retry.retryMax() || !checkRetry.shouldRetry(0, e))
+                if (attempt >= retry.retryMax() || !mayResend(method, e) || !checkRetry.shouldRetry(0, e))
                     throw e;
                 failure = e;
             }
@@ -815,6 +860,17 @@ public final class VaultClient implements VaultApis, AutoCloseable {
                     failure != null ? failure.toString() : status + VaultHttp.reasonPhrase(status), attempt + 1, retry.retryMax(), delay);
             Thread.sleep(delay);
         }
+    }
+
+    // Whether a request that failed with e may be sent again. GET, HEAD, DELETE and LIST change
+    // nothing more the second time; a POST, PUT or PATCH that reached Vault may have been applied -
+    // a token created, a secret written - before the connection failed, so it is sent again only
+    // when it certainly never left: the connection was refused or never made.
+    static boolean mayResend(String method, IOException e) {
+        return switch (method) {
+            case "GET", "HEAD", "DELETE", "LIST" -> true;
+            default -> e instanceof java.net.ConnectException || e instanceof java.net.http.HttpConnectTimeoutException;
+        };
     }
 
     // Sends the request with the token, if any, in its header (VaultHttp.withToken).

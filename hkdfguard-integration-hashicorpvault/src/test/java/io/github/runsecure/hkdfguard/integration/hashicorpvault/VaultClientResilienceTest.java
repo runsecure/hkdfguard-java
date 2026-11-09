@@ -86,10 +86,32 @@ class VaultClientResilienceTest {
         try (var t = TestClient.create()) {
             t.vault().respond = r -> FakeVault.Answer.DROP;
 
-            // A POST: java.net.http itself resends an idempotent GET once on a dropped connection.
-            assertFailsWith(IOException.class, t.client().writeAsync("a", Map.of()));
+            // A DELETE: java.net.http itself resends a GET once on a dropped connection, and a POST
+            // that reached Vault isn't resent at all.
+            assertFailsWith(IOException.class, t.client().deleteAsync("a"));
             assertEquals(3, t.vault().requests().size());
         }
+    }
+
+    // A POST that reached Vault may have been applied before the connection dropped: not resent.
+    @Test
+    void aPostWhoseConnectionDropsAfterSending_IsNotResent() {
+        try (var t = TestClient.create()) {
+            t.vault().respond = r -> FakeVault.Answer.DROP;
+
+            assertFailsWith(IOException.class, t.client().writeAsync("auth/token/create", Map.of()));
+            assertEquals(1, t.vault().requests().size());
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"GET,false,true", "DELETE,false,true", "HEAD,false,true", "LIST,false,true", "POST,false,false", "PUT,false,false",
+            "PATCH,false,false", "POST,true,true", "PUT,true,true"})
+    void mayResend_ANonIdempotentRequest_OnlyWhenItNeverConnected(String method, boolean connectFailure, boolean expected) {
+        var failure = connectFailure ? new java.net.ConnectException("refused") : new IOException("connection reset");
+
+        assertEquals(expected, VaultClient.mayResend(method, failure));
+        assertTrue(VaultClient.mayResend("POST", new java.net.http.HttpConnectTimeoutException("timed out")));
     }
 
     @Test
