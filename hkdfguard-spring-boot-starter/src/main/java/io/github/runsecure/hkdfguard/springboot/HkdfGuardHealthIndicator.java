@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
@@ -39,6 +40,24 @@ public final class HkdfGuardHealthIndicator extends AbstractHealthIndicator {
 
     /** A probe the key encrypted: random, not secret, and only ever decrypted by the same key. */
     private record Probe(DataEncryptionKey key, byte[] plaintext, byte[] ciphertext, long encryptedAt) {
+        // By the arrays' contents, not their identity.
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Probe that && key == that.key && encryptedAt == that.encryptedAt
+                    && Arrays.equals(plaintext, that.plaintext) && Arrays.equals(ciphertext, that.ciphertext);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * (31 * (31 * System.identityHashCode(key) + Arrays.hashCode(plaintext)) + Arrays.hashCode(ciphertext))
+                    + Long.hashCode(encryptedAt);
+        }
+
+        // Lengths only: nothing a probe holds belongs in a log.
+        @Override
+        public String toString() {
+            return "Probe[plaintext=" + plaintext.length + " bytes, ciphertext=" + ciphertext.length + " bytes, encryptedAt=" + encryptedAt + "]";
+        }
     }
 
     private final KeyRing keyRing;
