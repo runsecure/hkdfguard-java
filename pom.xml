@@ -116,7 +116,7 @@
     <project.build.outputTimestamp>2026-10-12T05:38:12Z</project.build.outputTimestamp>
 
     <bouncycastle.version>1.86</bouncycastle.version>
-    <opentelemetry.version>1.67.0</opentelemetry.version>
+    <opentelemetry.version>1.68.0</opentelemetry.version>
     <slf4j.version>2.0.20</slf4j.version>
     <junit.version>6.1.3</junit.version>
     <!-- hkdfguard-keywrapping-awskms, hkdfguard-cache-awssecretsmanager and
