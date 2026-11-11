@@ -116,13 +116,13 @@
     <project.build.outputTimestamp>2026-10-12T05:38:12Z</project.build.outputTimestamp>
 
     <bouncycastle.version>1.86</bouncycastle.version>
-    <opentelemetry.version>1.67.0</opentelemetry.version>
+    <opentelemetry.version>1.68.0</opentelemetry.version>
     <slf4j.version>2.0.20</slf4j.version>
     <junit.version>6.1.3</junit.version>
     <!-- hkdfguard-keywrapping-awskms, hkdfguard-cache-awssecretsmanager and
          hkdfguard-pipeline-awssecretsmanager. One BOM version pins
          every AWS SDK module together. -->
-    <awssdk.version>2.57.10</awssdk.version>
+    <awssdk.version>2.57.11</awssdk.version>
     <!-- hkdfguard-keywrapping-azurekeyvault, hkdfguard-cache-azurekeyvault and
          hkdfguard-pipeline-azurekeyvault. The Azure SDK BOM
          pins every com.azure library together. -->
@@ -131,7 +131,7 @@
          hkdfguard-pipeline-googlesecretmanager. Google's libraries
          BOM pins the Cloud KMS and Secret Manager clients with the gax, gRPC, Protobuf and auth
          versions they were released and tested with. -->
-    <googlecloud.version>26.92.0</googlecloud.version>
+    <googlecloud.version>26.93.0</googlecloud.version>
     <!-- Newer than libraries-bom 26.91.0's 33.6.0-jre, which has GHSA-xxph-c9ww-hj94 (CVE-2026-102554:
          deserializing some Guava collections can force a huge allocation). The Cloud KMS and Secret
          Manager clients are the only modules that bring Guava; drop this once the BOM's own version
