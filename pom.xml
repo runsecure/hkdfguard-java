@@ -126,7 +126,7 @@
     <!-- hkdfguard-keywrapping-azurekeyvault, hkdfguard-cache-azurekeyvault and
          hkdfguard-pipeline-azurekeyvault. The Azure SDK BOM
          pins every com.azure library together. -->
-    <azuresdk.version>1.3.9</azuresdk.version>
+    <azuresdk.version>1.3.10</azuresdk.version>
     <!-- hkdfguard-keywrapping-googlekms, hkdfguard-cache-googlesecretmanager and
          hkdfguard-pipeline-googlesecretmanager. Google's libraries
          BOM pins the Cloud KMS and Secret Manager clients with the gax, gRPC, Protobuf and auth
