@@ -122,7 +122,7 @@
     <!-- hkdfguard-keywrapping-awskms, hkdfguard-cache-awssecretsmanager and
          hkdfguard-pipeline-awssecretsmanager. One BOM version pins
          every AWS SDK module together. -->
-    <awssdk.version>2.57.11</awssdk.version>
+    <awssdk.version>2.57.12</awssdk.version>
     <!-- hkdfguard-keywrapping-azurekeyvault, hkdfguard-cache-azurekeyvault and
          hkdfguard-pipeline-azurekeyvault. The Azure SDK BOM
          pins every com.azure library together. -->
